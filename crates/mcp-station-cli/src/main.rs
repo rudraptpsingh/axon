@@ -36,7 +36,7 @@ enum Commands {
 
     /// Auto-configure an AI agent to use mcp-station
     Setup {
-        /// Target client: claude-desktop | claude-cli | cursor
+        /// Target client: claude-desktop | claude-code | cursor | vscode
         #[arg(value_name = "TARGET")]
         target: String,
     },
@@ -157,10 +157,11 @@ async fn run_status() -> Result<()> {
 fn run_setup(target: &str) -> Result<()> {
     match target {
         "claude-desktop" => setup_claude_desktop(),
-        "claude-cli" => setup_claude_cli(),
+        "claude-code" | "claude-cli" => setup_claude_code(),
         "cursor" => setup_cursor(),
+        "vscode" | "vs-code" => setup_vscode(),
         other => anyhow::bail!(
-            "Unknown target '{}'. Supported: claude-desktop, claude-cli, cursor",
+            "Unknown target '{}'. Supported: claude-desktop, claude-code, cursor, vscode",
             other
         ),
     }
@@ -218,6 +219,52 @@ fn upsert_mcp_config(config_path: &std::path::Path) -> Result<bool> {
     Ok(true)
 }
 
+/// Upsert mcp-station into VS Code settings.json which uses `{ "mcp": { "servers": { ... } } }`.
+/// Returns true if the file was written.
+fn upsert_vscode_config(config_path: &std::path::Path) -> Result<bool> {
+    if config_path.exists() {
+        if let Ok(raw) = std::fs::read_to_string(config_path) {
+            if let Ok(config) = serde_json::from_str::<serde_json::Value>(&raw) {
+                if config
+                    .get("mcp")
+                    .and_then(|m| m.get("servers"))
+                    .and_then(|s| s.get("mcp-station"))
+                    .is_some()
+                {
+                    return Ok(false);
+                }
+            }
+        }
+    }
+
+    let mut config: serde_json::Value = if config_path.exists() {
+        std::fs::read_to_string(config_path)
+            .ok()
+            .and_then(|raw| serde_json::from_str(&raw).ok())
+            .unwrap_or_else(|| serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
+
+    if config.get("mcp").is_none() {
+        config["mcp"] = serde_json::json!({});
+    }
+    if config["mcp"].get("servers").is_none() {
+        config["mcp"]["servers"] = serde_json::json!({});
+    }
+    config["mcp"]["servers"]["mcp-station"] = serde_json::json!({
+        "type": "stdio",
+        "command": bin_path().to_string_lossy(),
+        "args": ["serve"]
+    });
+
+    if let Some(parent) = config_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(config_path, serde_json::to_string_pretty(&config)?)?;
+    Ok(true)
+}
+
 // ── Auto-Setup ───────────────────────────────────────────────────────────────
 
 fn auto_setup_all() {
@@ -239,12 +286,19 @@ fn auto_setup_all() {
     // Cursor (global config)
     let cursor_config = home.join(".cursor/mcp.json");
     match upsert_mcp_config(&cursor_config) {
-        Ok(true) => eprintln!(
-            "Auto-configured Cursor at {}",
-            cursor_config.display()
-        ),
+        Ok(true) => eprintln!("Auto-configured Cursor at {}", cursor_config.display()),
         Ok(false) => {}
         Err(e) => eprintln!("Warning: auto-setup of Cursor failed: {}", e),
+    }
+
+    // VS Code (user settings)
+    let vscode_config = home.join("Library/Application Support/Code/User/settings.json");
+    if vscode_config.exists() {
+        match upsert_vscode_config(&vscode_config) {
+            Ok(true) => eprintln!("Auto-configured VS Code at {}", vscode_config.display()),
+            Ok(false) => {}
+            Err(e) => eprintln!("Warning: auto-setup of VS Code failed: {}", e),
+        }
     }
 }
 
@@ -280,7 +334,22 @@ fn setup_cursor() -> Result<()> {
     Ok(())
 }
 
-fn setup_claude_cli() -> Result<()> {
+fn setup_vscode() -> Result<()> {
+    let config_path = dirs::home_dir()
+        .ok_or_else(|| anyhow::anyhow!("Cannot find home directory"))?
+        .join("Library/Application Support/Code/User/settings.json");
+
+    let wrote = upsert_vscode_config(&config_path)?;
+    if wrote {
+        println!("✅  Updated {}", config_path.display());
+        println!("    Restart VS Code to apply changes.");
+    } else {
+        println!("✅  Already configured at {}", config_path.display());
+    }
+    Ok(())
+}
+
+fn setup_claude_code() -> Result<()> {
     use std::process::Command;
 
     let full_path = bin_path();

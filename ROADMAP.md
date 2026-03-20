@@ -17,8 +17,8 @@ A single command that tells your AI dev session exactly what is breaking your Ma
 - [x] **Collector loop** — 2-second tick, background sysinfo refresh, EWMA updates, battery via `pmset -g batt`
 - [x] **MCP server** — 4 tools (`hw_snapshot`, `process_blame`, `battery_status`, `system_profile`) via rmcp `#[tool_router]`
 - [x] **CLI** — `serve`, `diagnose`, `status`, `setup` commands
-- [x] **Auto-setup** — Configures Claude Desktop and Cursor automatically on first run
-- [x] **Agent integration** — `mcp-station setup claude-desktop | claude-cli | cursor`
+- [x] **Auto-setup** — Configures Claude Desktop, Cursor, and VS Code automatically on first run
+- [x] **Agent integration** — `mcp-station setup claude-desktop | claude-code | cursor | vscode`
 
 ### Remaining (Days 8–14)
 
@@ -40,7 +40,7 @@ Features cut from MVP to ship fast. Revisit after validating with real users.
 | **GPU attribution** | Track Metal/GPU usage per process, detect GPU memory pressure | Requires IOKit integration, complex on Apple Silicon |
 | **SSE streaming transport** | Real-time push updates instead of poll-on-demand | stdio works for all current MCP clients |
 | **Cross-session memory** | SQLite persistence, track patterns across restarts | In-memory EWMA is sufficient for MVP |
-| **Windsurf / Continue support** | Auto-setup for more AI agents | Add as users request; config format is identical |
+| **Windsurf support** | Auto-setup for Windsurf | Add when users request; config format is identical |
 | **Linux support** | Extend beyond macOS | sysinfo abstracts most of it, but temp/battery need platform work |
 | **Predictive alerts** | "Your RAM will hit critical in ~10 minutes" based on trend | Needs more historical data than EWMA provides |
 | **Process grouping** | Group child processes (e.g., all Chrome helpers) into parent blame | Improves accuracy for multi-process apps |
