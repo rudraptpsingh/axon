@@ -1,0 +1,92 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build (${{ matrix.target }})
+    runs-on: macos-latest
+    strategy:
+      matrix:
+        target:
+          - aarch64-apple-darwin
+          - x86_64-apple-darwin
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build release binary
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Package binary
+        run: |
+          mkdir -p dist
+          cp target/${{ matrix.target }}/release/mcp-station dist/mcp-station-${{ matrix.target }}
+          cd dist && shasum -a 256 mcp-station-${{ matrix.target }} > mcp-station-${{ matrix.target }}.sha256
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mcp-station-${{ matrix.target }}
+          path: dist/
+
+  universal:
+    name: Universal Binary
+    needs: build
+    runs-on: macos-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: mcp-station-aarch64-apple-darwin
+          path: arm64/
+      - uses: actions/download-artifact@v4
+        with:
+          name: mcp-station-x86_64-apple-darwin
+          path: x86_64/
+
+      - name: Create universal binary
+        run: |
+          mkdir -p dist
+          lipo -create \
+            arm64/mcp-station-aarch64-apple-darwin \
+            x86_64/mcp-station-x86_64-apple-darwin \
+            -output dist/mcp-station-universal-apple-darwin
+          cd dist && shasum -a 256 mcp-station-universal-apple-darwin > mcp-station-universal-apple-darwin.sha256
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mcp-station-universal-apple-darwin
+          path: dist/
+
+  release:
+    name: Create Release
+    needs: [build, universal]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            artifacts/mcp-station-aarch64-apple-darwin/mcp-station-aarch64-apple-darwin
+            artifacts/mcp-station-aarch64-apple-darwin/mcp-station-aarch64-apple-darwin.sha256
+            artifacts/mcp-station-x86_64-apple-darwin/mcp-station-x86_64-apple-darwin
+            artifacts/mcp-station-x86_64-apple-darwin/mcp-station-x86_64-apple-darwin.sha256
+            artifacts/mcp-station-universal-apple-darwin/mcp-station-universal-apple-darwin
+            artifacts/mcp-station-universal-apple-darwin/mcp-station-universal-apple-darwin.sha256

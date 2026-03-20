@@ -55,7 +55,10 @@ pub struct EwmaStore {
 impl EwmaStore {
     /// Update baseline for a process and return (cpu_delta, ram_delta).
     pub fn update(&mut self, pid: u32, cpu: f64, ram: f64) -> (f64, f64) {
-        let baseline = self.baselines.entry(pid).or_insert_with(ProcessBaseline::new);
+        let baseline = self
+            .baselines
+            .entry(pid)
+            .or_insert_with(ProcessBaseline::new);
         baseline.update(cpu, ram)
     }
 

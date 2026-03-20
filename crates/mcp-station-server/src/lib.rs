@@ -1,13 +1,8 @@
-use mcp_station_core::{
-    collector::SharedState,
-    types::*,
-};
+use mcp_station_core::{collector::SharedState, types::*};
 use rmcp::{
-    ServerHandler, ServiceExt,
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::{ServerCapabilities, ServerInfo},
-    schemars,
-    tool, tool_handler, tool_router,
+    schemars, tool, tool_handler, tool_router, ServerHandler, ServiceExt,
 };
 
 // ── Tool Parameter Types ──────────────────────────────────────────────────────
@@ -77,9 +72,7 @@ impl McpStation {
                 serde_json::to_string(&response)
                     .unwrap_or_else(|e| format!("{{\"ok\":false,\"error\":\"{}\"}}", e))
             }
-            None => {
-                r#"{"ok":false,"narrative":"Battery information unavailable."}"#.to_string()
-            }
+            None => r#"{"ok":false,"narrative":"Battery information unavailable."}"#.to_string(),
         }
     }
 
@@ -108,14 +101,13 @@ impl McpStation {
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for McpStation {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
-            .with_instructions(
-                "mcp-station: local hardware intelligence for AI agents. \
+        ServerInfo::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(
+            "mcp-station: local hardware intelligence for AI agents. \
                 Call process_blame when your session lags. \
                 Call hw_snapshot for current system state. \
                 Call battery_status before long tasks. \
                 Call system_profile once for machine specs.",
-            )
+        )
     }
 }
 
@@ -126,7 +118,7 @@ fn hw_narrative(hw: &HwSnapshot) -> String {
         .die_temp_celsius
         .map(|t| format!("{:.0}°C", t))
         .unwrap_or_else(|| "temp N/A".to_string());
-    let throttle = if hw.throttling { " ⚠️ throttling" } else { "" };
+    let throttle = if hw.throttling { " [THROTTLING]" } else { "" };
     let pressure = match hw.ram_pressure {
         RamPressure::Normal => "normal",
         RamPressure::Warn => "warn",

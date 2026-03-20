@@ -113,9 +113,7 @@ pub fn suggest_fix(culprit: Option<&ProcessInfo>, anomaly: &AnomalyType) -> Stri
                 AnomalyType::ThermalThrottle | AnomalyType::CpuSaturation => {
                     Some("Reduce build parallelism: cargo build -j 2".to_string())
                 }
-                _ => Some(
-                    "Consider running: cargo build -j 2 to reduce system load.".to_string(),
-                ),
+                _ => Some("Consider running: cargo build -j 2 to reduce system load.".to_string()),
             },
             "node" | "node.js" => {
                 Some("Restart your dev server (Ctrl+C, then npm run dev).".to_string())

@@ -10,3 +10,6 @@ resolver = "2"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
+repository = "https://github.com/rudraptpsingh/mcp-station"
+description = "Local hardware intelligence for AI coding agents"
+authors = ["Rudra Pratap Singh"]

@@ -88,7 +88,7 @@ async fn run_serve() -> Result<()> {
 }
 
 async fn run_diagnose() -> Result<()> {
-    eprintln!("🔍  Collecting system data (4s)...\n");
+    eprintln!("[info] Collecting system data (4s)...\n");
 
     let profile = build_system_profile();
     let state = Arc::new(Mutex::new(AppState::new(profile)));
@@ -109,28 +109,28 @@ async fn run_diagnose() -> Result<()> {
     match &blame.culprit {
         Some(p) if blame.anomaly_score > 0.10 => {
             println!(
-                "⚠️   {} (PID {})  —  {:.0}% CPU,  {:.1}GB RAM",
+                "[warn] {} (PID {})  --  {:.0}% CPU,  {:.1}GB RAM",
                 p.cmd, p.pid, p.cpu_pct, p.ram_gb
             );
-            println!("     Impact: {}", blame.impact);
-            println!("     Fix:    {}", blame.fix);
+            println!("       Impact: {}", blame.impact);
+            println!("       Fix:    {}", blame.fix);
         }
         _ => {
-            println!("✅   System is healthy. No significant anomalies detected.");
+            println!("[ok]  System is healthy. No significant anomalies detected.");
             println!(
-                "     CPU: {:.0}%   RAM: {:.1}/{:.0}GB",
+                "      CPU: {:.0}%   RAM: {:.1}/{:.0}GB",
                 hw.cpu_usage_pct, hw.ram_used_gb, hw.ram_total_gb
             );
         }
     }
 
     if let Some(t) = hw.die_temp_celsius {
-        let throttle = if hw.throttling { "  ⚠️ throttling" } else { "" };
-        println!("     Temp:   {:.0}°C{}", t, throttle);
+        let throttle = if hw.throttling { "  [THROTTLING]" } else { "" };
+        println!("      Temp:   {:.0}C{}", t, throttle);
     }
 
     if let Some(b) = &guard.battery {
-        println!("     Battery: {}", b.narrative);
+        println!("      Battery: {}", b.narrative);
     }
 
     println!();
@@ -311,10 +311,10 @@ fn setup_claude_desktop() -> Result<()> {
 
     let wrote = upsert_mcp_config(&config_path)?;
     if wrote {
-        println!("✅  Updated {}", config_path.display());
+        println!("[ok]Updated {}", config_path.display());
         println!("    Restart Claude Desktop to apply changes.");
     } else {
-        println!("✅  Already configured at {}", config_path.display());
+        println!("[ok]Already configured at {}", config_path.display());
     }
     Ok(())
 }
@@ -326,10 +326,10 @@ fn setup_cursor() -> Result<()> {
 
     let wrote = upsert_mcp_config(&config_path)?;
     if wrote {
-        println!("✅  Updated {}", config_path.display());
+        println!("[ok]Updated {}", config_path.display());
         println!("    Restart Cursor to apply changes.");
     } else {
-        println!("✅  Already configured at {}", config_path.display());
+        println!("[ok]Already configured at {}", config_path.display());
     }
     Ok(())
 }
@@ -341,10 +341,10 @@ fn setup_vscode() -> Result<()> {
 
     let wrote = upsert_vscode_config(&config_path)?;
     if wrote {
-        println!("✅  Updated {}", config_path.display());
+        println!("[ok]Updated {}", config_path.display());
         println!("    Restart VS Code to apply changes.");
     } else {
-        println!("✅  Already configured at {}", config_path.display());
+        println!("[ok]Already configured at {}", config_path.display());
     }
     Ok(())
 }
@@ -366,13 +366,11 @@ fn setup_claude_code() -> Result<()> {
 
     match status {
         Ok(s) if s.success() => {
-            println!("✅  mcp-station added to Claude CLI.");
+            println!("[ok]mcp-station added to Claude CLI.");
             println!("    Verify with: claude mcp list");
         }
         Ok(_) => {
-            anyhow::bail!(
-                "claude mcp add failed. Check that Claude CLI is installed."
-            );
+            anyhow::bail!("claude mcp add failed. Check that Claude CLI is installed.");
         }
         Err(_) => {
             eprintln!("'claude' command not found. Printing config manually:\n");

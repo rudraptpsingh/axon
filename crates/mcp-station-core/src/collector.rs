@@ -4,12 +4,7 @@ use sysinfo::System;
 use tokio::time::{interval, Duration};
 use tracing::debug;
 
-use crate::{
-    ewma::EwmaStore,
-    impact,
-    temperature,
-    types::*,
-};
+use crate::{ewma::EwmaStore, impact, temperature, types::*};
 
 // ── Shared Application State ──────────────────────────────────────────────────
 
@@ -235,15 +230,12 @@ fn read_battery() -> Option<BatteryStatus> {
     let is_charging = stdout.contains("AC Power") || stdout.contains("charging");
 
     // Extract percentage: look for a number immediately before '%'
-    let percentage: f32 = stdout
-        .split('%')
-        .next()
-        .and_then(|s| {
-            s.split(|c: char| c.is_whitespace() || c == '\t' || c == ';')
-                .filter(|s| !s.is_empty())
-                .last()
-                .and_then(|s| s.trim().parse().ok())
-        })?;
+    let percentage: f32 = stdout.split('%').next().and_then(|s| {
+        s.split(|c: char| c.is_whitespace() || c == '\t' || c == ';')
+            .filter(|s| !s.is_empty())
+            .last()
+            .and_then(|s| s.trim().parse().ok())
+    })?;
 
     // Extract time remaining: "H:MM remaining" (not "-1:-1" or "no estimate")
     let time_to_empty = if !is_charging {
