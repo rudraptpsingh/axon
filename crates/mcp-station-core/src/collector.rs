@@ -1,0 +1,343 @@
+use std::sync::{Arc, Mutex};
+
+use sysinfo::System;
+use tokio::time::{interval, Duration};
+use tracing::debug;
+
+use crate::{
+    ewma::EwmaStore,
+    impact,
+    temperature,
+    types::*,
+};
+
+// ── Shared Application State ──────────────────────────────────────────────────
+
+pub struct AppState {
+    pub hw: HwSnapshot,
+    pub blame: ProcessBlame,
+    pub battery: Option<BatteryStatus>,
+    pub profile: SystemProfile,
+    pub processes: Vec<ProcessInfo>,
+}
+
+impl AppState {
+    pub fn new(profile: SystemProfile) -> Self {
+        let now = chrono::Utc::now();
+        Self {
+            hw: HwSnapshot {
+                die_temp_celsius: None,
+                throttling: false,
+                ram_used_gb: 0.0,
+                ram_total_gb: 0.0,
+                ram_pressure: RamPressure::Normal,
+                cpu_usage_pct: 0.0,
+                ts: now,
+            },
+            blame: ProcessBlame {
+                anomaly_type: AnomalyType::None,
+                impact_level: ImpactLevel::Healthy,
+                culprit: None,
+                anomaly_score: 0.0,
+                impact: "System is healthy. No action needed.".to_string(),
+                fix: "No action needed.".to_string(),
+                ts: now,
+            },
+            battery: None,
+            profile,
+            processes: Vec::new(),
+        }
+    }
+}
+
+pub type SharedState = Arc<Mutex<AppState>>;
+
+// ── Collector Loop ────────────────────────────────────────────────────────────
+
+/// Spawns a background Tokio task that refreshes hardware state every 2 seconds.
+/// Updates the SharedState in place for the MCP server to read.
+pub async fn start_collector(state: SharedState) {
+    let mut sys = System::new_all();
+    let mut ewma = EwmaStore::default();
+    let mut tick_count: u32 = 0;
+    let mut above_threshold_count: u32 = 0;
+
+    let mut ticker = interval(Duration::from_secs(2));
+
+    loop {
+        ticker.tick().await;
+        tick_count += 1;
+
+        // Refresh sysinfo (blocking ~5ms on M-series)
+        sys.refresh_all();
+
+        // ── Hardware snapshot ──────────────────────────────────────────────
+
+        let cpu_pct = sys.global_cpu_usage() as f64;
+        let total_mem = sys.total_memory(); // bytes
+        let used_mem = sys.used_memory(); // bytes
+        let ram_total_gb = total_mem as f64 / 1_073_741_824.0;
+        let ram_used_gb = used_mem as f64 / 1_073_741_824.0;
+        let ram_pct = if total_mem > 0 {
+            used_mem as f64 / total_mem as f64 * 100.0
+        } else {
+            0.0
+        };
+
+        let ram_pressure = if ram_pct >= 90.0 {
+            RamPressure::Critical
+        } else if ram_pct >= 70.0 {
+            RamPressure::Warn
+        } else {
+            RamPressure::Normal
+        };
+
+        let die_temp = temperature::read_cpu_temp();
+        let throttling = die_temp.map_or(false, |t| t > 95.0);
+
+        let hw = HwSnapshot {
+            die_temp_celsius: die_temp,
+            throttling,
+            ram_used_gb,
+            ram_total_gb,
+            ram_pressure,
+            cpu_usage_pct: cpu_pct,
+            ts: chrono::Utc::now(),
+        };
+
+        // ── Process collection + EWMA update ──────────────────────────────
+
+        let cpu_count = sys.cpus().len().max(1) as f64;
+        let mut process_infos: Vec<ProcessInfo> = Vec::new();
+        let active_pids: Vec<u32> = sys
+            .processes()
+            .keys()
+            .map(|p| usize::from(*p) as u32)
+            .collect();
+
+        let anomaly_type = impact::detect_anomaly_type(ram_pct, cpu_pct, die_temp);
+
+        for (pid, process) in sys.processes() {
+            // cpu_usage from sysinfo can exceed 100% on multi-core (e.g., 400% = 4 cores)
+            let raw_cpu = process.cpu_usage() as f64;
+            let cpu_normalised = raw_cpu / cpu_count; // normalise to 0-100% relative to all CPUs
+            let ram_bytes = process.memory();
+            let ram_gb = ram_bytes as f64 / 1_073_741_824.0;
+            let pid_u32 = usize::from(*pid) as u32;
+
+            let (cpu_delta, ram_delta) = ewma.update(pid_u32, cpu_normalised, ram_gb);
+
+            // Compute blame score weighted by anomaly type
+            let blame_score = match anomaly_type {
+                AnomalyType::ThermalThrottle | AnomalyType::CpuSaturation => {
+                    0.6 * (cpu_delta / 100.0).min(1.0)
+                        + 0.4 * (ram_delta / ram_total_gb.max(1.0)).min(1.0)
+                }
+                AnomalyType::MemoryPressure => {
+                    0.25 * (cpu_delta / 100.0).min(1.0)
+                        + 0.75 * (ram_delta / ram_total_gb.max(1.0)).min(1.0)
+                }
+                _ => {
+                    0.5 * (cpu_delta / 100.0).min(1.0)
+                        + 0.5 * (ram_delta / ram_total_gb.max(1.0)).min(1.0)
+                }
+            };
+
+            // Only track processes that are actually interesting
+            if blame_score > 0.02 || raw_cpu > 5.0 || ram_gb > 0.2 {
+                let cmd = process.name().to_string_lossy().into_owned();
+                process_infos.push(ProcessInfo {
+                    pid: pid_u32,
+                    cmd,
+                    cpu_pct: raw_cpu,
+                    ram_gb,
+                    blame_score,
+                });
+            }
+        }
+
+        // Sort by blame score descending — top culprit is first
+        process_infos.sort_by(|a, b| {
+            b.blame_score
+                .partial_cmp(&a.blame_score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        // Cleanup stale EWMA entries
+        ewma.cleanup(&active_pids);
+
+        // ── System anomaly scoring + persistence ───────────────────────────
+
+        // swap_gb: sysinfo doesn't expose swap directly on macOS, default 0
+        let swap_gb = 0.0_f64;
+        let score = impact::compute_score(ram_pct, cpu_pct, swap_gb);
+
+        if score > 0.3 {
+            above_threshold_count = above_threshold_count.saturating_add(1);
+        } else {
+            above_threshold_count = above_threshold_count.saturating_sub(1);
+        }
+
+        let impact_level = impact::score_to_level(score, above_threshold_count);
+        let culprit = process_infos.first().cloned();
+        let impact_msg = impact::impact_message(&impact_level, &anomaly_type);
+        let fix = impact::suggest_fix(culprit.as_ref(), &anomaly_type);
+
+        let blame = ProcessBlame {
+            anomaly_type,
+            impact_level,
+            culprit,
+            anomaly_score: score,
+            impact: impact_msg,
+            fix,
+            ts: chrono::Utc::now(),
+        };
+
+        debug!(
+            tick = tick_count,
+            cpu = %format!("{:.0}%", cpu_pct),
+            ram = %format!("{:.1}/{:.0}GB", ram_used_gb, ram_total_gb),
+            score = %format!("{:.2}", score),
+            "tick"
+        );
+
+        // ── Battery (every 15 ticks ≈ 30s) ────────────────────────────────
+
+        let battery = if tick_count % 15 == 1 {
+            read_battery()
+        } else {
+            // Reuse existing value without locking
+            let guard = state.lock().unwrap();
+            guard.battery.clone()
+        };
+
+        // ── Write to shared state ──────────────────────────────────────────
+
+        let mut guard = state.lock().unwrap();
+        guard.hw = hw;
+        guard.blame = blame;
+        guard.battery = battery;
+        guard.processes = process_infos;
+    }
+}
+
+// ── Battery Reader (pmset) ────────────────────────────────────────────────────
+
+fn read_battery() -> Option<BatteryStatus> {
+    use std::process::Command;
+
+    let output = Command::new("pmset").args(["-g", "batt"]).output().ok()?;
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    if stdout.is_empty() {
+        return None;
+    }
+
+    let is_charging = stdout.contains("AC Power") || stdout.contains("charging");
+
+    // Extract percentage: look for a number immediately before '%'
+    let percentage: f32 = stdout
+        .split('%')
+        .next()
+        .and_then(|s| {
+            s.split(|c: char| c.is_whitespace() || c == '\t' || c == ';')
+                .filter(|s| !s.is_empty())
+                .last()
+                .and_then(|s| s.trim().parse().ok())
+        })?;
+
+    // Extract time remaining: "H:MM remaining" (not "-1:-1" or "no estimate")
+    let time_to_empty = if !is_charging {
+        stdout.lines().find_map(|line| {
+            if line.contains("remaining")
+                && !line.contains("no estimate")
+                && !line.contains("-1:-1")
+            {
+                line.split_whitespace()
+                    .find(|s| s.contains(':') && !s.starts_with('-'))
+                    .and_then(|t| {
+                        let parts: Vec<&str> = t.split(':').collect();
+                        if parts.len() == 2 {
+                            let h: u32 = parts[0].parse().ok()?;
+                            let m: u32 = parts[1].parse().ok()?;
+                            Some(h * 60 + m)
+                        } else {
+                            None
+                        }
+                    })
+            } else {
+                None
+            }
+        })
+    } else {
+        None
+    };
+
+    let narrative = if is_charging {
+        format!("Battery at {:.0}% and charging.", percentage)
+    } else if let Some(mins) = time_to_empty {
+        let h = mins / 60;
+        let m = mins % 60;
+        if h > 0 {
+            format!("Battery at {:.0}% (~{}h {}m remaining).", percentage, h, m)
+        } else {
+            format!("Battery at {:.0}% (~{}m remaining).", percentage, m)
+        }
+    } else {
+        format!("Battery at {:.0}% (estimating remaining time).", percentage)
+    };
+
+    Some(BatteryStatus {
+        percentage,
+        is_charging,
+        time_to_empty_min: time_to_empty,
+        narrative,
+    })
+}
+
+// ── System Profile (built once at startup) ────────────────────────────────────
+
+pub fn build_system_profile() -> SystemProfile {
+    use std::process::Command;
+
+    let sys = System::new_all();
+
+    let model_id = Command::new("sysctl")
+        .args(["-n", "hw.model"])
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|| "Unknown".to_string());
+
+    // On Apple Silicon, machdep.cpu.brand_string may be absent; fall back gracefully
+    let chip = Command::new("sysctl")
+        .args(["-n", "machdep.cpu.brand_string"])
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| {
+            // Apple Silicon: try sysctl hw.chip_id or default
+            Command::new("sysctl")
+                .args(["-n", "hw.perflevel0.name"])
+                .output()
+                .ok()
+                .and_then(|o| String::from_utf8(o.stdout).ok())
+                .map(|s| format!("Apple Silicon ({})", s.trim()))
+                .unwrap_or_else(|| "Apple Silicon".to_string())
+        });
+
+    let os_version = System::long_os_version().unwrap_or_else(|| "Unknown".to_string());
+    let core_count = sys.cpus().len();
+    let ram_total_gb = sys.total_memory() as f64 / 1_073_741_824.0;
+
+    SystemProfile {
+        model_id,
+        chip,
+        core_count,
+        ram_total_gb,
+        os_version,
+        mcp_station_version: VERSION.to_string(),
+    }
+}

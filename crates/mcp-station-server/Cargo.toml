@@ -1,0 +1,17 @@
+[package]
+name = "mcp-station-server"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "mcp_station_server"
+
+[dependencies]
+mcp-station-core = { path = "../mcp-station-core" }
+rmcp = { version = "1", features = ["server"] }
+schemars = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+anyhow = "1"
+tracing = "0.1"
