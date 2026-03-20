@@ -1,15 +1,15 @@
 [package]
-name = "mcp-station"
+name = "axon"
 version.workspace = true
 edition.workspace = true
 
 [[bin]]
-name = "mcp-station"
+name = "axon"
 path = "src/main.rs"
 
 [dependencies]
-mcp-station-core = { path = "../mcp-station-core" }
-mcp-station-server = { path = "../mcp-station-server" }
+axon-core = { path = "../axon-core" }
+axon-server = { path = "../axon-server" }
 tokio = { version = "1", features = ["full"] }
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"

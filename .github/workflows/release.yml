@@ -33,12 +33,12 @@ jobs:
       - name: Package binary
         run: |
           mkdir -p dist
-          cp target/${{ matrix.target }}/release/mcp-station dist/mcp-station-${{ matrix.target }}
-          cd dist && shasum -a 256 mcp-station-${{ matrix.target }} > mcp-station-${{ matrix.target }}.sha256
+          cp target/${{ matrix.target }}/release/axon dist/axon-${{ matrix.target }}
+          cd dist && shasum -a 256 axon-${{ matrix.target }} > axon-${{ matrix.target }}.sha256
 
       - uses: actions/upload-artifact@v4
         with:
-          name: mcp-station-${{ matrix.target }}
+          name: axon-${{ matrix.target }}
           path: dist/
 
   universal:
@@ -48,25 +48,25 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: mcp-station-aarch64-apple-darwin
+          name: axon-aarch64-apple-darwin
           path: arm64/
       - uses: actions/download-artifact@v4
         with:
-          name: mcp-station-x86_64-apple-darwin
+          name: axon-x86_64-apple-darwin
           path: x86_64/
 
       - name: Create universal binary
         run: |
           mkdir -p dist
           lipo -create \
-            arm64/mcp-station-aarch64-apple-darwin \
-            x86_64/mcp-station-x86_64-apple-darwin \
-            -output dist/mcp-station-universal-apple-darwin
-          cd dist && shasum -a 256 mcp-station-universal-apple-darwin > mcp-station-universal-apple-darwin.sha256
+            arm64/axon-aarch64-apple-darwin \
+            x86_64/axon-x86_64-apple-darwin \
+            -output dist/axon-universal-apple-darwin
+          cd dist && shasum -a 256 axon-universal-apple-darwin > axon-universal-apple-darwin.sha256
 
       - uses: actions/upload-artifact@v4
         with:
-          name: mcp-station-universal-apple-darwin
+          name: axon-universal-apple-darwin
           path: dist/
 
   release:
@@ -84,9 +84,9 @@ jobs:
         with:
           generate_release_notes: true
           files: |
-            artifacts/mcp-station-aarch64-apple-darwin/mcp-station-aarch64-apple-darwin
-            artifacts/mcp-station-aarch64-apple-darwin/mcp-station-aarch64-apple-darwin.sha256
-            artifacts/mcp-station-x86_64-apple-darwin/mcp-station-x86_64-apple-darwin
-            artifacts/mcp-station-x86_64-apple-darwin/mcp-station-x86_64-apple-darwin.sha256
-            artifacts/mcp-station-universal-apple-darwin/mcp-station-universal-apple-darwin
-            artifacts/mcp-station-universal-apple-darwin/mcp-station-universal-apple-darwin.sha256
+            artifacts/axon-aarch64-apple-darwin/axon-aarch64-apple-darwin
+            artifacts/axon-aarch64-apple-darwin/axon-aarch64-apple-darwin.sha256
+            artifacts/axon-x86_64-apple-darwin/axon-x86_64-apple-darwin
+            artifacts/axon-x86_64-apple-darwin/axon-x86_64-apple-darwin.sha256
+            artifacts/axon-universal-apple-darwin/axon-universal-apple-darwin
+            artifacts/axon-universal-apple-darwin/axon-universal-apple-darwin.sha256

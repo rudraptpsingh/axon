@@ -1,13 +1,13 @@
 [package]
-name = "mcp-station-server"
+name = "axon-server"
 version.workspace = true
 edition.workspace = true
 
 [lib]
-name = "mcp_station_server"
+name = "axon_server"
 
 [dependencies]
-mcp-station-core = { path = "../mcp-station-core" }
+axon-core = { path = "../axon-core" }
 rmcp = { version = "1", features = ["server"] }
 schemars = "0.8"
 serde = { version = "1", features = ["derive"] }

@@ -1,11 +1,11 @@
-# mcp-station
+# axon
 
 Local hardware intelligence for AI coding agents. Zero cloud. Zero telemetry. Pure local.
 
-mcp-station is an [MCP](https://modelcontextprotocol.io/) server that gives AI agents (Claude Desktop, Cursor, VS Code, Claude Code) real-time awareness of your Mac's hardware state: what process is slowing things down, how to fix it, and whether your machine can handle the next task.
+axon is an [MCP](https://modelcontextprotocol.io/) server that gives AI agents (Claude Desktop, Cursor, VS Code, Claude Code) real-time awareness of your Mac's hardware state: what process is slowing things down, how to fix it, and whether your machine can handle the next task.
 
 ```
-$ mcp-station diagnose
+$ axon diagnose
 
 [warn] Cursor (PID 1234)  --  210% CPU,  13.8GB RAM
        Impact: System is overloaded. Your session may freeze or crash.
@@ -18,15 +18,15 @@ $ mcp-station diagnose
 
 ```bash
 # From source (requires Rust toolchain)
-cargo install --path crates/mcp-station-cli
+cargo install --path crates/axon-cli
 
-# mcp-station auto-configures Claude Desktop, Cursor, and VS Code on first run.
+# axon auto-configures Claude Desktop, Cursor, and VS Code on first run.
 # Just restart your agent after installing.
 ```
 
 ## What It Does
 
-mcp-station exposes 4 MCP tools that any compatible agent can call:
+axon exposes 4 MCP tools that any compatible agent can call:
 
 | Tool | Purpose |
 |---|---|
@@ -62,21 +62,21 @@ The hero tool is `process_blame`. When your AI session lags, the agent calls it 
 ## CLI Commands
 
 ```bash
-mcp-station serve              # Start MCP stdio server (default, used by agents)
-mcp-station diagnose           # One-shot: collect 4s of data, print the culprit
-mcp-station status             # Print current hardware snapshot as JSON
-mcp-station setup <target>     # Configure an agent (claude-desktop, claude-code, cursor, vscode)
+axon serve              # Start MCP stdio server (default, used by agents)
+axon diagnose           # One-shot: collect 4s of data, print the culprit
+axon status             # Print current hardware snapshot as JSON
+axon setup <target>     # Configure an agent (claude-desktop, claude-code, cursor, vscode)
 ```
 
 ## Agent Setup
 
-mcp-station auto-configures supported agents on first run. You can also set up manually:
+axon auto-configures supported agents on first run. You can also set up manually:
 
 ```bash
-mcp-station setup claude-desktop   # Writes claude_desktop_config.json
-mcp-station setup claude-code      # Runs: claude mcp add mcp-station
-mcp-station setup cursor           # Writes ~/.cursor/mcp.json
-mcp-station setup vscode           # Writes VS Code user settings
+axon setup claude-desktop   # Writes claude_desktop_config.json
+axon setup claude-code      # Runs: claude mcp add axon
+axon setup cursor           # Writes ~/.cursor/mcp.json
+axon setup vscode           # Writes VS Code user settings
 ```
 
 Or add to any MCP-compatible agent's config manually:
@@ -84,8 +84,8 @@ Or add to any MCP-compatible agent's config manually:
 ```json
 {
   "mcpServers": {
-    "mcp-station": {
-      "command": "/path/to/mcp-station",
+    "axon": {
+      "command": "/path/to/axon",
       "args": ["serve"]
     }
   }
@@ -96,9 +96,9 @@ Or add to any MCP-compatible agent's config manually:
 
 ```
 crates/
-  mcp-station-core/     # Types, EWMA tracker, impact engine, collector loop
-  mcp-station-server/   # MCP server (4 tools via rmcp)
-  mcp-station-cli/      # Binary entry point
+  axon-core/     # Types, EWMA tracker, impact engine, collector loop
+  axon-server/   # MCP server (4 tools via rmcp)
+  axon-cli/      # Binary entry point
 ```
 
 Key design decisions:

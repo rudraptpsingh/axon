@@ -80,7 +80,7 @@ pub struct SystemProfile {
     pub core_count: usize,
     pub ram_total_gb: f64,
     pub os_version: String,
-    pub mcp_station_version: String,
+    pub axon_version: String,
 }
 
 // ── MCP Response Envelope ─────────────────────────────────────────────────────

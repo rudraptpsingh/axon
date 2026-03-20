@@ -1,5 +1,5 @@
 [package]
-name = "mcp-station-core"
+name = "axon-core"
 version.workspace = true
 edition.workspace = true
 

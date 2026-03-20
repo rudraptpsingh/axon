@@ -1,4 +1,4 @@
-# mcp-station Roadmap
+# axon Roadmap
 
 ## The Vision
 
@@ -26,7 +26,7 @@ A single command that tells your AI dev session exactly what is breaking your Ma
 
 ### Remaining
 
-- [ ] **Homebrew tap** -- Create `homebrew-mcp-station` tap repo, write formula, test `brew install mcp-station`
+- [ ] **Homebrew tap** -- Create `homebrew-axon` tap repo, write formula, test `brew install axon`
 - [ ] **Demo recording** -- Terminal recording showing `process_blame` catching a runaway process
 - [ ] **Dogfood and polish** -- Run as daily driver, fix edge cases (zombie processes, sleep/wake, lid close)
 - [ ] **Launch** -- Show HN post, Twitter thread
@@ -65,11 +65,11 @@ Only after proving value with free tier.
 ## Architecture
 
 ```
-mcp-station/
+axon/
 ├── crates/
-│   ├── mcp-station-core/        # Data types, EWMA, impact engine, collector
-│   ├── mcp-station-server/      # MCP server (rmcp #[tool_router])
-│   └── mcp-station-cli/         # Binary: serve | diagnose | status | setup
+│   ├── axon-core/        # Data types, EWMA, impact engine, collector
+│   ├── axon-server/      # MCP server (rmcp #[tool_router])
+│   └── axon-cli/         # Binary: serve | diagnose | status | setup
 ```
 
 Key design decisions:

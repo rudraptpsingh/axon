@@ -1,21 +1,21 @@
-# CLAUDE.md — mcp-station
+# CLAUDE.md -- axon
 
 ## Project Overview
 
-mcp-station is a zero-cloud, privacy-first MCP (Model Context Protocol) server that gives AI coding agents real-time local hardware awareness on macOS. It tells developers what is slowing their Mac and how to fix it — without sending a single byte off-device.
+axon is a zero-cloud, privacy-first MCP (Model Context Protocol) server that gives AI coding agents real-time local hardware awareness on macOS. It tells developers what is slowing their Mac and how to fix it -- without sending a single byte off-device.
 
 ## Architecture
 
 ```
 crates/
-  mcp-station-core/     # Data types, EWMA baseline tracker, impact engine, collector loop
-  mcp-station-server/   # MCP server (4 tools via rmcp #[tool_router])
-  mcp-station-cli/      # Binary: serve | diagnose | status | setup
+  axon-core/     # Data types, EWMA baseline tracker, impact engine, collector loop
+  axon-server/   # MCP server (4 tools via rmcp #[tool_router])
+  axon-cli/      # Binary: serve | diagnose | status | setup
 ```
 
-- **mcp-station-core** is a library crate. All data types live in `types.rs`. The collector loop in `collector.rs` runs every 2 seconds, refreshing sysinfo and updating per-process EWMA baselines.
-- **mcp-station-server** exposes 4 MCP tools over stdio: `hw_snapshot`, `process_blame`, `battery_status`, `system_profile`. Uses rmcp 1.x with `#[tool_router]` and `#[tool_handler]` macros.
-- **mcp-station-cli** is the binary entry point (package name `mcp-station`). It auto-configures Claude Desktop, Cursor, and VS Code on first run.
+- **axon-core** is a library crate. All data types live in `types.rs`. The collector loop in `collector.rs` runs every 2 seconds, refreshing sysinfo and updating per-process EWMA baselines.
+- **axon-server** exposes 4 MCP tools over stdio: `hw_snapshot`, `process_blame`, `battery_status`, `system_profile`. Uses rmcp 1.x with `#[tool_router]` and `#[tool_handler]` macros.
+- **axon-cli** is the binary entry point (package name `axon`). It auto-configures Claude Desktop, Cursor, and VS Code on first run.
 
 ## Key Technical Details
 
@@ -30,13 +30,13 @@ crates/
 
 ```bash
 cargo build                    # Debug build
-cargo install --path crates/mcp-station-cli  # Install to ~/.cargo/bin
-mcp-station diagnose           # Quick smoke test: collects 4s of data, prints culprit
+cargo install --path crates/axon-cli  # Install to ~/.cargo/bin
+axon diagnose                  # Quick smoke test: collects 4s of data, prints culprit
 ```
 
 To test MCP protocol manually:
 ```bash
-echo '{"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"0.1.0"}},"jsonrpc":"2.0","id":0}' | mcp-station serve 2>/dev/null
+echo '{"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"0.1.0"}},"jsonrpc":"2.0","id":0}' | axon serve 2>/dev/null
 ```
 
 ## Code Conventions

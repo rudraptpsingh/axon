@@ -4,19 +4,19 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
 
-use mcp_station_core::collector::{build_system_profile, start_collector, AppState};
-use mcp_station_server::run_server;
+use axon_core::collector::{build_system_profile, start_collector, AppState};
+use axon_server::run_server;
 
 // ── CLI Definition ────────────────────────────────────────────────────────────
 
 #[derive(Parser)]
-#[command(name = "mcp-station")]
+#[command(name = "axon")]
 #[command(version)]
 #[command(
     about = "Local hardware intelligence for AI-powered developers",
-    long_about = "mcp-station gives AI coding agents (Cursor, Claude Code, Windsurf) \
+    long_about = "axon gives AI coding agents (Cursor, Claude Code, Windsurf) \
     real-time awareness of your Mac's hardware: CPU load, die temperature, memory pressure, \
-    and which process is responsible — without sending a single byte off-device."
+    and which process is responsible -- without sending a single byte off-device."
 )]
 struct Cli {
     #[command(subcommand)]
@@ -34,7 +34,7 @@ enum Commands {
     /// Print current hardware snapshot as JSON
     Status,
 
-    /// Auto-configure an AI agent to use mcp-station
+    /// Auto-configure an AI agent to use axon
     Setup {
         /// Target client: claude-desktop | claude-code | cursor | vscode
         #[arg(value_name = "TARGET")]
@@ -46,7 +46,7 @@ enum Commands {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Log to stderr only — stdout is reserved for MCP JSON-RPC
+    // Log to stderr only -- stdout is reserved for MCP JSON-RPC
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn")),
@@ -71,11 +71,10 @@ async fn main() -> Result<()> {
 // ── Command Handlers ──────────────────────────────────────────────────────────
 
 async fn run_serve() -> Result<()> {
-    tracing::info!("mcp-station starting (stdio transport)");
+    tracing::info!("axon starting (stdio transport)");
     let profile = build_system_profile();
     let state = Arc::new(Mutex::new(AppState::new(profile)));
 
-    // Start collector background task
     let state_bg = state.clone();
     tokio::spawn(async move {
         start_collector(state_bg).await;
@@ -170,7 +169,7 @@ fn run_setup(target: &str) -> Result<()> {
 // ── Shared Helpers ───────────────────────────────────────────────────────────
 
 fn bin_path() -> std::path::PathBuf {
-    std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("mcp-station"))
+    std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("axon"))
 }
 
 fn mcp_entry() -> serde_json::Value {
@@ -180,16 +179,15 @@ fn mcp_entry() -> serde_json::Value {
     })
 }
 
-/// Upsert mcp-station into a JSON config file with `{ "mcpServers": { ... } }` format.
+/// Upsert axon into a JSON config file with `{ "mcpServers": { ... } }` format.
 /// Returns true if the file was written (i.e. not already configured).
 fn upsert_mcp_config(config_path: &std::path::Path) -> Result<bool> {
-    // Check if already configured
     if config_path.exists() {
         if let Ok(raw) = std::fs::read_to_string(config_path) {
             if let Ok(config) = serde_json::from_str::<serde_json::Value>(&raw) {
                 if config
                     .get("mcpServers")
-                    .and_then(|s| s.get("mcp-station"))
+                    .and_then(|s| s.get("axon"))
                     .is_some()
                 {
                     return Ok(false);
@@ -210,7 +208,7 @@ fn upsert_mcp_config(config_path: &std::path::Path) -> Result<bool> {
     if config.get("mcpServers").is_none() {
         config["mcpServers"] = serde_json::json!({});
     }
-    config["mcpServers"]["mcp-station"] = mcp_entry();
+    config["mcpServers"]["axon"] = mcp_entry();
 
     if let Some(parent) = config_path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -219,7 +217,7 @@ fn upsert_mcp_config(config_path: &std::path::Path) -> Result<bool> {
     Ok(true)
 }
 
-/// Upsert mcp-station into VS Code settings.json which uses `{ "mcp": { "servers": { ... } } }`.
+/// Upsert axon into VS Code settings.json which uses `{ "mcp": { "servers": { ... } } }`.
 /// Returns true if the file was written.
 fn upsert_vscode_config(config_path: &std::path::Path) -> Result<bool> {
     if config_path.exists() {
@@ -228,7 +226,7 @@ fn upsert_vscode_config(config_path: &std::path::Path) -> Result<bool> {
                 if config
                     .get("mcp")
                     .and_then(|m| m.get("servers"))
-                    .and_then(|s| s.get("mcp-station"))
+                    .and_then(|s| s.get("axon"))
                     .is_some()
                 {
                     return Ok(false);
@@ -252,7 +250,7 @@ fn upsert_vscode_config(config_path: &std::path::Path) -> Result<bool> {
     if config["mcp"].get("servers").is_none() {
         config["mcp"]["servers"] = serde_json::json!({});
     }
-    config["mcp"]["servers"]["mcp-station"] = serde_json::json!({
+    config["mcp"]["servers"]["axon"] = serde_json::json!({
         "type": "stdio",
         "command": bin_path().to_string_lossy(),
         "args": ["serve"]
@@ -311,10 +309,10 @@ fn setup_claude_desktop() -> Result<()> {
 
     let wrote = upsert_mcp_config(&config_path)?;
     if wrote {
-        println!("[ok]Updated {}", config_path.display());
-        println!("    Restart Claude Desktop to apply changes.");
+        println!("[ok] Updated {}", config_path.display());
+        println!("     Restart Claude Desktop to apply changes.");
     } else {
-        println!("[ok]Already configured at {}", config_path.display());
+        println!("[ok] Already configured at {}", config_path.display());
     }
     Ok(())
 }
@@ -326,10 +324,10 @@ fn setup_cursor() -> Result<()> {
 
     let wrote = upsert_mcp_config(&config_path)?;
     if wrote {
-        println!("[ok]Updated {}", config_path.display());
-        println!("    Restart Cursor to apply changes.");
+        println!("[ok] Updated {}", config_path.display());
+        println!("     Restart Cursor to apply changes.");
     } else {
-        println!("[ok]Already configured at {}", config_path.display());
+        println!("[ok] Already configured at {}", config_path.display());
     }
     Ok(())
 }
@@ -341,10 +339,10 @@ fn setup_vscode() -> Result<()> {
 
     let wrote = upsert_vscode_config(&config_path)?;
     if wrote {
-        println!("[ok]Updated {}", config_path.display());
-        println!("    Restart VS Code to apply changes.");
+        println!("[ok] Updated {}", config_path.display());
+        println!("     Restart VS Code to apply changes.");
     } else {
-        println!("[ok]Already configured at {}", config_path.display());
+        println!("[ok] Already configured at {}", config_path.display());
     }
     Ok(())
 }
@@ -357,7 +355,7 @@ fn setup_claude_code() -> Result<()> {
         .args([
             "mcp",
             "add",
-            "mcp-station",
+            "axon",
             "--",
             &full_path.to_string_lossy(),
             "serve",
@@ -366,19 +364,19 @@ fn setup_claude_code() -> Result<()> {
 
     match status {
         Ok(s) if s.success() => {
-            println!("[ok]mcp-station added to Claude CLI.");
-            println!("    Verify with: claude mcp list");
+            println!("[ok] axon added to Claude Code.");
+            println!("     Verify with: claude mcp list");
         }
         Ok(_) => {
-            anyhow::bail!("claude mcp add failed. Check that Claude CLI is installed.");
+            anyhow::bail!("claude mcp add failed. Check that Claude Code is installed.");
         }
         Err(_) => {
             eprintln!("'claude' command not found. Printing config manually:\n");
-            println!("Add this to your Claude CLI MCP config:");
+            println!("Add this to your Claude Code MCP config:");
             println!(
                 "{}",
                 serde_json::to_string_pretty(&serde_json::json!({
-                    "mcp-station": mcp_entry()
+                    "axon": mcp_entry()
                 }))?
             );
         }

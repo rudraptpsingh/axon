@@ -1,4 +1,4 @@
-use mcp_station_core::{collector::SharedState, types::*};
+use axon_core::{collector::SharedState, types::*};
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::{ServerCapabilities, ServerInfo},
@@ -13,12 +13,12 @@ pub struct EmptyParams {}
 // ── MCP Server ────────────────────────────────────────────────────────────────
 
 #[derive(Clone)]
-pub struct McpStation {
+pub struct AxonServer {
     state: SharedState,
     tool_router: ToolRouter<Self>,
 }
 
-impl McpStation {
+impl AxonServer {
     pub fn new(state: SharedState) -> Self {
         Self {
             state,
@@ -28,7 +28,7 @@ impl McpStation {
 }
 
 #[tool_router(router = tool_router)]
-impl McpStation {
+impl AxonServer {
     #[tool(
         description = "Real-time hardware snapshot: CPU usage %, die temperature, RAM used/total, RAM pressure level (normal/warn/critical), and whether the CPU is thermally throttling."
     )]
@@ -99,10 +99,10 @@ impl McpStation {
 }
 
 #[tool_handler(router = self.tool_router)]
-impl ServerHandler for McpStation {
+impl ServerHandler for AxonServer {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(
-            "mcp-station: local hardware intelligence for AI agents. \
+            "axon: local hardware intelligence for AI agents. \
                 Call process_blame when your session lags. \
                 Call hw_snapshot for current system state. \
                 Call battery_status before long tasks. \
@@ -143,7 +143,7 @@ fn blame_narrative(blame: &ProcessBlame) -> String {
 // ── Public Entry Point ────────────────────────────────────────────────────────
 
 pub async fn run_server(state: SharedState) -> anyhow::Result<()> {
-    let server = McpStation::new(state);
+    let server = AxonServer::new(state);
     let transport = (tokio::io::stdin(), tokio::io::stdout());
     let running = server.serve(transport).await?;
     running.waiting().await?;

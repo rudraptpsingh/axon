@@ -330,6 +330,6 @@ pub fn build_system_profile() -> SystemProfile {
         core_count,
         ram_total_gb,
         os_version,
-        mcp_station_version: VERSION.to_string(),
+        axon_version: VERSION.to_string(),
     }
 }
