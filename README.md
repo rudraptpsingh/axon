@@ -4,6 +4,8 @@ Local hardware intelligence for AI coding agents. Zero cloud. Zero telemetry. Pu
 
 axon is an [MCP](https://modelcontextprotocol.io/) server that gives AI agents (Claude Desktop, Cursor, VS Code, Claude Code) real-time awareness of your Mac's hardware state: what process is slowing things down, how to fix it, and whether your machine can handle the next task.
 
+![axon demo](demo.gif)
+
 ```
 $ axon diagnose
 
