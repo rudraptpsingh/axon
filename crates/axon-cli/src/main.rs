@@ -5,6 +5,7 @@ use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
 
 use axon_core::collector::{build_system_profile, start_collector, AppState};
+use axon_core::persistence;
 use axon_server::run_server;
 
 // ── CLI Definition ────────────────────────────────────────────────────────────
@@ -75,15 +76,19 @@ async fn run_serve() -> Result<()> {
     let profile = build_system_profile();
     let state = Arc::new(Mutex::new(AppState::new(profile)));
 
+    let db_path = persistence::default_db_path()?;
+    let db = persistence::open(db_path)?;
+
     let state_bg = state.clone();
+    let db_bg = db.clone();
     tokio::spawn(async move {
-        start_collector(state_bg).await;
+        start_collector(state_bg, db_bg).await;
     });
 
     // Brief warm-up so first tool call isn't stale
     tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
 
-    run_server(state).await
+    run_server(state, db).await
 }
 
 async fn run_diagnose() -> Result<()> {
@@ -92,9 +97,12 @@ async fn run_diagnose() -> Result<()> {
     let profile = build_system_profile();
     let state = Arc::new(Mutex::new(AppState::new(profile)));
 
+    let db_path = persistence::default_db_path()?;
+    let db = persistence::open(db_path)?;
+
     let state_bg = state.clone();
     tokio::spawn(async move {
-        start_collector(state_bg).await;
+        start_collector(state_bg, db).await;
     });
 
     // Wait for at least 2 EWMA ticks (4s) so baselines stabilise
@@ -163,9 +171,12 @@ async fn run_status() -> Result<()> {
     let profile = build_system_profile();
     let state = Arc::new(Mutex::new(AppState::new(profile)));
 
+    let db_path = persistence::default_db_path()?;
+    let db = persistence::open(db_path)?;
+
     let state_bg = state.clone();
     tokio::spawn(async move {
-        start_collector(state_bg).await;
+        start_collector(state_bg, db).await;
     });
 
     tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;

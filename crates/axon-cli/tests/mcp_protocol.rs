@@ -83,7 +83,7 @@ fn test_tools_list() {
     let tools = resp["result"]["tools"]
         .as_array()
         .expect("tools should be an array");
-    assert_eq!(tools.len(), 4, "expected 4 tools, got {}", tools.len());
+    assert_eq!(tools.len(), 5, "expected 5 tools, got {}", tools.len());
 
     let names: Vec<&str> = tools
         .iter()
@@ -92,6 +92,7 @@ fn test_tools_list() {
     assert!(names.contains(&"hw_snapshot"));
     assert!(names.contains(&"process_blame"));
     assert!(names.contains(&"battery_status"));
+    assert!(names.contains(&"hardware_trend"));
     assert!(names.contains(&"system_profile"));
 
     // Each tool should have a description and inputSchema

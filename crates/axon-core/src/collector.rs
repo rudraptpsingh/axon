@@ -4,7 +4,7 @@ use sysinfo::System;
 use tokio::time::{interval, Duration};
 use tracing::debug;
 
-use crate::{alerts, ewma::EwmaStore, grouping, impact, temperature, types::*};
+use crate::{alerts, ewma::EwmaStore, grouping, impact, persistence, temperature, types::*};
 
 // ── Shared Application State ──────────────────────────────────────────────────
 
@@ -56,7 +56,7 @@ pub type SharedState = Arc<Mutex<AppState>>;
 
 /// Spawns a background Tokio task that refreshes hardware state every 2 seconds.
 /// Updates the SharedState in place for the MCP server to read.
-pub async fn start_collector(state: SharedState) {
+pub async fn start_collector(state: SharedState, db: persistence::DbHandle) {
     let mut sys = System::new_all();
     let mut ewma = EwmaStore::default();
     let mut tick_count: u32 = 0;
@@ -249,12 +249,19 @@ pub async fn start_collector(state: SharedState) {
         // ── Write to shared state ──────────────────────────────────────────
 
         let mut guard = state.lock().unwrap();
-        guard.hw = hw;
-        guard.blame = blame;
+        guard.hw = hw.clone();
+        guard.blame = blame.clone();
         guard.battery = battery;
         guard.processes = process_infos;
         guard.groups = groups;
         guard.pending_alerts.append(&mut new_alerts);
+        drop(guard);
+
+        // ── Persist snapshot every 15 ticks (~30s) ───────────────────────
+
+        if tick_count == 1 || tick_count % 15 == 0 {
+            persistence::insert_snapshot(&db, &hw, &blame);
+        }
     }
 }
 

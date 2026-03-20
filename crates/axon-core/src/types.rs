@@ -111,6 +111,29 @@ pub struct Alert {
     pub ts: DateTime<Utc>,
 }
 
+// ── Trend Types ──────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrendBucket {
+    pub bucket_start: DateTime<Utc>,
+    pub sample_count: u32,
+    pub cpu_avg: f64,
+    pub cpu_max: f64,
+    pub ram_avg: f64,
+    pub ram_max: f64,
+    pub temp_avg: Option<f64>,
+    pub temp_max: Option<f64>,
+    pub anomaly_count: u32,
+    pub throttle_count: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrendData {
+    pub buckets: Vec<TrendBucket>,
+    pub trend_direction: String,
+    pub total_snapshots: u32,
+}
+
 // ── MCP Response Envelope ─────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize)]

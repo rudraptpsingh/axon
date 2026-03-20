@@ -1,5 +1,6 @@
 use axon_core::{
     collector::SharedState,
+    persistence::{self, DbHandle},
     types::*,
 };
 use rmcp::{
@@ -15,18 +16,28 @@ use tokio::time::{interval, Duration};
 #[derive(Debug, ::serde::Deserialize, schemars::JsonSchema)]
 pub struct EmptyParams {}
 
+#[derive(Debug, ::serde::Deserialize, schemars::JsonSchema)]
+pub struct TrendParams {
+    #[schemars(description = "Time window: last_1h, last_6h, last_24h, last_7d, last_30d (default: last_24h)")]
+    pub time_range: Option<String>,
+    #[schemars(description = "Bucket interval: 1m, 5m, 15m, 1h, 1d (default: 15m)")]
+    pub interval: Option<String>,
+}
+
 // ── MCP Server ────────────────────────────────────────────────────────────────
 
 #[derive(Clone)]
 pub struct AxonServer {
     state: SharedState,
+    db: DbHandle,
     tool_router: ToolRouter<Self>,
 }
 
 impl AxonServer {
-    pub fn new(state: SharedState) -> Self {
+    pub fn new(state: SharedState, db: DbHandle) -> Self {
         Self {
             state,
+            db,
             tool_router: Self::tool_router(),
         }
     }
@@ -101,6 +112,45 @@ impl AxonServer {
         serde_json::to_string(&response)
             .unwrap_or_else(|e| format!("{{\"ok\":false,\"error\":\"{}\"}}", e))
     }
+
+    #[tool(
+        description = "Hardware trends over time: CPU, RAM, temperature averages and peaks per interval. Use to detect degradation patterns, justify hardware upgrades, or check if your Mac is getting slower. Accepts optional time_range (default: last_24h) and interval (default: 15m)."
+    )]
+    async fn hardware_trend(&self, params: Parameters<TrendParams>) -> String {
+        let range_str = params.0.time_range.as_deref().unwrap_or("last_24h");
+        let interval_str = params.0.interval.as_deref().unwrap_or("15m");
+
+        let range_secs = match persistence::parse_time_range(range_str) {
+            Some(s) => s,
+            None => {
+                return format!(
+                    "{{\"ok\":false,\"error\":\"Invalid time_range '{}'. Use: last_1h, last_6h, last_24h, last_7d, last_30d\"}}",
+                    range_str
+                );
+            }
+        };
+        let bucket_secs = match persistence::parse_interval(interval_str) {
+            Some(s) => s,
+            None => {
+                return format!(
+                    "{{\"ok\":false,\"error\":\"Invalid interval '{}'. Use: 1m, 5m, 15m, 1h, 1d\"}}",
+                    interval_str
+                );
+            }
+        };
+
+        match persistence::query_trend(&self.db, range_secs, bucket_secs) {
+            Ok(trend) => {
+                let narrative = trend_narrative(&trend, range_str);
+                let response = McpResponse::success(trend, narrative);
+                serde_json::to_string(&response)
+                    .unwrap_or_else(|e| format!("{{\"ok\":false,\"error\":\"{}\"}}", e))
+            }
+            Err(e) => {
+                format!("{{\"ok\":false,\"error\":\"{}\"}}", e)
+            }
+        }
+    }
 }
 
 #[tool_handler(router = self.tool_router)]
@@ -111,7 +161,8 @@ impl ServerHandler for AxonServer {
                 Call process_blame when your session lags. \
                 Call hw_snapshot for current system state. \
                 Call battery_status before long tasks. \
-                Call system_profile once for machine specs.",
+                Call system_profile once for machine specs. \
+                Call hardware_trend for historical CPU/RAM/temp trends.",
         )
     }
 }
@@ -155,6 +206,41 @@ fn blame_narrative(blame: &ProcessBlame) -> String {
     }
 }
 
+fn trend_narrative(trend: &TrendData, range: &str) -> String {
+    if trend.total_snapshots == 0 {
+        return format!("No data available for {}. Start axon and wait for snapshots to accumulate.", range);
+    }
+
+    let total_anomalies: u32 = trend.buckets.iter().map(|b| b.anomaly_count).sum();
+    let total_throttles: u32 = trend.buckets.iter().map(|b| b.throttle_count).sum();
+
+    let cpu_overall: f64 = if trend.buckets.is_empty() {
+        0.0
+    } else {
+        trend.buckets.iter().map(|b| b.cpu_avg).sum::<f64>() / trend.buckets.len() as f64
+    };
+
+    let ram_overall: f64 = if trend.buckets.is_empty() {
+        0.0
+    } else {
+        trend.buckets.iter().map(|b| b.ram_avg).sum::<f64>() / trend.buckets.len() as f64
+    };
+
+    let mut parts = vec![
+        format!("CPU {} (avg {:.0}%)", trend.trend_direction, cpu_overall),
+        format!("RAM avg {:.1}GB", ram_overall),
+    ];
+
+    if total_anomalies > 0 {
+        parts.push(format!("{} anomalies", total_anomalies));
+    }
+    if total_throttles > 0 {
+        parts.push(format!("{} throttle events", total_throttles));
+    }
+
+    format!("{} over {} ({} snapshots).", parts.join(", "), range, trend.total_snapshots)
+}
+
 // ── Alert Notification Sender ─────────────────────────────────────────────────
 
 async fn alert_sender(state: SharedState, peer: Peer<RoleServer>) {
@@ -189,8 +275,8 @@ async fn alert_sender(state: SharedState, peer: Peer<RoleServer>) {
 
 // ── Public Entry Point ────────────────────────────────────────────────────────
 
-pub async fn run_server(state: SharedState) -> anyhow::Result<()> {
-    let server = AxonServer::new(state.clone());
+pub async fn run_server(state: SharedState, db: DbHandle) -> anyhow::Result<()> {
+    let server = AxonServer::new(state.clone(), db);
     let transport = (tokio::io::stdin(), tokio::io::stdout());
     let running = server.serve(transport).await?;
 
