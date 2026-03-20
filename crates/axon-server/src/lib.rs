@@ -1,9 +1,14 @@
-use axon_core::{collector::SharedState, types::*};
+use axon_core::{
+    collector::SharedState,
+    types::*,
+};
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
-    model::{ServerCapabilities, ServerInfo},
-    schemars, tool, tool_handler, tool_router, ServerHandler, ServiceExt,
+    model::{LoggingLevel, LoggingMessageNotificationParam, ServerCapabilities, ServerInfo},
+    schemars, tool, tool_handler, tool_router, RoleServer, ServerHandler, ServiceExt,
+    service::Peer,
 };
+use tokio::time::{interval, Duration};
 
 // ── Tool Parameter Types ──────────────────────────────────────────────────────
 
@@ -150,12 +155,49 @@ fn blame_narrative(blame: &ProcessBlame) -> String {
     }
 }
 
+// ── Alert Notification Sender ─────────────────────────────────────────────────
+
+async fn alert_sender(state: SharedState, peer: Peer<RoleServer>) {
+    let mut ticker = interval(Duration::from_secs(2));
+    loop {
+        ticker.tick().await;
+
+        let alerts = {
+            let mut guard = state.lock().unwrap();
+            std::mem::take(&mut guard.pending_alerts)
+        };
+
+        for alert in alerts {
+            let level = match alert.severity {
+                AlertSeverity::Warning => LoggingLevel::Warning,
+                AlertSeverity::Critical => LoggingLevel::Critical,
+            };
+
+            let param = LoggingMessageNotificationParam {
+                level,
+                logger: Some("axon".to_string()),
+                data: serde_json::json!(alert.message).into(),
+            };
+
+            if let Err(e) = peer.notify_logging_message(param).await {
+                tracing::debug!("alert send failed (client may have disconnected): {}", e);
+                return;
+            }
+        }
+    }
+}
+
 // ── Public Entry Point ────────────────────────────────────────────────────────
 
 pub async fn run_server(state: SharedState) -> anyhow::Result<()> {
-    let server = AxonServer::new(state);
+    let server = AxonServer::new(state.clone());
     let transport = (tokio::io::stdin(), tokio::io::stdout());
     let running = server.serve(transport).await?;
+
+    // Spawn alert notification sender using the peer
+    let peer = running.peer().clone();
+    tokio::spawn(alert_sender(state, peer));
+
     running.waiting().await?;
     Ok(())
 }

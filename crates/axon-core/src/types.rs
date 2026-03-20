@@ -95,6 +95,22 @@ pub struct SystemProfile {
     pub axon_version: String,
 }
 
+// ── Alerts ───────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum AlertSeverity {
+    Warning,
+    Critical,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Alert {
+    pub severity: AlertSeverity,
+    pub message: String,
+    pub ts: DateTime<Utc>,
+}
+
 // ── MCP Response Envelope ─────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize)]

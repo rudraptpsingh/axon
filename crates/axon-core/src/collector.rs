@@ -4,7 +4,7 @@ use sysinfo::System;
 use tokio::time::{interval, Duration};
 use tracing::debug;
 
-use crate::{ewma::EwmaStore, grouping, impact, temperature, types::*};
+use crate::{alerts, ewma::EwmaStore, grouping, impact, temperature, types::*};
 
 // ── Shared Application State ──────────────────────────────────────────────────
 
@@ -15,6 +15,7 @@ pub struct AppState {
     pub profile: SystemProfile,
     pub processes: Vec<ProcessInfo>,
     pub groups: Vec<ProcessGroup>,
+    pub pending_alerts: Vec<Alert>,
 }
 
 impl AppState {
@@ -44,6 +45,7 @@ impl AppState {
             profile,
             processes: Vec::new(),
             groups: Vec::new(),
+            pending_alerts: Vec::new(),
         }
     }
 }
@@ -59,6 +61,11 @@ pub async fn start_collector(state: SharedState) {
     let mut ewma = EwmaStore::default();
     let mut tick_count: u32 = 0;
     let mut above_threshold_count: u32 = 0;
+
+    // Previous state for transition detection
+    let mut prev_ram_pressure = RamPressure::Normal;
+    let mut prev_throttling = false;
+    let mut prev_impact_level = ImpactLevel::Healthy;
 
     let mut ticker = interval(Duration::from_secs(2));
 
@@ -98,7 +105,7 @@ pub async fn start_collector(state: SharedState) {
             throttling,
             ram_used_gb,
             ram_total_gb,
-            ram_pressure,
+            ram_pressure: ram_pressure.clone(),
             cpu_usage_pct: cpu_pct,
             ts: chrono::Utc::now(),
         };
@@ -185,7 +192,7 @@ pub async fn start_collector(state: SharedState) {
 
         let blame = ProcessBlame {
             anomaly_type,
-            impact_level,
+            impact_level: impact_level.clone(),
             culprit,
             culprit_group,
             anomaly_score: score,
@@ -212,6 +219,33 @@ pub async fn start_collector(state: SharedState) {
             guard.battery.clone()
         };
 
+        // ── Alert generation (state transitions) ─────────────────────────
+
+        // Skip alerts during warm-up (first 3 ticks)
+        let mut new_alerts = if tick_count > 3 {
+            let a = alerts::detect_alerts(
+                &prev_ram_pressure,
+                &ram_pressure,
+                prev_throttling,
+                throttling,
+                die_temp,
+                ram_used_gb,
+                ram_total_gb,
+                &prev_impact_level,
+                &impact_level,
+                &blame.impact,
+            );
+            prev_ram_pressure = ram_pressure;
+            prev_throttling = throttling;
+            prev_impact_level = impact_level;
+            a
+        } else {
+            prev_ram_pressure = ram_pressure;
+            prev_throttling = throttling;
+            prev_impact_level = impact_level;
+            Vec::new()
+        };
+
         // ── Write to shared state ──────────────────────────────────────────
 
         let mut guard = state.lock().unwrap();
@@ -220,6 +254,7 @@ pub async fn start_collector(state: SharedState) {
         guard.battery = battery;
         guard.processes = process_infos;
         guard.groups = groups;
+        guard.pending_alerts.append(&mut new_alerts);
     }
 }
 

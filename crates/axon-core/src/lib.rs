@@ -1,3 +1,4 @@
+pub mod alerts;
 pub mod collector;
 pub mod ewma;
 pub mod grouping;
