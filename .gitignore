@@ -1,4 +1,14 @@
 /target
+
+# Local planning / launch docs (not for the public tree)
+LAUNCH.md
+POST.md
+ROADMAP.md
+
+# Demo assets (regenerate locally; ignore for now)
+*.gif
+*.tape
+
 .DS_Store
 *.swp
 *.swo
