@@ -34,9 +34,9 @@ enum Commands {
     /// Print current hardware snapshot as JSON
     Status,
 
-    /// Auto-configure Claude Desktop or Claude CLI to use mcp-station
+    /// Auto-configure an AI agent to use mcp-station
     Setup {
-        /// Target client: claude-desktop | claude-cli
+        /// Target client: claude-desktop | claude-cli | cursor
         #[arg(value_name = "TARGET")]
         target: String,
     },
@@ -57,8 +57,8 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
 
-    // Auto-setup Claude Desktop if not already configured
-    auto_setup_claude_desktop();
+    // Auto-setup all supported agents on first run
+    auto_setup_all();
 
     match cli.command {
         Some(Commands::Serve) | None => run_serve().await,
@@ -158,44 +158,47 @@ fn run_setup(target: &str) -> Result<()> {
     match target {
         "claude-desktop" => setup_claude_desktop(),
         "claude-cli" => setup_claude_cli(),
+        "cursor" => setup_cursor(),
         other => anyhow::bail!(
-            "Unknown target '{}'. Use 'claude-desktop' or 'claude-cli'.",
+            "Unknown target '{}'. Supported: claude-desktop, claude-cli, cursor",
             other
         ),
     }
 }
 
-// ── Auto-Setup ───────────────────────────────────────────────────────────────
+// ── Shared Helpers ───────────────────────────────────────────────────────────
 
-fn auto_setup_claude_desktop() {
-    let Some(home) = dirs::home_dir() else { return };
-    let config_path = home.join("Library/Application Support/Claude/claude_desktop_config.json");
+fn bin_path() -> std::path::PathBuf {
+    std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("mcp-station"))
+}
 
-    // Check if mcp-station is already configured
+fn mcp_entry() -> serde_json::Value {
+    serde_json::json!({
+        "command": bin_path().to_string_lossy(),
+        "args": ["serve"]
+    })
+}
+
+/// Upsert mcp-station into a JSON config file with `{ "mcpServers": { ... } }` format.
+/// Returns true if the file was written (i.e. not already configured).
+fn upsert_mcp_config(config_path: &std::path::Path) -> Result<bool> {
+    // Check if already configured
     if config_path.exists() {
-        if let Ok(raw) = std::fs::read_to_string(&config_path) {
+        if let Ok(raw) = std::fs::read_to_string(config_path) {
             if let Ok(config) = serde_json::from_str::<serde_json::Value>(&raw) {
-                if config.get("mcpServers")
+                if config
+                    .get("mcpServers")
                     .and_then(|s| s.get("mcp-station"))
                     .is_some()
                 {
-                    return; // Already configured
+                    return Ok(false);
                 }
             }
         }
     }
 
-    // Not configured yet — write config directly (no stdout to keep MCP clean)
-    let bin_path = std::env::current_exe()
-        .unwrap_or_else(|_| std::path::PathBuf::from("mcp-station"));
-    let mcp_entry = serde_json::json!({
-        "command": bin_path.to_string_lossy(),
-        "args": ["serve"]
-    });
-
-    let config_dir = home.join("Library/Application Support/Claude");
     let mut config: serde_json::Value = if config_path.exists() {
-        std::fs::read_to_string(&config_path)
+        std::fs::read_to_string(config_path)
             .ok()
             .and_then(|raw| serde_json::from_str(&raw).ok())
             .unwrap_or_else(|| serde_json::json!({}))
@@ -206,66 +209,90 @@ fn auto_setup_claude_desktop() {
     if config.get("mcpServers").is_none() {
         config["mcpServers"] = serde_json::json!({});
     }
-    config["mcpServers"]["mcp-station"] = mcp_entry;
+    config["mcpServers"]["mcp-station"] = mcp_entry();
 
-    if let Err(e) = std::fs::create_dir_all(&config_dir)
-        .and_then(|_| std::fs::write(&config_path, serde_json::to_string_pretty(&config).unwrap_or_default()))
-    {
-        eprintln!("Warning: auto-setup of Claude Desktop failed: {}", e);
-    } else {
-        eprintln!("Auto-configured Claude Desktop at {}", config_path.display());
+    if let Some(parent) = config_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(config_path, serde_json::to_string_pretty(&config)?)?;
+    Ok(true)
+}
+
+// ── Auto-Setup ───────────────────────────────────────────────────────────────
+
+fn auto_setup_all() {
+    let Some(home) = dirs::home_dir() else {
+        return;
+    };
+
+    // Claude Desktop
+    let claude_config = home.join("Library/Application Support/Claude/claude_desktop_config.json");
+    match upsert_mcp_config(&claude_config) {
+        Ok(true) => eprintln!(
+            "Auto-configured Claude Desktop at {}",
+            claude_config.display()
+        ),
+        Ok(false) => {}
+        Err(e) => eprintln!("Warning: auto-setup of Claude Desktop failed: {}", e),
+    }
+
+    // Cursor (global config)
+    let cursor_config = home.join(".cursor/mcp.json");
+    match upsert_mcp_config(&cursor_config) {
+        Ok(true) => eprintln!(
+            "Auto-configured Cursor at {}",
+            cursor_config.display()
+        ),
+        Ok(false) => {}
+        Err(e) => eprintln!("Warning: auto-setup of Cursor failed: {}", e),
     }
 }
 
 // ── Setup Helpers ─────────────────────────────────────────────────────────────
 
 fn setup_claude_desktop() -> Result<()> {
-    let config_dir = dirs::home_dir()
+    let config_path = dirs::home_dir()
         .ok_or_else(|| anyhow::anyhow!("Cannot find home directory"))?
-        .join("Library/Application Support/Claude");
+        .join("Library/Application Support/Claude/claude_desktop_config.json");
 
-    let config_path = config_dir.join("claude_desktop_config.json");
-
-    // Use full path to binary since Claude Desktop has a limited PATH
-    let bin_path = std::env::current_exe()
-        .unwrap_or_else(|_| std::path::PathBuf::from("mcp-station"));
-
-    let mcp_entry = serde_json::json!({
-        "command": bin_path.to_string_lossy(),
-        "args": ["serve"]
-    });
-
-    // Read existing config or start fresh
-    let mut config: serde_json::Value = if config_path.exists() {
-        let raw = std::fs::read_to_string(&config_path)?;
-        serde_json::from_str(&raw).unwrap_or_else(|_| serde_json::json!({}))
+    let wrote = upsert_mcp_config(&config_path)?;
+    if wrote {
+        println!("✅  Updated {}", config_path.display());
+        println!("    Restart Claude Desktop to apply changes.");
     } else {
-        serde_json::json!({})
-    };
-
-    // Ensure mcpServers key exists
-    if config.get("mcpServers").is_none() {
-        config["mcpServers"] = serde_json::json!({});
+        println!("✅  Already configured at {}", config_path.display());
     }
-    config["mcpServers"]["mcp-station"] = mcp_entry;
+    Ok(())
+}
 
-    std::fs::create_dir_all(&config_dir)?;
-    std::fs::write(&config_path, serde_json::to_string_pretty(&config)?)?;
+fn setup_cursor() -> Result<()> {
+    let config_path = dirs::home_dir()
+        .ok_or_else(|| anyhow::anyhow!("Cannot find home directory"))?
+        .join(".cursor/mcp.json");
 
-    println!("✅  Updated {}", config_path.display());
-    println!("    Restart Claude Desktop to apply changes.");
-    println!();
-    println!("    To verify: open Claude Desktop and run:");
-    println!("    \"Call mcp-station's system_profile tool\"");
+    let wrote = upsert_mcp_config(&config_path)?;
+    if wrote {
+        println!("✅  Updated {}", config_path.display());
+        println!("    Restart Cursor to apply changes.");
+    } else {
+        println!("✅  Already configured at {}", config_path.display());
+    }
     Ok(())
 }
 
 fn setup_claude_cli() -> Result<()> {
     use std::process::Command;
 
-    // claude mcp add mcp-station -- mcp-station serve
+    let full_path = bin_path();
     let status = Command::new("claude")
-        .args(["mcp", "add", "mcp-station", "--", "mcp-station", "serve"])
+        .args([
+            "mcp",
+            "add",
+            "mcp-station",
+            "--",
+            &full_path.to_string_lossy(),
+            "serve",
+        ])
         .status();
 
     match status {
@@ -275,8 +302,7 @@ fn setup_claude_cli() -> Result<()> {
         }
         Ok(_) => {
             anyhow::bail!(
-                "claude mcp add failed. Check that 'mcp-station' is in your PATH \
-                (run: which mcp-station) and that Claude CLI is installed."
+                "claude mcp add failed. Check that Claude CLI is installed."
             );
         }
         Err(_) => {
@@ -285,10 +311,7 @@ fn setup_claude_cli() -> Result<()> {
             println!(
                 "{}",
                 serde_json::to_string_pretty(&serde_json::json!({
-                    "mcp-station": {
-                        "command": "mcp-station",
-                        "args": ["serve"]
-                    }
+                    "mcp-station": mcp_entry()
                 }))?
             );
         }
