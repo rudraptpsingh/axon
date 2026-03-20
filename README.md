@@ -17,12 +17,15 @@ $ axon diagnose
 ## Install
 
 ```bash
+# Homebrew (recommended)
+brew tap rudraptpsingh/axon
+brew install axon
+
 # From source (requires Rust toolchain)
 cargo install --path crates/axon-cli
-
-# axon auto-configures Claude Desktop, Cursor, and VS Code on first run.
-# Just restart your agent after installing.
 ```
+
+axon auto-configures Claude Desktop, Cursor, and VS Code on first run. Just restart your agent after installing.
 
 ## What It Does
 
