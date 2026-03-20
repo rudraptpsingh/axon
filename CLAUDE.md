@@ -8,12 +8,12 @@ axon is a zero-cloud, privacy-first MCP (Model Context Protocol) server that giv
 
 ```
 crates/
-  axon-core/     # Data types, EWMA baseline tracker, impact engine, collector loop
+  axon-core/     # Data types, EWMA baseline tracker, impact engine, process grouping, collector loop
   axon-server/   # MCP server (4 tools via rmcp #[tool_router])
   axon-cli/      # Binary: serve | diagnose | status | setup
 ```
 
-- **axon-core** is a library crate. All data types live in `types.rs`. The collector loop in `collector.rs` runs every 2 seconds, refreshing sysinfo and updating per-process EWMA baselines.
+- **axon-core** is a library crate. All data types live in `types.rs`. The collector loop in `collector.rs` runs every 2 seconds, refreshing sysinfo and updating per-process EWMA baselines. Process grouping in `grouping.rs` aggregates child processes by app name (e.g., Chrome helpers → "Google Chrome").
 - **axon-server** exposes 4 MCP tools over stdio: `hw_snapshot`, `process_blame`, `battery_status`, `system_profile`. Uses rmcp 1.x with `#[tool_router]` and `#[tool_handler]` macros.
 - **axon-cli** is the binary entry point (package name `axon`). It auto-configures Claude Desktop, Cursor, and VS Code on first run.
 
@@ -29,14 +29,11 @@ crates/
 ## Build & Test
 
 ```bash
-cargo build                    # Debug build
-cargo install --path crates/axon-cli  # Install to ~/.cargo/bin
-axon diagnose                  # Quick smoke test: collects 4s of data, prints culprit
-```
-
-To test MCP protocol manually:
-```bash
-echo '{"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"0.1.0"}},"jsonrpc":"2.0","id":0}' | axon serve 2>/dev/null
+cargo build                                # Debug build
+cargo test --workspace                     # Unit tests (25 tests)
+cargo test --workspace -- --ignored        # Integration tests (7 tests, ~10s)
+cargo install --path crates/axon-cli       # Install to ~/.cargo/bin
+axon diagnose                              # Quick smoke test
 ```
 
 ## Code Conventions
@@ -64,5 +61,6 @@ The CLI supports: `claude-desktop`, `claude-code`, `cursor`, `vscode`. Each writ
 - Do not add network calls or telemetry of any kind
 - Do not write to stdout from the server path (breaks MCP JSON-RPC)
 - Do not use `std::sync::Mutex` in async code paths without careful consideration (current usage is safe because locks are held briefly)
-- Do not add GPU monitoring yet (Phase 2)
+- Do not add GPU monitoring yet (Phase 3)
 - Do not add persistence/SQLite yet (Phase 2)
+- Do not add team/fleet APIs yet (Phase 3)

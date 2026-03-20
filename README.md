@@ -4,16 +4,14 @@ Local hardware intelligence for AI coding agents. Zero cloud. Zero telemetry. Pu
 
 axon is an [MCP](https://modelcontextprotocol.io/) server that gives AI agents (Claude Desktop, Cursor, VS Code, Claude Code) real-time awareness of your Mac's hardware state: what process is slowing things down, how to fix it, and whether your machine can handle the next task.
 
-![axon demo](demo.gif)
-
 ```
 $ axon diagnose
 
-[warn] Cursor (PID 1234)  --  210% CPU,  13.8GB RAM
-       Impact: System is overloaded. Your session may freeze or crash.
-       Fix:    Restart Cursor or close unused tabs (Cmd+W).
-       Temp:   87C  [THROTTLING]
-       Battery: Battery at 12% and discharging. Estimated 38 minutes remaining.
+[warn] Cursor (2 processes)  --  204% CPU,  0.2GB RAM
+       Impact: System is under load. You may notice minor slowdowns.
+       Fix:    Restart Cursor or close unused editor tabs (Cmd+W).
+       Temp:   73C
+       Battery: Battery at 80% and charging.
 ```
 
 ## Install
@@ -46,13 +44,19 @@ The hero tool is `process_blame`. When your AI session lags, the agent calls it 
 {
   "ok": true,
   "data": {
-    "anomaly_type": "memory_pressure",
-    "impact_level": "strained",
-    "culprit": {"pid": 1234, "cmd": "Cursor", "cpu_pct": 210.0, "ram_gb": 13.8},
-    "impact": "System is slowing down. Applications may lag or become unresponsive.",
-    "fix": "Restart Cursor or close unused tabs (Cmd+W)."
+    "anomaly_type": "general_slowdown",
+    "impact_level": "degrading",
+    "culprit": {"pid": 80630, "cmd": "Cursor Helper (Renderer)", "cpu_pct": 101.1, "ram_gb": 0.1},
+    "culprit_group": {
+      "name": "Cursor",
+      "process_count": 2,
+      "total_cpu_pct": 201.5,
+      "total_ram_gb": 0.1
+    },
+    "impact": "System is under load. You may notice minor slowdowns.",
+    "fix": "Restart Cursor or close unused editor tabs (Cmd+W)."
   },
-  "narrative": "Cursor (PID 1234, 210% CPU, 13.8GB RAM) -- System is slowing down..."
+  "narrative": "Cursor (0.1GB across 2 processes, 202% CPU) -- System is under load..."
 }
 ```
 
@@ -60,9 +64,10 @@ The hero tool is `process_blame`. When your AI session lags, the agent calls it 
 
 1. A background collector loop refreshes hardware state every 2 seconds via `sysinfo`
 2. Per-process EWMA (Exponentially Weighted Moving Average) baselines detect anomalous resource usage
-3. Multi-signal scoring (40% RAM + 30% CPU + 30% swap) classifies system health into 4 tiers
-4. A persistence filter requires 3+ consecutive anomalous samples before escalating, avoiding false positives on transient spikes
-5. Process-specific fix suggestions are returned for known resource hogs (Cursor, cargo, node, Docker, Ollama, etc.)
+3. Process grouping aggregates child processes by app (e.g., 47 Chrome helpers become one "Google Chrome" group)
+4. Multi-signal scoring (40% RAM + 30% CPU + 30% swap) classifies system health into 4 tiers
+5. A persistence filter requires 3+ consecutive anomalous samples before escalating, avoiding false positives on transient spikes
+6. Process-specific fix suggestions are returned for known resource hogs (Cursor, cargo, node, Docker, Ollama, etc.)
 
 ## CLI Commands
 

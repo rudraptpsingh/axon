@@ -55,10 +55,22 @@ pub struct ProcessInfo {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProcessGroup {
+    pub name: String,
+    pub process_count: usize,
+    pub total_cpu_pct: f64,
+    pub total_ram_gb: f64,
+    pub blame_score: f64,
+    pub top_pid: u32,
+    pub pids: Vec<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProcessBlame {
     pub anomaly_type: AnomalyType,
     pub impact_level: ImpactLevel,
     pub culprit: Option<ProcessInfo>,
+    pub culprit_group: Option<ProcessGroup>,
     pub anomaly_score: f64,
     pub impact: String,
     pub fix: String,

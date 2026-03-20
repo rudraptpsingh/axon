@@ -131,6 +131,16 @@ fn hw_narrative(hw: &HwSnapshot) -> String {
 }
 
 fn blame_narrative(blame: &ProcessBlame) -> String {
+    // Prefer group narrative when multiple processes are grouped
+    if let Some(g) = &blame.culprit_group {
+        if blame.anomaly_score > 0.1 && g.process_count > 1 {
+            return format!(
+                "{} ({:.1}GB across {} processes, {:.0}% CPU) — {} {}",
+                g.name, g.total_ram_gb, g.process_count, g.total_cpu_pct,
+                blame.impact, blame.fix
+            );
+        }
+    }
     match &blame.culprit {
         Some(p) if blame.anomaly_score > 0.1 => format!(
             "{} (PID {}, {:.0}% CPU, {:.1}GB RAM) — {} {}",

@@ -4,7 +4,7 @@ use sysinfo::System;
 use tokio::time::{interval, Duration};
 use tracing::debug;
 
-use crate::{ewma::EwmaStore, impact, temperature, types::*};
+use crate::{ewma::EwmaStore, grouping, impact, temperature, types::*};
 
 // ── Shared Application State ──────────────────────────────────────────────────
 
@@ -14,6 +14,7 @@ pub struct AppState {
     pub battery: Option<BatteryStatus>,
     pub profile: SystemProfile,
     pub processes: Vec<ProcessInfo>,
+    pub groups: Vec<ProcessGroup>,
 }
 
 impl AppState {
@@ -33,6 +34,7 @@ impl AppState {
                 anomaly_type: AnomalyType::None,
                 impact_level: ImpactLevel::Healthy,
                 culprit: None,
+                culprit_group: None,
                 anomaly_score: 0.0,
                 impact: "System is healthy. No action needed.".to_string(),
                 fix: "No action needed.".to_string(),
@@ -41,6 +43,7 @@ impl AppState {
             battery: None,
             profile,
             processes: Vec::new(),
+            groups: Vec::new(),
         }
     }
 }
@@ -175,13 +178,16 @@ pub async fn start_collector(state: SharedState) {
 
         let impact_level = impact::score_to_level(score, above_threshold_count);
         let culprit = process_infos.first().cloned();
+        let groups = grouping::build_groups(&process_infos);
+        let culprit_group = groups.first().cloned();
         let impact_msg = impact::impact_message(&impact_level, &anomaly_type);
-        let fix = impact::suggest_fix(culprit.as_ref(), &anomaly_type);
+        let fix = impact::suggest_fix(culprit.as_ref(), culprit_group.as_ref(), &anomaly_type);
 
         let blame = ProcessBlame {
             anomaly_type,
             impact_level,
             culprit,
+            culprit_group,
             anomaly_score: score,
             impact: impact_msg,
             fix,
@@ -213,6 +219,7 @@ pub async fn start_collector(state: SharedState) {
         guard.blame = blame;
         guard.battery = battery;
         guard.processes = process_infos;
+        guard.groups = groups;
     }
 }
 

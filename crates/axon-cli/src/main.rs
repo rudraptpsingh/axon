@@ -105,8 +105,27 @@ async fn run_diagnose() -> Result<()> {
     let hw = &guard.hw;
 
     println!();
-    match &blame.culprit {
-        Some(p) if blame.anomaly_score > 0.10 => {
+    // Prefer group display when multiple processes are grouped
+    if let Some(g) = &blame.culprit_group {
+        if blame.anomaly_score > 0.10 && g.process_count > 1 {
+            println!(
+                "[warn] {} ({} processes)  --  {:.0}% CPU,  {:.1}GB RAM",
+                g.name, g.process_count, g.total_cpu_pct, g.total_ram_gb
+            );
+            println!("       Impact: {}", blame.impact);
+            println!("       Fix:    {}", blame.fix);
+        } else if let Some(p) = &blame.culprit {
+            if blame.anomaly_score > 0.10 {
+                println!(
+                    "[warn] {} (PID {})  --  {:.0}% CPU,  {:.1}GB RAM",
+                    p.cmd, p.pid, p.cpu_pct, p.ram_gb
+                );
+                println!("       Impact: {}", blame.impact);
+                println!("       Fix:    {}", blame.fix);
+            }
+        }
+    } else if let Some(p) = &blame.culprit {
+        if blame.anomaly_score > 0.10 {
             println!(
                 "[warn] {} (PID {})  --  {:.0}% CPU,  {:.1}GB RAM",
                 p.cmd, p.pid, p.cpu_pct, p.ram_gb
@@ -114,13 +133,17 @@ async fn run_diagnose() -> Result<()> {
             println!("       Impact: {}", blame.impact);
             println!("       Fix:    {}", blame.fix);
         }
-        _ => {
-            println!("[ok]  System is healthy. No significant anomalies detected.");
-            println!(
-                "      CPU: {:.0}%   RAM: {:.1}/{:.0}GB",
-                hw.cpu_usage_pct, hw.ram_used_gb, hw.ram_total_gb
-            );
-        }
+    }
+
+    // Show healthy state if no warning was printed
+    let showed_warning = blame.anomaly_score > 0.10
+        && (blame.culprit.is_some() || blame.culprit_group.is_some());
+    if !showed_warning {
+        println!("[ok]  System is healthy. No significant anomalies detected.");
+        println!(
+            "      CPU: {:.0}%   RAM: {:.1}/{:.0}GB",
+            hw.cpu_usage_pct, hw.ram_used_gb, hw.ram_total_gb
+        );
     }
 
     if let Some(t) = hw.die_temp_celsius {
