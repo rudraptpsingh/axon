@@ -153,6 +153,7 @@ fn blame_narrative(blame: &ProcessBlame) -> String {
 pub async fn run_server(state: SharedState) -> anyhow::Result<()> {
     let server = McpStation::new(state);
     let transport = (tokio::io::stdin(), tokio::io::stdout());
-    server.serve(transport).await?;
+    let running = server.serve(transport).await?;
+    running.waiting().await?;
     Ok(())
 }
