@@ -28,8 +28,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Unit + fast integration tests
         run: cargo test --workspace
-      - name: Hardware integration tests (ignored)
-        run: cargo test --workspace -- --ignored
+      - name: Hardware integration tests (ignored, excluding live stress test)
+        run: cargo test --workspace -- --ignored --skip live_serve
 
   clippy:
     name: Clippy

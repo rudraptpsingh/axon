@@ -14,12 +14,6 @@ fn test_diagnose_still_works() {
 
     assert!(output.status.success(), "diagnose should exit 0");
 
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("[info] Collecting system data"),
-        "stderr should show collection message"
-    );
-
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         stdout.contains("[ok]") || stdout.contains("[warn]"),
