@@ -42,6 +42,8 @@ pub struct HwSnapshot {
     pub ram_total_gb: f64,
     pub ram_pressure: RamPressure,
     pub cpu_usage_pct: f64,
+    pub disk_used_gb: f64,
+    pub disk_total_gb: f64,
     pub ts: DateTime<Utc>,
 }
 
