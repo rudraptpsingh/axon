@@ -1,8 +1,14 @@
 # axon
 
-Local hardware intelligence for AI coding agents. Zero cloud. Zero telemetry. Pure local.
+**Your AI agent has no idea your machine is throttling.**
 
-axon is an [MCP](https://modelcontextprotocol.io/) server that gives AI agents (Claude Desktop, Cursor, VS Code, Claude Code) real-time awareness of your Mac's hardware state: what process is slowing things down, how to fix it, and whether your machine can handle the next task.
+It keeps going. More tokens. More confusion. Same degraded hardware. A single `cargo build` pegs the CPU, thermal throttle kicks in, and your agent burns 3,000 tokens trying to figure out why everything is slow -- when the answer is one tool call away.
+
+axon is an [MCP](https://modelcontextprotocol.io/) server that gives AI agents real-time hardware awareness. It tells the agent what process is slowing things down, how to fix it, and whether the machine can handle the next task.
+
+Works with Claude Desktop, Cursor, VS Code, and Claude Code. macOS today. Linux and Windows coming.
+
+![axon diagnose](tapes/demo.gif)
 
 ```
 $ axon diagnose
@@ -16,6 +22,8 @@ $ axon diagnose
 
 ## Install
 
+![Install and setup](tapes/demo-setup.gif)
+
 ```bash
 # Homebrew (recommended)
 brew tap rudraptpsingh/axon
@@ -25,7 +33,14 @@ brew install axon
 cargo install --path crates/axon-cli
 ```
 
-axon auto-configures Claude Desktop, Cursor, and VS Code on first run. Just restart your agent after installing.
+After installing, configure your agents:
+
+```bash
+axon setup              # configures all detected agents
+axon setup claude-code  # or configure a specific agent
+```
+
+Then restart your agent.
 
 ## What It Does
 
@@ -36,10 +51,12 @@ axon exposes 5 MCP tools that any compatible agent can call:
 | `process_blame` | Identify the top culprit process, its impact severity, and a specific fix |
 | `hw_snapshot` | CPU usage, die temperature, RAM used/total, pressure level, throttling state |
 | `battery_status` | Battery percentage, charging state, estimated time remaining |
-| `system_profile` | Machine model, chip, core count, total RAM, macOS version |
+| `system_profile` | Machine model, chip, core count, total RAM, OS version |
 | `hardware_trend` | Historical CPU/RAM/temp trends over a time window (last_1h to last_30d) |
 
 The hero tool is `process_blame`. When your AI session lags, the agent calls it and gets back:
+
+![Detect, blame, fix, verify](tapes/demo-detect.gif)
 
 ```json
 {
@@ -61,6 +78,20 @@ The hero tool is `process_blame`. When your AI session lags, the agent calls it 
 }
 ```
 
+Without hardware context, the agent guesses: "Let me try -j 4 instead of -j 8... still slow... let me check ps aux..." That's 2,000-3,000 tokens of confused exploration. With `process_blame`, it gets the answer in ~200 tokens and can act immediately.
+
+## For AI Agents
+
+If you are an AI agent with axon available as an MCP tool, here is when to use each tool:
+
+- **Session start** -- call `system_profile` once to understand the machine you are running on (chip, cores, RAM, OS). This is cached and cheap.
+- **Build slow or session lagging** -- call `process_blame` to identify what is causing the slowdown and get a specific fix. This is your primary diagnostic tool.
+- **Before starting a heavy task** (large build, test suite, code generation) -- call `hw_snapshot` to check if the machine has headroom. If RAM pressure is warn/critical or CPU is saturated, suggest the user close other applications first.
+- **Battery concerns** -- call `battery_status` to check remaining charge. If battery is low and not charging, warn the user before starting long-running tasks.
+- **Investigating performance over time** -- call `hardware_trend` with a time range (last_1h, last_6h, last_24h, last_7d, last_30d) to see if the machine is degrading or if there is a pattern.
+
+All tools return structured JSON with an `ok` boolean, timestamp, data payload, and a human-readable `narrative` field.
+
 ## How It Works
 
 1. A background collector loop refreshes hardware state every 2 seconds via `sysinfo`
@@ -69,7 +100,7 @@ The hero tool is `process_blame`. When your AI session lags, the agent calls it 
 4. Multi-signal scoring (40% RAM + 30% CPU + 30% swap) classifies system health into 4 tiers
 5. A persistence filter requires 2+ consecutive anomalous samples before escalating, avoiding false positives on transient spikes
 6. Process-specific fix suggestions are returned for known resource hogs (Cursor, cargo, node, Docker, Ollama, etc.)
-7. Hardware snapshots and alerts are persisted to a local SQLite database (`~/.local/share/axon/hardware.db`) for trend queries and alert history
+7. Hardware snapshots and alerts are persisted to a local SQLite database for trend queries and alert history
 
 ## CLI Commands
 
@@ -77,12 +108,13 @@ The hero tool is `process_blame`. When your AI session lags, the agent calls it 
 axon serve              # Start MCP stdio server (default, used by agents)
 axon diagnose           # One-shot: collect 4s of data, print the culprit
 axon status             # Print current hardware snapshot as JSON
+axon query <tool>       # Call an MCP tool directly (e.g., axon query process_blame)
 axon setup <target>     # Configure an agent (claude-desktop, claude-code, cursor, vscode)
 ```
 
 ## Agent Setup
 
-axon auto-configures supported agents on first run. You can also set up manually:
+Run `axon setup` after installing to configure your agents:
 
 ```bash
 axon setup claude-desktop   # Writes claude_desktop_config.json
@@ -104,6 +136,27 @@ Or add to any MCP-compatible agent's config manually:
 }
 ```
 
+## Alerts
+
+axon fires edge-triggered alerts on state transitions -- not every tick. RAM pressure spikes, thermal throttle onset, impact escalation. Delivered via webhook POST or MCP logging notifications.
+
+![Live alert firing](tapes/demo-alerts-live.gif)
+
+Configure with a one-line flag or a config file:
+
+![Alert config](tapes/demo-alerts-config.gif)
+
+```bash
+# One-line flag
+axon serve --alert-webhook myapp=https://yourapp.com/alerts
+
+# Or config file at ~/.config/axon/alert-dispatch.json
+```
+
+After an alert fires, the agent queries full context:
+
+![Agent queries blame after alert](tapes/demo-alerts-query.gif)
+
 ## Architecture
 
 ```
@@ -117,12 +170,12 @@ Key design decisions:
 - **Privacy by architecture** -- no network calls, no telemetry, no cloud. Data never leaves your machine.
 - **stdio transport** -- universal MCP compatibility with all current agents.
 - **EWMA baselines** -- simple, effective anomaly detection at 2-second granularity.
-- **SQLite persistence** -- snapshots every 10s, alerts on state transitions. Powers `hardware_trend` and alert history. DB at `~/.local/share/axon/hardware.db`.
-- **Edge-triggered alerts** -- fire once on state transitions (Normal→Warn, Healthy→Strained), not on every tick. Delivered via webhook POST or MCP logging notifications.
+- **SQLite persistence** -- snapshots every 10s, alerts on state transitions. Powers `hardware_trend` and alert history.
+- **Edge-triggered alerts** -- fire once on state transitions (Normal->Warn, Healthy->Strained), not on every tick. Delivered via webhook POST or MCP logging notifications.
 
 ## Requirements
 
-- macOS (Apple Silicon or Intel)
+- macOS (Apple Silicon or Intel). Linux and Windows support planned -- the underlying `sysinfo` crate already supports both platforms.
 - Rust 1.75+ (for building from source)
 
 ## License

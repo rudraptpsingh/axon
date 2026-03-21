@@ -24,19 +24,30 @@ Automated proof that POST delivery works: cargo test -p axon-core --test alert_i
 """
 from __future__ import annotations
 
+import argparse
 import json
 import sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(description="Minimal axon webhook receiver")
+    parser.add_argument("--output-file", metavar="PATH", help="Write each alert JSON to this file (overwrites)")
+    args = parser.parse_args()
+
+    output_file: str | None = args.output_file
+
     class H(BaseHTTPRequestHandler):
         def do_POST(self) -> None:
             ln = int(self.headers.get("Content-Length", 0))
             raw = self.rfile.read(ln)
             try:
                 obj = json.loads(raw)
-                print(json.dumps(obj, indent=2), flush=True)
+                formatted = json.dumps(obj, indent=2)
+                print(formatted, flush=True)
+                if output_file:
+                    with open(output_file, "w") as f:
+                        f.write(formatted + "\n")
             except json.JSONDecodeError:
                 print(raw.decode(errors="replace"), flush=True)
             self.send_response(200)

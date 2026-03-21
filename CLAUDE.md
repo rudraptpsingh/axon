@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-axon is a zero-cloud, privacy-first MCP (Model Context Protocol) server that gives AI coding agents real-time local hardware awareness on macOS. It tells developers what is slowing their Mac and how to fix it -- without sending a single byte off-device.
+axon is a zero-cloud, privacy-first MCP (Model Context Protocol) server that gives AI coding agents real-time local hardware awareness. It tells developers what is slowing their machine and how to fix it -- without sending a single byte off-device. Currently targets macOS; Linux and Windows support planned.
 
 ## Architecture
 
@@ -10,12 +10,12 @@ axon is a zero-cloud, privacy-first MCP (Model Context Protocol) server that giv
 crates/
   axon-core/     # Data types, EWMA baseline tracker, impact engine, process grouping, collector loop
   axon-server/   # MCP server (5 tools via rmcp #[tool_router])
-  axon-cli/      # Binary: serve | diagnose | status | setup
+  axon-cli/      # Binary: serve | diagnose | status | setup | query
 ```
 
 - **axon-core** is a library crate. All data types live in `types.rs`. The collector loop in `collector.rs` runs every 2 seconds, refreshing sysinfo and updating per-process EWMA baselines. Process grouping in `grouping.rs` aggregates child processes by app name (e.g., Chrome helpers → "Google Chrome").
 - **axon-server** exposes 5 MCP tools over stdio: `hw_snapshot`, `process_blame`, `battery_status`, `system_profile`, `hardware_trend`. Uses rmcp 1.x with `#[tool_router]` and `#[tool_handler]` macros.
-- **axon-cli** is the binary entry point (package name `axon`). It auto-configures Claude Desktop, Cursor, and VS Code on first run.
+- **axon-cli** is the binary entry point (package name `axon`). Agent setup is explicit via `axon setup` (supports claude-desktop, claude-code, cursor, vscode).
 
 ## Key Technical Details
 
@@ -63,7 +63,7 @@ Live webhook E2E (needs release binary; may wait up to `ALERT_E2E_WAIT` seconds)
 
 ## Agent Setup Targets
 
-The CLI supports: `claude-desktop`, `claude-code`, `cursor`, `vscode`. Each writes to the agent's config file using the appropriate JSON structure. Auto-setup runs silently on every invocation if not already configured.
+The CLI supports: `claude-desktop`, `claude-code`, `cursor`, `vscode`. Each writes to the agent's config file using the appropriate JSON structure. Setup is explicit via `axon setup [target]`.
 
 ## What NOT To Do
 

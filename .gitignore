@@ -5,9 +5,12 @@ LAUNCH.md
 POST.md
 ROADMAP.md
 
-# Demo assets (regenerate locally; ignore for now)
+# Demo GIFs (regenerate from tapes/ via vhs)
 *.gif
-*.tape
+# Tape files outside tapes/ dir
+/demo*.tape
+
+/articles
 
 .DS_Store
 *.swp
