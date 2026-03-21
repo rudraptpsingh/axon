@@ -26,7 +26,10 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test --workspace
+      - name: Unit + fast integration tests
+        run: cargo test --workspace
+      - name: Hardware integration tests (ignored)
+        run: cargo test --workspace -- --ignored
 
   clippy:
     name: Clippy
