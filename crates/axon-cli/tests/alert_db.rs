@@ -36,10 +36,7 @@ fn test_diagnose_creates_db_and_alerts() {
 
     // Snapshots should have rows
     let count = Command::new("sqlite3")
-        .args([
-            db_path.to_str().unwrap(),
-            "SELECT COUNT(*) FROM snapshots;",
-        ])
+        .args([db_path.to_str().unwrap(), "SELECT COUNT(*) FROM snapshots;"])
         .output()
         .expect("sqlite3");
     let n: i64 = String::from_utf8_lossy(&count.stdout)
@@ -67,7 +64,14 @@ fn test_alert_schema_has_required_columns() {
         .expect("sqlite3");
     let schema_str = String::from_utf8_lossy(&schema.stdout);
 
-    for col in &["id", "ts", "severity", "alert_type", "message", "metadata_json"] {
+    for col in &[
+        "id",
+        "ts",
+        "severity",
+        "alert_type",
+        "message",
+        "metadata_json",
+    ] {
         assert!(
             schema_str.contains(col),
             "alerts schema missing column: {}",

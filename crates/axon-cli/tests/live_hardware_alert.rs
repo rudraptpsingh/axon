@@ -258,10 +258,7 @@ fn live_serve_triggers_alert_webhook_or_sqlite() {
 
     // Use an external RAM hog process so memory can be force-released via kill/wait.
     let mut ram_hog = spawn_ram_hog(CHUNK_MB, MAX_CHUNKS);
-    eprintln!(
-        "[live] ram hog process started={}",
-        ram_hog.is_some()
-    );
+    eprintln!("[live] ram hog process started={}", ram_hog.is_some());
     // For a deterministic memory-pressure edge, target "critical + headroom" and also require a
     // meaningful rise from the local baseline.
     let target_ram_pct = (thresholds::RAM_PCT_CRITICAL + 1.0).max(baseline_ram_pct + 6.0);
@@ -388,4 +385,3 @@ fn live_serve_triggers_alert_webhook_or_sqlite() {
         );
     }
 }
-

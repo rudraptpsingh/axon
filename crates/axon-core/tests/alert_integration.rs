@@ -1361,7 +1361,12 @@ fn test_alert_full_collector_cycle_mock() {
     let mut prev_impact = ImpactLevel::Degrading;
 
     // Tick 4: first dispatch tick — RAM already Warn, impact Degrading (no new edges since warm-up)
-    let ctx = base_ctx(&prev_ram, &RamPressure::Warn, &prev_impact, &ImpactLevel::Degrading);
+    let ctx = base_ctx(
+        &prev_ram,
+        &RamPressure::Warn,
+        &prev_impact,
+        &ImpactLevel::Degrading,
+    );
     let alerts = detect_alerts(&ctx);
     total_alerts += alerts.len();
     assert!(alerts.is_empty(), "tick 4: no edge after warm-up catch-up");
@@ -1369,7 +1374,12 @@ fn test_alert_full_collector_cycle_mock() {
     prev_impact = ImpactLevel::Degrading;
 
     // Tick 5: RAM escalates to Critical (edge: Warn→Critical)
-    let ctx = base_ctx(&prev_ram, &RamPressure::Critical, &prev_impact, &ImpactLevel::Degrading);
+    let ctx = base_ctx(
+        &prev_ram,
+        &RamPressure::Critical,
+        &prev_impact,
+        &ImpactLevel::Degrading,
+    );
     let a = detect_alerts(&ctx);
     assert_eq!(a.len(), 1, "tick 5: Warn→Critical must produce 1 alert");
     assert_eq!(a[0].alert_type, AlertType::MemoryPressure);
@@ -1377,23 +1387,42 @@ fn test_alert_full_collector_cycle_mock() {
     prev_ram = RamPressure::Critical;
 
     // Tick 6: stable Critical RAM, impact escalates to Strained
-    let ctx = base_ctx(&prev_ram, &RamPressure::Critical, &prev_impact, &ImpactLevel::Strained);
+    let ctx = base_ctx(
+        &prev_ram,
+        &RamPressure::Critical,
+        &prev_impact,
+        &ImpactLevel::Strained,
+    );
     let a = detect_alerts(&ctx);
-    assert_eq!(a.len(), 1, "tick 6: Degrading→Strained must produce 1 alert");
+    assert_eq!(
+        a.len(),
+        1,
+        "tick 6: Degrading→Strained must produce 1 alert"
+    );
     assert_eq!(a[0].alert_type, AlertType::ImpactEscalation);
     total_alerts += a.len();
     prev_impact = ImpactLevel::Strained;
 
     // Ticks 7-8: stable (Critical RAM, Strained impact) — no alerts
     for tick in 7..=8 {
-        let ctx = base_ctx(&prev_ram, &RamPressure::Critical, &prev_impact, &ImpactLevel::Strained);
+        let ctx = base_ctx(
+            &prev_ram,
+            &RamPressure::Critical,
+            &prev_impact,
+            &ImpactLevel::Strained,
+        );
         let a = detect_alerts(&ctx);
         assert!(a.is_empty(), "tick {}: stable state must not alert", tick);
         total_alerts += a.len();
     }
 
     // Tick 9: recovery — RAM drops to Warn, impact recovers to Degrading (no alert on recovery)
-    let ctx = base_ctx(&prev_ram, &RamPressure::Warn, &prev_impact, &ImpactLevel::Degrading);
+    let ctx = base_ctx(
+        &prev_ram,
+        &RamPressure::Warn,
+        &prev_impact,
+        &ImpactLevel::Degrading,
+    );
     let a = detect_alerts(&ctx);
     assert!(a.is_empty(), "tick 9: recovery must not produce alerts");
     total_alerts += a.len();
@@ -1401,7 +1430,12 @@ fn test_alert_full_collector_cycle_mock() {
     prev_impact = ImpactLevel::Degrading;
 
     // Tick 10: fully recovered — Normal RAM, Healthy impact (no alert)
-    let ctx = base_ctx(&prev_ram, &RamPressure::Normal, &prev_impact, &ImpactLevel::Healthy);
+    let ctx = base_ctx(
+        &prev_ram,
+        &RamPressure::Normal,
+        &prev_impact,
+        &ImpactLevel::Healthy,
+    );
     let a = detect_alerts(&ctx);
     assert!(a.is_empty(), "tick 10: full recovery must not alert");
     total_alerts += a.len();

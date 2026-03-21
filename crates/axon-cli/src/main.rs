@@ -27,7 +27,7 @@ struct Cli {
     command: Option<Commands>,
 }
 
-#[derive(Args, Debug, Clone)]
+#[derive(Args, Debug, Clone, Default)]
 struct ServeArgs {
     /// Directory containing alert-dispatch.json (overrides ~/.config/axon; same as AXON_CONFIG_DIR)
     #[arg(long)]
@@ -38,16 +38,6 @@ struct ServeArgs {
     /// Filter for a channel: channel_id.severity=critical or channel_id.types=a,b (repeatable)
     #[arg(long = "alert-filter", value_name = "CHANNEL.KEY=VALUE")]
     alert_filter: Vec<String>,
-}
-
-impl Default for ServeArgs {
-    fn default() -> Self {
-        Self {
-            config_dir: None,
-            alert_webhook: vec![],
-            alert_filter: vec![],
-        }
-    }
 }
 
 #[derive(Subcommand)]
@@ -435,7 +425,10 @@ fn setup_all() -> Result<()> {
     if claude_config.parent().map(|p| p.exists()).unwrap_or(false) || claude_config.exists() {
         match upsert_mcp_config(&claude_config) {
             Ok(true) => {
-                println!("[ok] Configured Claude Desktop at {}", claude_config.display());
+                println!(
+                    "[ok] Configured Claude Desktop at {}",
+                    claude_config.display()
+                );
                 println!("     Restart Claude Desktop to apply changes.");
                 configured += 1;
             }
@@ -630,7 +623,11 @@ fn run_setup_list() -> Result<()> {
         name: "Claude Code",
         configured: claude_code_ok,
         config_path: "(managed by claude CLI)".to_string(),
-        binary_path: if claude_code_ok { "via claude mcp".to_string() } else { "-".to_string() },
+        binary_path: if claude_code_ok {
+            "via claude mcp".to_string()
+        } else {
+            "-".to_string()
+        },
         detected: which_exists("claude"),
     });
 
@@ -658,10 +655,22 @@ fn run_setup_list() -> Result<()> {
     }
 
     println!();
-    println!("Data:   {:<10} {}", if data_dir.exists() { "[ok]" } else { "[--]" }, data_dir.display());
-    println!("Config: {:<10} {}", if config_dir.exists() { "[ok]" } else { "[--]" }, config_dir.display());
+    println!(
+        "Data:   {:<10} {}",
+        if data_dir.exists() { "[ok]" } else { "[--]" },
+        data_dir.display()
+    );
+    println!(
+        "Config: {:<10} {}",
+        if config_dir.exists() { "[ok]" } else { "[--]" },
+        config_dir.display()
+    );
     println!();
-    println!("{} of {} agent(s) configured.", configured_count, agents.iter().filter(|a| a.detected).count());
+    println!(
+        "{} of {} agent(s) configured.",
+        configured_count,
+        agents.iter().filter(|a| a.detected).count()
+    );
     Ok(())
 }
 
@@ -732,7 +741,6 @@ fn check_claude_code() -> bool {
         .unwrap_or(false)
 }
 
-
 // ── Uninstall ────────────────────────────────────────────────────────────────
 
 fn run_uninstall(target: Option<&str>) -> Result<()> {
@@ -786,7 +794,10 @@ fn uninstall_all() -> Result<()> {
     if removed == 0 {
         println!("[info] axon was not configured in any agent.");
     } else {
-        println!("[info] Removed from {} agent(s). Restart agents to apply.", removed);
+        println!(
+            "[info] Removed from {} agent(s). Restart agents to apply.",
+            removed
+        );
     }
 
     Ok(())
@@ -801,10 +812,7 @@ fn remove_from_mcp_config(path: &std::path::Path, key: &str) -> Result<bool> {
     let raw = std::fs::read_to_string(path)?;
     let mut config: serde_json::Value = serde_json::from_str(&raw)?;
 
-    let had_axon = config
-        .get(key)
-        .and_then(|s| s.get("axon"))
-        .is_some();
+    let had_axon = config.get(key).and_then(|s| s.get("axon")).is_some();
 
     if !had_axon {
         return Ok(false);

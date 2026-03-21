@@ -66,10 +66,9 @@ fn test_setup_configures_agents() {
         assert!(claude["mcpServers"]["axon"]["command"].is_string());
         assert_eq!(claude["mcpServers"]["axon"]["args"][0], "serve");
 
-        let cursor: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(home.join(".cursor/mcp.json")).unwrap(),
-        )
-        .unwrap();
+        let cursor: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(home.join(".cursor/mcp.json")).unwrap())
+                .unwrap();
         assert!(cursor["mcpServers"]["axon"]["command"].is_string());
 
         let vscode: serde_json::Value = serde_json::from_str(

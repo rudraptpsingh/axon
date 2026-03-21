@@ -12,9 +12,7 @@ use std::time::Duration;
 use axon_core::alert_config::{AlertDispatchConfig, AlertFilters, ChannelConfig};
 use axon_core::alert_dispatch::{AlertDispatcher, WebhookPayload};
 use axon_core::persistence;
-use axon_core::types::{
-    Alert, AlertMetadata, AlertSeverity, AlertType, ProcessInfo,
-};
+use axon_core::types::{Alert, AlertMetadata, AlertSeverity, AlertType, ProcessInfo};
 use chrono::Utc;
 use tempfile::NamedTempFile;
 
@@ -85,9 +83,8 @@ fn start_listener() -> (String, mpsc::Receiver<String>) {
         if let Ok(body) = read_http_post_body(&mut stream) {
             let _ = tx.send(body);
         }
-        let _ = stream.write_all(
-            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
-        );
+        let _ = stream
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok");
     });
     (url, rx)
 }
@@ -129,10 +126,7 @@ async fn dispatcher_posts_webhook_json_without_hardware() {
     };
 
     let send_mcp = dispatcher.dispatch(&alert, &db).await;
-    assert!(
-        !send_mcp,
-        "webhook-only config should not signal MCP"
-    );
+    assert!(!send_mcp, "webhook-only config should not signal MCP");
 
     let body = tokio::task::spawn_blocking(move || rx.recv_timeout(Duration::from_secs(5)))
         .await
