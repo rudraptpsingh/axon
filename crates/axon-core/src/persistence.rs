@@ -31,6 +31,7 @@ pub fn open(path: PathBuf) -> Result<DbHandle> {
     conn.pragma_update(None, "journal_mode", "wal")?;
     conn.pragma_update(None, "synchronous", "normal")?;
     init_schema(&conn)?;
+    migrate_disk_columns(&conn)?;
     prune_old_rows(&conn)?;
     Ok(Arc::new(Mutex::new(conn)))
 }
@@ -48,7 +49,9 @@ fn init_schema(conn: &Connection) -> Result<()> {
             anomaly_type TEXT,
             impact_level TEXT,
             anomaly_score REAL,
-            culprit_group_name TEXT
+            culprit_group_name TEXT,
+            disk_used_gb REAL,
+            disk_total_gb REAL
         );
         CREATE INDEX IF NOT EXISTS idx_snapshots_ts ON snapshots(ts);
         CREATE TABLE IF NOT EXISTS alerts (
@@ -63,6 +66,24 @@ fn init_schema(conn: &Connection) -> Result<()> {
         CREATE INDEX IF NOT EXISTS idx_alerts_severity ON alerts(severity);
         CREATE INDEX IF NOT EXISTS idx_alerts_type ON alerts(alert_type);",
     )?;
+    Ok(())
+}
+
+fn migrate_disk_columns(conn: &Connection) -> Result<()> {
+    // Add disk columns to existing databases that lack them.
+    // SQLite ALTER TABLE ADD COLUMN is a no-op if the column already exists (errors on dupe),
+    // so we check first via pragma.
+    let has_disk: bool = conn
+        .prepare("PRAGMA table_info(snapshots)")?
+        .query_map([], |row| row.get::<_, String>(1))?
+        .filter_map(|r| r.ok())
+        .any(|name| name == "disk_used_gb");
+    if !has_disk {
+        conn.execute_batch(
+            "ALTER TABLE snapshots ADD COLUMN disk_used_gb REAL;
+             ALTER TABLE snapshots ADD COLUMN disk_total_gb REAL;",
+        )?;
+    }
     Ok(())
 }
 
@@ -100,8 +121,8 @@ pub fn insert_snapshot(db: &DbHandle, hw: &HwSnapshot, blame: &ProcessBlame) {
     let impact_str = format!("{:?}", blame.impact_level).to_lowercase();
 
     if let Err(e) = conn.execute(
-        "INSERT INTO snapshots (ts, cpu_pct, ram_used_gb, die_temp_c, throttling, ram_pressure, anomaly_type, impact_level, anomaly_score, culprit_group_name)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        "INSERT INTO snapshots (ts, cpu_pct, ram_used_gb, die_temp_c, throttling, ram_pressure, anomaly_type, impact_level, anomaly_score, culprit_group_name, disk_used_gb, disk_total_gb)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         params![
             hw.ts.to_rfc3339(),
             hw.cpu_usage_pct,
@@ -113,6 +134,8 @@ pub fn insert_snapshot(db: &DbHandle, hw: &HwSnapshot, blame: &ProcessBlame) {
             impact_str,
             blame.anomaly_score,
             group_name,
+            hw.disk_used_gb,
+            hw.disk_total_gb,
         ],
     ) {
         tracing::warn!("failed to insert snapshot: {}", e);
@@ -396,6 +419,8 @@ mod tests {
             ram_total_gb: 8.0,
             ram_pressure: RamPressure::Normal,
             cpu_usage_pct: cpu,
+            disk_used_gb: 250.0,
+            disk_total_gb: 500.0,
             ts: Utc::now(),
         }
     }

@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex};
 
-use sysinfo::System;
+use sysinfo::{Disks, System};
 use tokio::time::{interval, Duration};
 use tracing::debug;
 
@@ -88,6 +88,8 @@ impl AppState {
                 ram_total_gb: 0.0,
                 ram_pressure: RamPressure::Normal,
                 cpu_usage_pct: 0.0,
+                disk_used_gb: 0.0,
+                disk_total_gb: 0.0,
                 ts: now,
             },
             blame: ProcessBlame {
@@ -154,6 +156,21 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle) {
         let die_temp = temperature::read_cpu_temp();
         let throttling = crate::thresholds::thermal_throttling_from_temp_c(die_temp);
 
+        // ── Disk space (root volume) ──────────────────────────────────────
+        let disks = Disks::new_with_refreshed_list();
+        let (disk_total_gb, disk_used_gb) = disks
+            .iter()
+            .find(|d| {
+                let mp = d.mount_point();
+                mp == std::path::Path::new("/") || mp == std::path::Path::new("C:\\")
+            })
+            .map(|d| {
+                let total = d.total_space() as f64 / 1_073_741_824.0;
+                let avail = d.available_space() as f64 / 1_073_741_824.0;
+                (total, total - avail)
+            })
+            .unwrap_or((0.0, 0.0));
+
         let hw = HwSnapshot {
             die_temp_celsius: die_temp,
             throttling,
@@ -161,6 +178,8 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle) {
             ram_total_gb,
             ram_pressure: ram_pressure.clone(),
             cpu_usage_pct: cpu_pct,
+            disk_used_gb,
+            disk_total_gb,
             ts: chrono::Utc::now(),
         };
 
