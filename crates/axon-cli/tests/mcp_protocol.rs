@@ -61,7 +61,10 @@ fn test_initialize_response() {
     let resp = &responses[0];
     assert_eq!(resp["jsonrpc"], "2.0");
     assert_eq!(resp["id"], 0);
-    assert!(resp["result"]["serverInfo"].is_object(), "missing serverInfo");
+    assert!(
+        resp["result"]["serverInfo"].is_object(),
+        "missing serverInfo"
+    );
     assert!(
         resp["result"]["capabilities"].is_object(),
         "missing capabilities"
@@ -85,10 +88,7 @@ fn test_tools_list() {
         .expect("tools should be an array");
     assert_eq!(tools.len(), 5, "expected 5 tools, got {}", tools.len());
 
-    let names: Vec<&str> = tools
-        .iter()
-        .map(|t| t["name"].as_str().unwrap())
-        .collect();
+    let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
     assert!(names.contains(&"hw_snapshot"));
     assert!(names.contains(&"process_blame"));
     assert!(names.contains(&"battery_status"));

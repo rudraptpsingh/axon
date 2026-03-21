@@ -8,7 +8,7 @@ pub fn normalize_process_name(cmd: &str) -> String {
     let name = cmd.trim_end_matches('\0').trim();
 
     // Strip path prefix (e.g., "/usr/bin/node" -> "node")
-    let base = name.split('/').last().unwrap_or(name);
+    let base = name.split('/').next_back().unwrap_or(name);
 
     // Strip helper suffixes common in macOS apps
     let stripped = base
@@ -32,15 +32,17 @@ pub fn build_groups(processes: &[ProcessInfo]) -> Vec<ProcessGroup> {
 
     for p in processes {
         let group_name = normalize_process_name(&p.cmd);
-        let entry = map.entry(group_name.clone()).or_insert_with(|| ProcessGroup {
-            name: group_name,
-            process_count: 0,
-            total_cpu_pct: 0.0,
-            total_ram_gb: 0.0,
-            blame_score: 0.0,
-            top_pid: p.pid,
-            pids: Vec::new(),
-        });
+        let entry = map
+            .entry(group_name.clone())
+            .or_insert_with(|| ProcessGroup {
+                name: group_name,
+                process_count: 0,
+                total_cpu_pct: 0.0,
+                total_ram_gb: 0.0,
+                blame_score: 0.0,
+                top_pid: p.pid,
+                pids: Vec::new(),
+            });
 
         entry.process_count += 1;
         entry.total_cpu_pct += p.cpu_pct;

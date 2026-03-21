@@ -6,7 +6,7 @@ fn axon_bin() -> String {
 
 #[test]
 #[ignore] // takes ~5s (diagnose collects 4s of data)
-fn test_diagnose_output_format() {
+fn test_diagnose_still_works() {
     let output = Command::new(axon_bin())
         .arg("diagnose")
         .output()
@@ -30,7 +30,7 @@ fn test_diagnose_output_format() {
 
 #[test]
 #[ignore] // takes ~3s (status collects 2s of data)
-fn test_status_outputs_valid_json() {
+fn test_status_still_works() {
     let output = Command::new(axon_bin())
         .arg("status")
         .output()

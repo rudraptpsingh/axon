@@ -109,8 +109,16 @@ mod tests {
         }
         // Spike
         let (cpu_d, ram_d) = store.update(1, 90.0, 5.0);
-        assert!(cpu_d > 40.0, "CPU spike should produce large delta, got {}", cpu_d);
-        assert!(ram_d > 2.0, "RAM spike should produce large delta, got {}", ram_d);
+        assert!(
+            cpu_d > 40.0,
+            "CPU spike should produce large delta, got {}",
+            cpu_d
+        );
+        assert!(
+            ram_d > 2.0,
+            "RAM spike should produce large delta, got {}",
+            ram_d
+        );
     }
 
     #[test]

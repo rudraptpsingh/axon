@@ -1,9 +1,12 @@
 use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
+use std::path::PathBuf;
 use tracing_subscriber::EnvFilter;
 
+use axon_core::alert_config;
+use axon_core::alert_dispatch::AlertDispatcher;
 use axon_core::collector::{build_system_profile, start_collector, AppState};
 use axon_core::persistence;
 use axon_server::run_server;
@@ -24,10 +27,33 @@ struct Cli {
     command: Option<Commands>,
 }
 
+#[derive(Args, Debug, Clone)]
+struct ServeArgs {
+    /// Directory containing alert-dispatch.json (overrides ~/.config/axon; same as AXON_CONFIG_DIR)
+    #[arg(long)]
+    config_dir: Option<PathBuf>,
+    /// Add or replace a webhook channel: ID=http://host/path (repeatable)
+    #[arg(long = "alert-webhook", value_name = "ID=URL")]
+    alert_webhook: Vec<String>,
+    /// Filter for a channel: channel_id.severity=critical or channel_id.types=a,b (repeatable)
+    #[arg(long = "alert-filter", value_name = "CHANNEL.KEY=VALUE")]
+    alert_filter: Vec<String>,
+}
+
+impl Default for ServeArgs {
+    fn default() -> Self {
+        Self {
+            config_dir: None,
+            alert_webhook: vec![],
+            alert_filter: vec![],
+        }
+    }
+}
+
 #[derive(Subcommand)]
 enum Commands {
     /// Start the MCP stdio server (used in claude_desktop_config.json)
-    Serve,
+    Serve(ServeArgs),
 
     /// One-shot diagnosis: collect 4 seconds of data, then print the culprit
     Diagnose,
@@ -62,7 +88,8 @@ async fn main() -> Result<()> {
     auto_setup_all();
 
     match cli.command {
-        Some(Commands::Serve) | None => run_serve().await,
+        None => run_serve(ServeArgs::default()).await,
+        Some(Commands::Serve(args)) => run_serve(args).await,
         Some(Commands::Diagnose) => run_diagnose().await,
         Some(Commands::Status) => run_status().await,
         Some(Commands::Setup { target }) => run_setup(&target),
@@ -71,13 +98,34 @@ async fn main() -> Result<()> {
 
 // ── Command Handlers ──────────────────────────────────────────────────────────
 
-async fn run_serve() -> Result<()> {
+async fn run_serve(args: ServeArgs) -> Result<()> {
     tracing::info!("axon starting (stdio transport)");
     let profile = build_system_profile();
     let state = Arc::new(Mutex::new(AppState::new(profile)));
 
     let db_path = persistence::default_db_path()?;
     let db = persistence::open(db_path)?;
+
+    // Load alert dispatch configuration (file + CLI overrides)
+    let mut config = alert_config::load_config(args.config_dir.as_ref());
+    let webhooks: Vec<(String, String)> = args
+        .alert_webhook
+        .iter()
+        .map(|s| alert_config::parse_alert_webhook_flag(s))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(anyhow::Error::msg)?;
+    let filters: Vec<(String, String, String)> = args
+        .alert_filter
+        .iter()
+        .map(|s| alert_config::parse_alert_filter_flag(s))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(anyhow::Error::msg)?;
+    config = alert_config::apply_cli_overrides(config, &webhooks, &filters);
+    let dispatcher = Arc::new(AlertDispatcher::new(config));
+
+    if dispatcher.has_webhooks() {
+        tracing::info!("webhook alert channels configured");
+    }
 
     let state_bg = state.clone();
     let db_bg = db.clone();
@@ -88,7 +136,7 @@ async fn run_serve() -> Result<()> {
     // Brief warm-up so first tool call isn't stale
     tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
 
-    run_server(state, db).await
+    run_server(state, db, dispatcher).await
 }
 
 async fn run_diagnose() -> Result<()> {
@@ -144,8 +192,8 @@ async fn run_diagnose() -> Result<()> {
     }
 
     // Show healthy state if no warning was printed
-    let showed_warning = blame.anomaly_score > 0.10
-        && (blame.culprit.is_some() || blame.culprit_group.is_some());
+    let showed_warning =
+        blame.anomaly_score > 0.10 && (blame.culprit.is_some() || blame.culprit_group.is_some());
     if !showed_warning {
         println!("[ok]  System is healthy. No significant anomalies detected.");
         println!(

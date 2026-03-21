@@ -11,10 +11,17 @@ pub type DbHandle = Arc<Mutex<Connection>>;
 
 // ── Path + Open ──────────────────────────────────────────────────────────────
 
+/// Default: `<data_local_dir>/axon/hardware.db`.
+/// Override the directory with **`AXON_DATA_DIR`** (same layout: `<AXON_DATA_DIR>/hardware.db`)
+/// so live tests and scripts do not share the DB with a normal Cursor session.
 pub fn default_db_path() -> Result<PathBuf> {
-    let data_dir = dirs::data_local_dir()
-        .ok_or_else(|| anyhow::anyhow!("could not determine data directory"))?
-        .join("axon");
+    let data_dir = if let Some(p) = std::env::var_os("AXON_DATA_DIR") {
+        PathBuf::from(p)
+    } else {
+        dirs::data_local_dir()
+            .ok_or_else(|| anyhow::anyhow!("could not determine data directory"))?
+            .join("axon")
+    };
     std::fs::create_dir_all(&data_dir)?;
     Ok(data_dir.join("hardware.db"))
 }
@@ -43,17 +50,27 @@ fn init_schema(conn: &Connection) -> Result<()> {
             anomaly_score REAL,
             culprit_group_name TEXT
         );
-        CREATE INDEX IF NOT EXISTS idx_snapshots_ts ON snapshots(ts);",
+        CREATE INDEX IF NOT EXISTS idx_snapshots_ts ON snapshots(ts);
+        CREATE TABLE IF NOT EXISTS alerts (
+            id INTEGER PRIMARY KEY,
+            ts TEXT NOT NULL,
+            severity TEXT NOT NULL,
+            alert_type TEXT NOT NULL,
+            message TEXT NOT NULL,
+            metadata_json TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_alerts_ts ON alerts(ts);
+        CREATE INDEX IF NOT EXISTS idx_alerts_severity ON alerts(severity);
+        CREATE INDEX IF NOT EXISTS idx_alerts_type ON alerts(alert_type);",
     )?;
     Ok(())
 }
 
 fn prune_old_rows(conn: &Connection) -> Result<()> {
     let cutoff = Utc::now() - chrono::Duration::days(30);
-    conn.execute(
-        "DELETE FROM snapshots WHERE ts < ?1",
-        params![cutoff.to_rfc3339()],
-    )?;
+    let cutoff_str = cutoff.to_rfc3339();
+    conn.execute("DELETE FROM snapshots WHERE ts < ?1", params![&cutoff_str])?;
+    conn.execute("DELETE FROM alerts WHERE ts < ?1", params![&cutoff_str])?;
     Ok(())
 }
 
@@ -102,6 +119,120 @@ pub fn insert_snapshot(db: &DbHandle, hw: &HwSnapshot, blame: &ProcessBlame) {
     }
 }
 
+/// Persist an alert to the alerts table.
+pub fn insert_alert(db: &DbHandle, alert: &Alert) {
+    let conn = match db.lock() {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!("db lock poisoned: {}", e);
+            return;
+        }
+    };
+
+    let metadata_json = serde_json::to_string(&alert.metadata).unwrap_or_default();
+
+    if let Err(e) = conn.execute(
+        "INSERT INTO alerts (ts, severity, alert_type, message, metadata_json)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![
+            alert.ts.to_rfc3339(),
+            alert.severity.to_string(),
+            alert.alert_type.to_string(),
+            alert.message,
+            metadata_json,
+        ],
+    ) {
+        tracing::warn!("failed to insert alert: {}", e);
+    }
+}
+
+/// Query alerts within a time range with optional filters.
+/// Count rows in `alerts` (for tests and diagnostics).
+pub fn count_alerts(db: &DbHandle) -> Result<u64> {
+    let conn = db.lock().map_err(|e| anyhow::anyhow!("db lock: {}", e))?;
+    let n: u64 = conn.query_row("SELECT COUNT(*) FROM alerts", [], |row| row.get(0))?;
+    Ok(n)
+}
+
+pub fn query_alerts(
+    db: &DbHandle,
+    range_secs: i64,
+    severity_filter: Option<&str>,
+    type_filter: Option<&str>,
+    limit: u32,
+) -> Result<Vec<Alert>> {
+    let conn = db.lock().map_err(|e| anyhow::anyhow!("db lock: {}", e))?;
+    let start = Utc::now() - chrono::Duration::seconds(range_secs);
+    let start_str = start.to_rfc3339();
+
+    let mut sql =
+        "SELECT ts, severity, alert_type, message, metadata_json FROM alerts WHERE ts >= ?1"
+            .to_string();
+    let mut param_values: Vec<String> = vec![start_str];
+
+    if let Some(sev) = severity_filter {
+        param_values.push(sev.to_string());
+        sql.push_str(&format!(" AND severity = ?{}", param_values.len()));
+    }
+    if let Some(typ) = type_filter {
+        param_values.push(typ.to_string());
+        sql.push_str(&format!(" AND alert_type = ?{}", param_values.len()));
+    }
+
+    sql.push_str(&format!(" ORDER BY ts DESC LIMIT {}", limit));
+
+    let mut stmt = conn.prepare(&sql)?;
+    let params: Vec<&dyn rusqlite::ToSql> = param_values
+        .iter()
+        .map(|s| s as &dyn rusqlite::ToSql)
+        .collect();
+
+    let alerts = stmt
+        .query_map(params.as_slice(), |row| {
+            let ts_str: String = row.get(0)?;
+            let severity_str: String = row.get(1)?;
+            let type_str: String = row.get(2)?;
+            let message: String = row.get(3)?;
+            let metadata_str: String = row.get::<_, String>(4).unwrap_or_default();
+
+            let ts = DateTime::parse_from_rfc3339(&ts_str)
+                .map(|dt| dt.with_timezone(&Utc))
+                .unwrap_or_else(|_| Utc::now());
+
+            let severity = match severity_str.as_str() {
+                "critical" => AlertSeverity::Critical,
+                _ => AlertSeverity::Warning,
+            };
+
+            let alert_type = match type_str.as_str() {
+                "thermal_throttle" => AlertType::ThermalThrottle,
+                "impact_escalation" => AlertType::ImpactEscalation,
+                _ => AlertType::MemoryPressure,
+            };
+
+            let metadata: AlertMetadata =
+                serde_json::from_str(&metadata_str).unwrap_or(AlertMetadata {
+                    ram_pct: None,
+                    cpu_pct: None,
+                    temp_c: None,
+                    culprit: None,
+                    culprit_group: None,
+                });
+
+            Ok(Alert {
+                severity,
+                alert_type,
+                message,
+                ts,
+                metadata,
+            })
+        })?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    Ok(alerts)
+}
+
 // ── Query ────────────────────────────────────────────────────────────────────
 
 pub fn parse_time_range(s: &str) -> Option<i64> {
@@ -126,11 +257,7 @@ pub fn parse_interval(s: &str) -> Option<i64> {
     }
 }
 
-pub fn query_trend(
-    db: &DbHandle,
-    range_secs: i64,
-    bucket_secs: i64,
-) -> Result<TrendData> {
+pub fn query_trend(db: &DbHandle, range_secs: i64, bucket_secs: i64) -> Result<TrendData> {
     let conn = db.lock().map_err(|e| anyhow::anyhow!("db lock: {}", e))?;
 
     let start = Utc::now() - chrono::Duration::seconds(range_secs);
@@ -205,8 +332,7 @@ pub fn query_trend(
         let throttle_count = bucket_rows.iter().filter(|r| r.throttling).count();
 
         buckets.push(TrendBucket {
-            bucket_start: DateTime::from_timestamp(bucket_start, 0)
-                .unwrap_or_else(|| Utc::now()),
+            bucket_start: DateTime::from_timestamp(bucket_start, 0).unwrap_or_else(Utc::now),
             sample_count: bucket_rows.len() as u32,
             cpu_avg: cpu_vals.iter().sum::<f64>() / n,
             cpu_max: cpu_vals.iter().cloned().fold(f64::MIN, f64::max),
@@ -232,8 +358,7 @@ pub fn query_trend(
         "stable".to_string()
     } else {
         let mid = buckets.len() / 2;
-        let first_avg: f64 =
-            buckets[..mid].iter().map(|b| b.cpu_avg).sum::<f64>() / mid as f64;
+        let first_avg: f64 = buckets[..mid].iter().map(|b| b.cpu_avg).sum::<f64>() / mid as f64;
         let second_avg: f64 =
             buckets[mid..].iter().map(|b| b.cpu_avg).sum::<f64>() / (buckets.len() - mid) as f64;
         let delta = second_avg - first_avg;

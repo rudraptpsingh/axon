@@ -104,11 +104,49 @@ pub enum AlertSeverity {
     Critical,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum AlertType {
+    MemoryPressure,
+    ThermalThrottle,
+    ImpactEscalation,
+}
+
+impl std::fmt::Display for AlertType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AlertType::MemoryPressure => write!(f, "memory_pressure"),
+            AlertType::ThermalThrottle => write!(f, "thermal_throttle"),
+            AlertType::ImpactEscalation => write!(f, "impact_escalation"),
+        }
+    }
+}
+
+impl std::fmt::Display for AlertSeverity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AlertSeverity::Warning => write!(f, "warning"),
+            AlertSeverity::Critical => write!(f, "critical"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AlertMetadata {
+    pub ram_pct: Option<f64>,
+    pub cpu_pct: Option<f64>,
+    pub temp_c: Option<f64>,
+    pub culprit: Option<ProcessInfo>,
+    pub culprit_group: Option<ProcessGroup>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Alert {
     pub severity: AlertSeverity,
+    pub alert_type: AlertType,
     pub message: String,
     pub ts: DateTime<Utc>,
+    pub metadata: AlertMetadata,
 }
 
 // ── Trend Types ──────────────────────────────────────────────────────────────

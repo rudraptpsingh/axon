@@ -1,4 +1,7 @@
+use std::sync::Arc;
+
 use axon_core::{
+    alert_dispatch::AlertDispatcher,
     collector::SharedState,
     persistence::{self, DbHandle},
     types::*,
@@ -6,8 +9,9 @@ use axon_core::{
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::{LoggingLevel, LoggingMessageNotificationParam, ServerCapabilities, ServerInfo},
-    schemars, tool, tool_handler, tool_router, RoleServer, ServerHandler, ServiceExt,
+    schemars,
     service::Peer,
+    tool, tool_handler, tool_router, RoleServer, ServerHandler, ServiceExt,
 };
 use tokio::time::{interval, Duration};
 
@@ -18,7 +22,9 @@ pub struct EmptyParams {}
 
 #[derive(Debug, ::serde::Deserialize, schemars::JsonSchema)]
 pub struct TrendParams {
-    #[schemars(description = "Time window: last_1h, last_6h, last_24h, last_7d, last_30d (default: last_24h)")]
+    #[schemars(
+        description = "Time window: last_1h, last_6h, last_24h, last_7d, last_30d (default: last_24h)"
+    )]
     pub time_range: Option<String>,
     #[schemars(description = "Bucket interval: 1m, 5m, 15m, 1h, 1d (default: 15m)")]
     pub interval: Option<String>,
@@ -192,8 +198,7 @@ fn blame_narrative(blame: &ProcessBlame) -> String {
         if blame.anomaly_score > 0.1 && g.process_count > 1 {
             return format!(
                 "{} ({:.1}GB across {} processes, {:.0}% CPU) — {} {}",
-                g.name, g.total_ram_gb, g.process_count, g.total_cpu_pct,
-                blame.impact, blame.fix
+                g.name, g.total_ram_gb, g.process_count, g.total_cpu_pct, blame.impact, blame.fix
             );
         }
     }
@@ -208,7 +213,10 @@ fn blame_narrative(blame: &ProcessBlame) -> String {
 
 fn trend_narrative(trend: &TrendData, range: &str) -> String {
     if trend.total_snapshots == 0 {
-        return format!("No data available for {}. Start axon and wait for snapshots to accumulate.", range);
+        return format!(
+            "No data available for {}. Start axon and wait for snapshots to accumulate.",
+            range
+        );
     }
 
     let total_anomalies: u32 = trend.buckets.iter().map(|b| b.anomaly_count).sum();
@@ -238,12 +246,21 @@ fn trend_narrative(trend: &TrendData, range: &str) -> String {
         parts.push(format!("{} throttle events", total_throttles));
     }
 
-    format!("{} over {} ({} snapshots).", parts.join(", "), range, trend.total_snapshots)
+    format!(
+        "{} over {} ({} snapshots).",
+        parts.join(", "),
+        range,
+        trend.total_snapshots
+    )
 }
 
 // ── Alert Notification Sender ─────────────────────────────────────────────────
 
-async fn alert_sender(state: SharedState, peer: Peer<RoleServer>) {
+async fn alert_sender(
+    state: SharedState,
+    peer: Peer<RoleServer>,
+    dispatcher: Arc<AlertDispatcher>,
+) {
     let mut ticker = interval(Duration::from_secs(2));
     loop {
         ticker.tick().await;
@@ -253,21 +270,26 @@ async fn alert_sender(state: SharedState, peer: Peer<RoleServer>) {
             std::mem::take(&mut guard.pending_alerts)
         };
 
-        for alert in alerts {
-            let level = match alert.severity {
-                AlertSeverity::Warning => LoggingLevel::Warning,
-                AlertSeverity::Critical => LoggingLevel::Critical,
-            };
+        for alert in &alerts {
+            // Alert was already persisted by the collector. Send webhooks + check MCP flag.
+            let send_via_mcp = dispatcher.dispatch_webhooks_only(alert).await;
 
-            let param = LoggingMessageNotificationParam {
-                level,
-                logger: Some("axon".to_string()),
-                data: serde_json::json!(alert.message).into(),
-            };
+            if send_via_mcp {
+                let level = match alert.severity {
+                    AlertSeverity::Warning => LoggingLevel::Warning,
+                    AlertSeverity::Critical => LoggingLevel::Critical,
+                };
 
-            if let Err(e) = peer.notify_logging_message(param).await {
-                tracing::debug!("alert send failed (client may have disconnected): {}", e);
-                return;
+                let param = LoggingMessageNotificationParam {
+                    level,
+                    logger: Some("axon".to_string()),
+                    data: serde_json::json!(alert.message),
+                };
+
+                if let Err(e) = peer.notify_logging_message(param).await {
+                    tracing::debug!("alert send failed (client may have disconnected): {}", e);
+                    return;
+                }
             }
         }
     }
@@ -275,15 +297,30 @@ async fn alert_sender(state: SharedState, peer: Peer<RoleServer>) {
 
 // ── Public Entry Point ────────────────────────────────────────────────────────
 
-pub async fn run_server(state: SharedState, db: DbHandle) -> anyhow::Result<()> {
-    let server = AxonServer::new(state.clone(), db);
+pub async fn run_server(
+    state: SharedState,
+    db: DbHandle,
+    dispatcher: Arc<AlertDispatcher>,
+) -> anyhow::Result<()> {
+    let server = AxonServer::new(state.clone(), db.clone());
     let transport = (tokio::io::stdin(), tokio::io::stdout());
     let running = server.serve(transport).await?;
 
     // Spawn alert notification sender using the peer
     let peer = running.peer().clone();
-    tokio::spawn(alert_sender(state, peer));
+    tokio::spawn(alert_sender(state.clone(), peer, dispatcher.clone()));
 
     running.waiting().await?;
+
+    // Drain any pending alerts that the alert_sender task may not have processed yet.
+    // Alerts are already persisted by the collector; this flushes webhook dispatches.
+    let remaining = {
+        let mut guard = state.lock().unwrap();
+        std::mem::take(&mut guard.pending_alerts)
+    };
+    for alert in &remaining {
+        dispatcher.dispatch_webhooks_only(alert).await;
+    }
+
     Ok(())
 }

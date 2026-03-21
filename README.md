@@ -29,7 +29,7 @@ axon auto-configures Claude Desktop, Cursor, and VS Code on first run. Just rest
 
 ## What It Does
 
-axon exposes 4 MCP tools that any compatible agent can call:
+axon exposes 5 MCP tools that any compatible agent can call:
 
 | Tool | Purpose |
 |---|---|
@@ -37,6 +37,7 @@ axon exposes 4 MCP tools that any compatible agent can call:
 | `hw_snapshot` | CPU usage, die temperature, RAM used/total, pressure level, throttling state |
 | `battery_status` | Battery percentage, charging state, estimated time remaining |
 | `system_profile` | Machine model, chip, core count, total RAM, macOS version |
+| `hardware_trend` | Historical CPU/RAM/temp trends over a time window (last_1h to last_30d) |
 
 The hero tool is `process_blame`. When your AI session lags, the agent calls it and gets back:
 
@@ -66,8 +67,9 @@ The hero tool is `process_blame`. When your AI session lags, the agent calls it 
 2. Per-process EWMA (Exponentially Weighted Moving Average) baselines detect anomalous resource usage
 3. Process grouping aggregates child processes by app (e.g., 47 Chrome helpers become one "Google Chrome" group)
 4. Multi-signal scoring (40% RAM + 30% CPU + 30% swap) classifies system health into 4 tiers
-5. A persistence filter requires 3+ consecutive anomalous samples before escalating, avoiding false positives on transient spikes
+5. A persistence filter requires 2+ consecutive anomalous samples before escalating, avoiding false positives on transient spikes
 6. Process-specific fix suggestions are returned for known resource hogs (Cursor, cargo, node, Docker, Ollama, etc.)
+7. Hardware snapshots and alerts are persisted to a local SQLite database (`~/.local/share/axon/hardware.db`) for trend queries and alert history
 
 ## CLI Commands
 
@@ -106,8 +108,8 @@ Or add to any MCP-compatible agent's config manually:
 
 ```
 crates/
-  axon-core/     # Types, EWMA tracker, impact engine, collector loop
-  axon-server/   # MCP server (4 tools via rmcp)
+  axon-core/     # Types, EWMA tracker, impact engine, collector loop, alert dispatch, SQLite persistence
+  axon-server/   # MCP server (5 tools via rmcp)
   axon-cli/      # Binary entry point
 ```
 
@@ -115,7 +117,8 @@ Key design decisions:
 - **Privacy by architecture** -- no network calls, no telemetry, no cloud. Data never leaves your machine.
 - **stdio transport** -- universal MCP compatibility with all current agents.
 - **EWMA baselines** -- simple, effective anomaly detection at 2-second granularity.
-- **In-memory only** -- no database, no persistence. Restart = fresh baseline.
+- **SQLite persistence** -- snapshots every 10s, alerts on state transitions. Powers `hardware_trend` and alert history. DB at `~/.local/share/axon/hardware.db`.
+- **Edge-triggered alerts** -- fire once on state transitions (Normal→Warn, Healthy→Strained), not on every tick. Delivered via webhook POST or MCP logging notifications.
 
 ## Requirements
 

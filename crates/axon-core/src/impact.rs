@@ -1,19 +1,22 @@
+use crate::thresholds;
 use crate::types::{AnomalyType, ImpactLevel, ProcessGroup, ProcessInfo};
 
 // ── Anomaly Detection ─────────────────────────────────────────────────────────
 
 /// Classify the primary anomaly type based on system state.
 pub fn detect_anomaly_type(ram_pct: f64, cpu_pct: f64, temp: Option<f64>) -> AnomalyType {
-    if temp.map_or(false, |t| t > 95.0) {
+    if temp.is_some_and(|t| t > thresholds::ANOMALY_TEMP_C) {
         return AnomalyType::ThermalThrottle;
     }
-    if ram_pct > 85.0 {
+    if ram_pct > thresholds::ANOMALY_RAM_PCT {
         return AnomalyType::MemoryPressure;
     }
-    if cpu_pct > 85.0 {
+    if cpu_pct > thresholds::ANOMALY_CPU_PCT {
         return AnomalyType::CpuSaturation;
     }
-    if ram_pct > 65.0 || cpu_pct > 65.0 {
+    if ram_pct > thresholds::ANOMALY_GENERAL_RAM_OR_CPU_PCT
+        || cpu_pct > thresholds::ANOMALY_GENERAL_RAM_OR_CPU_PCT
+    {
         return AnomalyType::GeneralSlowdown;
     }
     AnomalyType::None
@@ -29,17 +32,17 @@ pub fn compute_score(ram_pct: f64, cpu_pct: f64, swap_gb: f64) -> f64 {
 }
 
 /// Map anomaly score → ImpactLevel with persistence check.
-/// `above_threshold_count` = consecutive samples where score > 0.3.
-/// Requires 3+ consecutive samples to avoid false positives on spikes.
+/// `above_threshold_count` = consecutive samples where score > `thresholds::IMPACT_SCORE_ELEVATED`.
+/// Requires `IMPACT_PERSISTENCE_SAMPLES` consecutive samples to avoid false positives on spikes.
 pub fn score_to_level(score: f64, above_threshold_count: u32) -> ImpactLevel {
-    if above_threshold_count < 3 {
+    if above_threshold_count < thresholds::IMPACT_PERSISTENCE_SAMPLES {
         return ImpactLevel::Healthy;
     }
-    if score < 0.30 {
+    if score < thresholds::IMPACT_LEVEL_HEALTHY_BELOW {
         ImpactLevel::Healthy
-    } else if score < 0.50 {
+    } else if score < thresholds::IMPACT_LEVEL_DEGRADING_BELOW {
         ImpactLevel::Degrading
-    } else if score < 0.75 {
+    } else if score < thresholds::IMPACT_LEVEL_STRAINED_BELOW {
         ImpactLevel::Strained
     } else {
         ImpactLevel::Critical
@@ -109,7 +112,7 @@ pub fn suggest_fix(
         let name = raw_name.to_lowercase();
         let base = name
             .split('/')
-            .last()
+            .next_back()
             .unwrap_or(&name)
             .trim_end_matches('\0')
             .trim();
@@ -216,10 +219,7 @@ mod tests {
 
     #[test]
     fn test_detect_anomaly_none() {
-        assert_eq!(
-            detect_anomaly_type(30.0, 30.0, None),
-            AnomalyType::None
-        );
+        assert_eq!(detect_anomaly_type(30.0, 30.0, None), AnomalyType::None);
     }
 
     #[test]
@@ -234,12 +234,17 @@ mod tests {
     #[test]
     fn test_score_to_level_persistence() {
         // Below persistence threshold: always Healthy
-        assert_eq!(score_to_level(0.6, 2), ImpactLevel::Healthy);
-        // At persistence threshold: maps to level
-        assert_eq!(score_to_level(0.6, 3), ImpactLevel::Strained);
-        assert_eq!(score_to_level(0.4, 5), ImpactLevel::Degrading);
-        assert_eq!(score_to_level(0.8, 3), ImpactLevel::Critical);
-        assert_eq!(score_to_level(0.2, 5), ImpactLevel::Healthy);
+        assert_eq!(score_to_level(0.6, 1), ImpactLevel::Healthy);
+        // At persistence threshold: maps to level by bands
+        // 0.6 >= STRAINED (0.55): Critical? No, < STRAINED_BELOW (0.55) is false, so Strained
+        assert_eq!(score_to_level(0.5, 2), ImpactLevel::Strained);
+        // 0.4 >= DEGRADING (0.38) and < STRAINED (0.55) → Strained
+        assert_eq!(score_to_level(0.4, 5), ImpactLevel::Strained);
+        assert_eq!(score_to_level(0.8, 2), ImpactLevel::Critical);
+        // 0.19 < HEALTHY_BELOW (0.20) → Healthy
+        assert_eq!(score_to_level(0.19, 5), ImpactLevel::Healthy);
+        // 0.25 in Degrading band (>= 0.20, < 0.38) → Degrading
+        assert_eq!(score_to_level(0.25, 5), ImpactLevel::Degrading);
     }
 
     #[test]
@@ -252,7 +257,11 @@ mod tests {
             blame_score: 0.5,
         };
         let fix = suggest_fix(Some(&chrome), None, &AnomalyType::MemoryPressure);
-        assert!(fix.contains("browser") || fix.contains("tabs"), "expected browser fix, got: {}", fix);
+        assert!(
+            fix.contains("browser") || fix.contains("tabs"),
+            "expected browser fix, got: {}",
+            fix
+        );
     }
 
     #[test]
@@ -274,8 +283,16 @@ mod tests {
             pids: vec![1],
         };
         let fix = suggest_fix(Some(&chrome), Some(&group), &AnomalyType::MemoryPressure);
-        assert!(fix.contains("6.2GB"), "expected group RAM in fix, got: {}", fix);
-        assert!(fix.contains("47"), "expected process count in fix, got: {}", fix);
+        assert!(
+            fix.contains("6.2GB"),
+            "expected group RAM in fix, got: {}",
+            fix
+        );
+        assert!(
+            fix.contains("47"),
+            "expected process count in fix, got: {}",
+            fix
+        );
     }
 
     #[test]

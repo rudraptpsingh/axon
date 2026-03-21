@@ -4,7 +4,66 @@ use sysinfo::System;
 use tokio::time::{interval, Duration};
 use tracing::debug;
 
-use crate::{alerts, ewma::EwmaStore, grouping, impact, persistence, temperature, types::*};
+use crate::{
+    alerts::{self, AlertContext},
+    ewma::EwmaStore,
+    grouping, impact, persistence, temperature,
+    types::*,
+};
+
+struct TestPrevStateConfig {
+    ram_pressure: Option<RamPressure>,
+    throttling: Option<bool>,
+    impact_level: Option<ImpactLevel>,
+    preserve_during_warmup: bool,
+}
+
+impl TestPrevStateConfig {
+    fn from_env() -> Self {
+        Self {
+            ram_pressure: std::env::var("AXON_TEST_PREV_RAM_PRESSURE")
+                .ok()
+                .and_then(|v| parse_ram_pressure(&v)),
+            throttling: std::env::var("AXON_TEST_PREV_THROTTLING")
+                .ok()
+                .and_then(|v| parse_bool(&v)),
+            impact_level: std::env::var("AXON_TEST_PREV_IMPACT_LEVEL")
+                .ok()
+                .and_then(|v| parse_impact_level(&v)),
+            preserve_during_warmup: std::env::var("AXON_TEST_PRESERVE_PREV_DURING_WARMUP")
+                .ok()
+                .and_then(|v| parse_bool(&v))
+                .unwrap_or(false),
+        }
+    }
+}
+
+fn parse_bool(s: &str) -> Option<bool> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "y" | "on" => Some(true),
+        "0" | "false" | "no" | "n" | "off" => Some(false),
+        _ => None,
+    }
+}
+
+fn parse_ram_pressure(s: &str) -> Option<RamPressure> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "normal" => Some(RamPressure::Normal),
+        "warn" | "warning" => Some(RamPressure::Warn),
+        "critical" => Some(RamPressure::Critical),
+        _ => None,
+    }
+}
+
+fn parse_impact_level(s: &str) -> Option<ImpactLevel> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "healthy" => Some(ImpactLevel::Healthy),
+        "degrading" => Some(ImpactLevel::Degrading),
+        "strained" => Some(ImpactLevel::Strained),
+        "critical" => Some(ImpactLevel::Critical),
+        _ => None,
+    }
+}
 
 // ── Shared Application State ──────────────────────────────────────────────────
 
@@ -61,11 +120,12 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle) {
     let mut ewma = EwmaStore::default();
     let mut tick_count: u32 = 0;
     let mut above_threshold_count: u32 = 0;
+    let test_prev = TestPrevStateConfig::from_env();
 
     // Previous state for transition detection
-    let mut prev_ram_pressure = RamPressure::Normal;
-    let mut prev_throttling = false;
-    let mut prev_impact_level = ImpactLevel::Healthy;
+    let mut prev_ram_pressure = test_prev.ram_pressure.unwrap_or(RamPressure::Normal);
+    let mut prev_throttling = test_prev.throttling.unwrap_or(false);
+    let mut prev_impact_level = test_prev.impact_level.unwrap_or(ImpactLevel::Healthy);
 
     let mut ticker = interval(Duration::from_secs(2));
 
@@ -89,16 +149,10 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle) {
             0.0
         };
 
-        let ram_pressure = if ram_pct >= 90.0 {
-            RamPressure::Critical
-        } else if ram_pct >= 70.0 {
-            RamPressure::Warn
-        } else {
-            RamPressure::Normal
-        };
+        let ram_pressure = crate::thresholds::ram_pressure_from_pct(ram_pct);
 
         let die_temp = temperature::read_cpu_temp();
-        let throttling = die_temp.map_or(false, |t| t > 95.0);
+        let throttling = crate::thresholds::thermal_throttling_from_temp_c(die_temp);
 
         let hw = HwSnapshot {
             die_temp_celsius: die_temp,
@@ -177,7 +231,7 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle) {
         let swap_gb = 0.0_f64;
         let score = impact::compute_score(ram_pct, cpu_pct, swap_gb);
 
-        if score > 0.3 {
+        if score > crate::thresholds::IMPACT_SCORE_ELEVATED {
             above_threshold_count = above_threshold_count.saturating_add(1);
         } else {
             above_threshold_count = above_threshold_count.saturating_sub(1);
@@ -223,28 +277,44 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle) {
 
         // Skip alerts during warm-up (first 3 ticks)
         let mut new_alerts = if tick_count > 3 {
-            let a = alerts::detect_alerts(
-                &prev_ram_pressure,
-                &ram_pressure,
+            let ctx = AlertContext {
+                prev_ram_pressure: &prev_ram_pressure,
+                ram_pressure: &ram_pressure,
                 prev_throttling,
                 throttling,
                 die_temp,
                 ram_used_gb,
                 ram_total_gb,
-                &prev_impact_level,
-                &impact_level,
-                &blame.impact,
-            );
+                cpu_pct,
+                prev_impact_level: &prev_impact_level,
+                impact_level: &impact_level,
+                impact_message: &blame.impact,
+                culprit: blame.culprit.as_ref(),
+                culprit_group: blame.culprit_group.as_ref(),
+            };
+            let a = alerts::detect_alerts(&ctx);
             prev_ram_pressure = ram_pressure;
             prev_throttling = throttling;
             prev_impact_level = impact_level;
             a
         } else {
-            prev_ram_pressure = ram_pressure;
-            prev_throttling = throttling;
-            prev_impact_level = impact_level;
+            // Optional test hook: preserve injected previous-state values through warm-up so
+            // the first alert-enabled tick can deterministically validate edge transitions.
+            if !test_prev.preserve_during_warmup {
+                prev_ram_pressure = ram_pressure;
+                prev_throttling = throttling;
+                prev_impact_level = impact_level;
+            }
             Vec::new()
         };
+
+        // ── Persist alerts immediately (independent of MCP connection) ───
+        // Alerts are persisted here so they land in the DB even when there is no active
+        // MCP client (e.g. test harnesses, or short-lived connections). The alert_sender
+        // task handles webhook dispatch and MCP logging notifications separately.
+        for alert in &new_alerts {
+            persistence::insert_alert(&db, alert);
+        }
 
         // ── Write to shared state ──────────────────────────────────────────
 
@@ -257,9 +327,9 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle) {
         guard.pending_alerts.append(&mut new_alerts);
         drop(guard);
 
-        // ── Persist snapshot every 15 ticks (~30s) ───────────────────────
+        // ── Persist snapshot every 5 ticks (~10s) ────────────────────────
 
-        if tick_count == 1 || tick_count % 15 == 0 {
+        if tick_count == 1 || tick_count.is_multiple_of(5) {
             persistence::insert_snapshot(&db, &hw, &blame);
         }
     }
@@ -281,9 +351,8 @@ fn read_battery() -> Option<BatteryStatus> {
     // Extract percentage: look for a number immediately before '%'
     let percentage: f32 = stdout.split('%').next().and_then(|s| {
         s.split(|c: char| c.is_whitespace() || c == '\t' || c == ';')
-            .filter(|s| !s.is_empty())
-            .last()
-            .and_then(|s| s.trim().parse().ok())
+            .rfind(|sub| !sub.is_empty())
+            .and_then(|sub| sub.trim().parse().ok())
     })?;
 
     // Extract time remaining: "H:MM remaining" (not "-1:-1" or "no estimate")
