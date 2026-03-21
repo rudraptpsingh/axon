@@ -78,14 +78,11 @@ enum Commands {
         list: bool,
     },
 
-    /// Remove axon from AI agent configs (reverse of setup)
+    /// Remove axon from AI agent configs and delete local data (reverse of setup)
     Uninstall {
         /// Target client: claude-desktop | claude-code | cursor | vscode (omit to remove from all)
         #[arg(value_name = "TARGET")]
         target: Option<String>,
-        /// Also remove axon data (~/.config/axon, ~/Library/Application Support/axon)
-        #[arg(long)]
-        purge: bool,
     },
 }
 
@@ -117,7 +114,7 @@ async fn main() -> Result<()> {
                 run_setup(target.as_deref())
             }
         }
-        Some(Commands::Uninstall { target, purge }) => run_uninstall(target.as_deref(), purge),
+        Some(Commands::Uninstall { target }) => run_uninstall(target.as_deref()),
     }
 }
 
@@ -580,44 +577,126 @@ fn setup_claude_code() -> Result<()> {
 
 fn run_setup_list() -> Result<()> {
     let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Cannot find home directory"))?;
-    let mut found = 0;
+
+    struct AgentInfo {
+        name: &'static str,
+        configured: bool,
+        config_path: String,
+        binary_path: String,
+        detected: bool,
+    }
+
+    let mut agents: Vec<AgentInfo> = Vec::new();
 
     // Claude Desktop
     let claude_config = home.join("Library/Application Support/Claude/claude_desktop_config.json");
     let claude_ok = check_mcp_config(&claude_config, "mcpServers");
-    print_agent_status("Claude Desktop", &claude_config, claude_ok);
-    if claude_ok {
-        found += 1;
-    }
+    let claude_bin = get_configured_binary(&claude_config, &["mcpServers", "axon", "command"]);
+    agents.push(AgentInfo {
+        name: "Claude Desktop",
+        configured: claude_ok,
+        config_path: claude_config.display().to_string(),
+        binary_path: claude_bin,
+        detected: claude_config.parent().map(|p| p.exists()).unwrap_or(false),
+    });
 
     // Cursor
     let cursor_config = home.join(".cursor/mcp.json");
     let cursor_ok = check_mcp_config(&cursor_config, "mcpServers");
-    print_agent_status("Cursor", &cursor_config, cursor_ok);
-    if cursor_ok {
-        found += 1;
-    }
+    let cursor_bin = get_configured_binary(&cursor_config, &["mcpServers", "axon", "command"]);
+    agents.push(AgentInfo {
+        name: "Cursor",
+        configured: cursor_ok,
+        config_path: cursor_config.display().to_string(),
+        binary_path: cursor_bin,
+        detected: cursor_config.parent().map(|p| p.exists()).unwrap_or(false),
+    });
 
     // VS Code
     let vscode_config = home.join("Library/Application Support/Code/User/settings.json");
     let vscode_ok = check_vscode_config(&vscode_config);
-    print_agent_status("VS Code", &vscode_config, vscode_ok);
-    if vscode_ok {
-        found += 1;
-    }
+    let vscode_bin = get_configured_binary(&vscode_config, &["mcp", "servers", "axon", "command"]);
+    agents.push(AgentInfo {
+        name: "VS Code",
+        configured: vscode_ok,
+        config_path: vscode_config.display().to_string(),
+        binary_path: vscode_bin,
+        detected: vscode_config.exists(),
+    });
 
     // Claude Code
     let claude_code_ok = check_claude_code();
-    if claude_code_ok {
-        println!("[ok]  Claude Code     -- configured (via claude mcp list)");
-        found += 1;
-    } else {
-        println!("[ ]   Claude Code     -- not configured");
+    agents.push(AgentInfo {
+        name: "Claude Code",
+        configured: claude_code_ok,
+        config_path: "(managed by claude CLI)".to_string(),
+        binary_path: if claude_code_ok { "via claude mcp".to_string() } else { "-".to_string() },
+        detected: which_exists("claude"),
+    });
+
+    // Data directories
+    let config_dir = home.join(".config/axon");
+    let data_dir = home.join("Library/Application Support/axon");
+
+    // Print structured output
+    println!("Agent            Status        Config");
+    println!("---------------  ----------    ------");
+    let mut configured_count = 0;
+    for a in &agents {
+        let status = if a.configured {
+            configured_count += 1;
+            "[ok]"
+        } else if a.detected {
+            "[--]"
+        } else {
+            "[??]"
+        };
+        println!("{:<16} {:<12}  {}", a.name, status, a.config_path);
+        if a.configured {
+            println!("{:<16} {:<12}  binary: {}", "", "", a.binary_path);
+        }
     }
 
     println!();
-    println!("{} agent(s) configured.", found);
+    println!("Data:   {:<10} {}", if data_dir.exists() { "[ok]" } else { "[--]" }, data_dir.display());
+    println!("Config: {:<10} {}", if config_dir.exists() { "[ok]" } else { "[--]" }, config_dir.display());
+    println!();
+    println!("{} of {} agent(s) configured.", configured_count, agents.iter().filter(|a| a.detected).count());
     Ok(())
+}
+
+/// Walk a JSON path and return the string value at the end, or "-".
+fn get_configured_binary(path: &std::path::Path, keys: &[&str]) -> String {
+    if !path.exists() {
+        return "-".to_string();
+    }
+    let raw = match std::fs::read_to_string(path) {
+        Ok(r) => r,
+        Err(_) => return "-".to_string(),
+    };
+    let config: serde_json::Value = match serde_json::from_str(&raw) {
+        Ok(c) => c,
+        Err(_) => return "-".to_string(),
+    };
+    let mut current = &config;
+    for key in keys {
+        match current.get(key) {
+            Some(v) => current = v,
+            None => return "-".to_string(),
+        }
+    }
+    current.as_str().unwrap_or("-").to_string()
+}
+
+fn which_exists(cmd: &str) -> bool {
+    use std::process::Command;
+    Command::new("which")
+        .arg(cmd)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
 }
 
 fn check_mcp_config(path: &std::path::Path, key: &str) -> bool {
@@ -653,19 +732,10 @@ fn check_claude_code() -> bool {
         .unwrap_or(false)
 }
 
-fn print_agent_status(name: &str, path: &std::path::Path, configured: bool) {
-    if configured {
-        println!("[ok]  {:<14} -- configured at {}", name, path.display());
-    } else if path.exists() {
-        println!("[ ]   {:<14} -- not configured (config exists at {})", name, path.display());
-    } else {
-        println!("[ ]   {:<14} -- not detected", name);
-    }
-}
 
 // ── Uninstall ────────────────────────────────────────────────────────────────
 
-fn run_uninstall(target: Option<&str>, purge: bool) -> Result<()> {
+fn run_uninstall(target: Option<&str>) -> Result<()> {
     match target {
         Some("claude-desktop") => uninstall_claude_desktop()?,
         Some("claude-code") | Some("claude-cli") => uninstall_claude_code()?,
@@ -678,10 +748,7 @@ fn run_uninstall(target: Option<&str>, purge: bool) -> Result<()> {
         None => uninstall_all()?,
     }
 
-    if purge {
-        purge_data()?;
-    }
-
+    purge_data()?;
     Ok(())
 }
 
