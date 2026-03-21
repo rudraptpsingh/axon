@@ -13,9 +13,7 @@
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpListener;
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
-use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -80,15 +78,13 @@ fn read_http_post_body(stream: &mut std::net::TcpStream) -> std::io::Result<Stri
     }
 }
 
-/// Start a webhook receiver, return (url, receiver for first body).
+/// Start a webhook receiver, return (url, receiver for all alert bodies).
 fn start_webhook_receiver() -> (String, mpsc::Receiver<String>) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     listener.set_nonblocking(false).expect("blocking listener");
     let port = listener.local_addr().expect("addr").port();
     let url = format!("http://127.0.0.1:{}/alerts", port);
     let (tx, rx) = mpsc::channel::<String>();
-    let sent = Arc::new(AtomicBool::new(false));
-    let sent_clone = sent.clone();
     thread::spawn(move || {
         let response = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok";
         loop {
@@ -97,14 +93,24 @@ fn start_webhook_receiver() -> (String, mpsc::Receiver<String>) {
             };
             let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
             if let Ok(body) = read_http_post_body(&mut stream) {
-                if !sent_clone.swap(true, Ordering::SeqCst) {
-                    let _ = tx.send(body);
-                }
+                let _ = tx.send(body);
             }
             let _ = std::io::Write::write_all(&mut stream, response);
         }
     });
     (url, rx)
+}
+
+/// Drain any alerts already queued on the receiver (e.g. from warmup transitions).
+fn drain_warmup_alerts(rx: &mpsc::Receiver<String>) -> usize {
+    let mut count = 0;
+    while rx.try_recv().is_ok() {
+        count += 1;
+    }
+    if count > 0 {
+        eprintln!("[perf] drained {} warmup alert(s)", count);
+    }
+    count
 }
 
 /// Spawn CPU stress processes.
@@ -135,6 +141,57 @@ fn spawn_cpu_stress() -> Vec<std::process::Child> {
         }
     }
     kids
+}
+
+/// Perform MCP handshake so that `alert_sender` (webhook dispatch) starts.
+/// Returns the stdin handle (must be kept alive to prevent stdin EOF / server exit).
+/// Spawns a background thread to drain stdout so the server doesn't block on pipe.
+fn mcp_initialize(child: &mut std::process::Child) -> std::process::ChildStdin {
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+
+    let init = serde_json::json!({
+        "jsonrpc": "2.0", "id": 0, "method": "initialize",
+        "params": {
+            "protocolVersion": "2025-06-18",
+            "capabilities": {},
+            "clientInfo": {"name": "perf-test", "version": "0.1.0"},
+        }
+    });
+    writeln!(stdin, "{}", init).expect("write init");
+    let notif = serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized"});
+    writeln!(stdin, "{}", notif).expect("write notif");
+
+    // Wait for initialize response (confirms serve() completed, alert_sender spawned)
+    let reader = BufReader::new(stdout);
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let mut lines = reader.lines();
+    loop {
+        if Instant::now() > deadline {
+            eprintln!("[perf] warning: MCP init response timed out");
+            break;
+        }
+        match lines.next() {
+            Some(Ok(line)) => {
+                if let Ok(msg) = serde_json::from_str::<serde_json::Value>(&line) {
+                    if msg.get("id") == Some(&serde_json::json!(0))
+                        && msg.get("result").is_some()
+                    {
+                        eprintln!("[perf] MCP initialized");
+                        break;
+                    }
+                }
+            }
+            _ => break,
+        }
+    }
+
+    // Drain remaining stdout in background so the server doesn't block on pipe
+    thread::spawn(move || {
+        for _ in lines {}
+    });
+
+    stdin
 }
 
 /// Kill all child processes.
@@ -296,16 +353,20 @@ fn perf_scenario_cpu_stress() {
         .env("AXON_TEST_PREV_THROTTLING", "0")
         .env("AXON_TEST_PRESERVE_PREV_DURING_WARMUP", "1")
         .stdin(Stdio::piped())
-        .stdout(Stdio::null())
+        .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
         .expect("spawn axon");
 
-    let _stdin = axon.stdin.take().expect("stdin");
+    // MCP handshake so alert_sender (webhook dispatch) starts
+    let _stdin = mcp_initialize(&mut axon);
 
     // Warm-up: 12s for collector ticks 1-3
     eprintln!("[perf] waiting 12s for collector warm-up...");
     thread::sleep(Duration::from_secs(12));
+
+    // Drain alerts from warmup edge transitions so MTTD measures stress detection
+    drain_warmup_alerts(&rx_webhook);
 
     // --- Start CPU stress ---
     eprintln!("[perf] starting CPU stress...");
@@ -433,15 +494,19 @@ fn perf_scenario_combined_stress() {
         .env("AXON_TEST_PREV_THROTTLING", "0")
         .env("AXON_TEST_PRESERVE_PREV_DURING_WARMUP", "1")
         .stdin(Stdio::piped())
-        .stdout(Stdio::null())
+        .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
         .expect("spawn axon");
 
-    let _stdin = axon.stdin.take();
+    // MCP handshake so alert_sender (webhook dispatch) starts
+    let _stdin = mcp_initialize(&mut axon);
 
     eprintln!("[perf] waiting 12s for warm-up...");
     thread::sleep(Duration::from_secs(12));
+
+    // Drain alerts from warmup edge transitions so MTTD measures stress detection
+    drain_warmup_alerts(&rx_webhook);
 
     // Combined stress
     eprintln!("[perf] starting CPU + memory stress...");
@@ -468,8 +533,9 @@ fn perf_scenario_combined_stress() {
 
     let stress_start = Instant::now();
 
-    // Wait for alert
+    // Wait for alert caused by actual stress (not warmup transitions)
     let mut alert_received = false;
+    let mut mttd: Option<Duration> = None;
     let timeout = Duration::from_secs(60);
     loop {
         if stress_start.elapsed() > timeout {
@@ -477,11 +543,11 @@ fn perf_scenario_combined_stress() {
         }
         match rx_webhook.recv_timeout(Duration::from_millis(500)) {
             Ok(body) => {
-                let elapsed = stress_start.elapsed();
+                mttd = Some(stress_start.elapsed());
                 let v: serde_json::Value = serde_json::from_str(&body).expect("webhook JSON");
                 eprintln!(
                     "[perf] ALERT at +{:.1}s: type={:?} severity={:?}",
-                    elapsed.as_secs_f64(),
+                    mttd.unwrap().as_secs_f64(),
                     v.get("alert_type"),
                     v.get("severity")
                 );
@@ -518,6 +584,11 @@ fn perf_scenario_combined_stress() {
     eprintln!("[perf] Baseline:  {:.2}s", baseline);
     eprintln!("[perf] Stressed:  {:.2}s ({:.1}x)", stressed_time, slowdown);
     eprintln!("[perf] Recovered: {:.2}s ({:.1}x)", recovered, recovery_factor);
+    if let Some(d) = mttd {
+        eprintln!("[perf] MTTD:      {:.1}s", d.as_secs_f64());
+    } else {
+        eprintln!("[perf] MTTD:      no alert received");
+    }
     eprintln!("[perf] Alert:     {}", if alert_received { "yes" } else { "no" });
 
     assert!(
