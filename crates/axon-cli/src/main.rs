@@ -68,11 +68,11 @@ enum Commands {
         tool: String,
     },
 
-    /// Auto-configure an AI agent to use axon
+    /// Configure AI agents to use axon (all detected agents if no target given)
     Setup {
-        /// Target client: claude-desktop | claude-code | cursor | vscode
+        /// Target client: claude-desktop | claude-code | cursor | vscode (omit to configure all)
         #[arg(value_name = "TARGET")]
-        target: String,
+        target: Option<String>,
     },
 }
 
@@ -91,16 +91,13 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
 
-    // Auto-setup all supported agents on first run
-    auto_setup_all();
-
     match cli.command {
         None => run_serve(ServeArgs::default()).await,
         Some(Commands::Serve(args)) => run_serve(args).await,
         Some(Commands::Diagnose) => run_diagnose().await,
         Some(Commands::Status) => run_status().await,
         Some(Commands::Query { tool }) => run_query(&tool).await,
-        Some(Commands::Setup { target }) => run_setup(&target),
+        Some(Commands::Setup { target }) => run_setup(target.as_deref()),
     }
 }
 
@@ -298,16 +295,17 @@ async fn run_query(tool: &str) -> Result<()> {
     Ok(())
 }
 
-fn run_setup(target: &str) -> Result<()> {
+fn run_setup(target: Option<&str>) -> Result<()> {
     match target {
-        "claude-desktop" => setup_claude_desktop(),
-        "claude-code" | "claude-cli" => setup_claude_code(),
-        "cursor" => setup_cursor(),
-        "vscode" | "vs-code" => setup_vscode(),
-        other => anyhow::bail!(
+        Some("claude-desktop") => setup_claude_desktop(),
+        Some("claude-code") | Some("claude-cli") => setup_claude_code(),
+        Some("cursor") => setup_cursor(),
+        Some("vscode") | Some("vs-code") => setup_vscode(),
+        Some(other) => anyhow::bail!(
             "Unknown target '{}'. Supported: claude-desktop, claude-code, cursor, vscode",
             other
         ),
+        None => setup_all(),
     }
 }
 
@@ -408,41 +406,70 @@ fn upsert_vscode_config(config_path: &std::path::Path) -> Result<bool> {
     Ok(true)
 }
 
-// ── Auto-Setup ───────────────────────────────────────────────────────────────
+// ── Setup All ────────────────────────────────────────────────────────────────
 
-fn auto_setup_all() {
-    let Some(home) = dirs::home_dir() else {
-        return;
-    };
+fn setup_all() -> Result<()> {
+    let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Cannot find home directory"))?;
+    let mut configured = 0;
+    let mut skipped = 0;
 
-    // Claude Desktop
+    // Claude Desktop — configure if the app directory exists
     let claude_config = home.join("Library/Application Support/Claude/claude_desktop_config.json");
-    match upsert_mcp_config(&claude_config) {
-        Ok(true) => eprintln!(
-            "Auto-configured Claude Desktop at {}",
-            claude_config.display()
-        ),
-        Ok(false) => {}
-        Err(e) => eprintln!("Warning: auto-setup of Claude Desktop failed: {}", e),
+    if claude_config.parent().map(|p| p.exists()).unwrap_or(false) || claude_config.exists() {
+        match upsert_mcp_config(&claude_config) {
+            Ok(true) => {
+                println!("[ok] Configured Claude Desktop at {}", claude_config.display());
+                println!("     Restart Claude Desktop to apply changes.");
+                configured += 1;
+            }
+            Ok(false) => {
+                println!("[ok] Claude Desktop already configured.");
+                skipped += 1;
+            }
+            Err(e) => println!("[err] Claude Desktop: {}", e),
+        }
     }
 
-    // Cursor (global config)
+    // Cursor — configure if ~/.cursor exists
     let cursor_config = home.join(".cursor/mcp.json");
-    match upsert_mcp_config(&cursor_config) {
-        Ok(true) => eprintln!("Auto-configured Cursor at {}", cursor_config.display()),
-        Ok(false) => {}
-        Err(e) => eprintln!("Warning: auto-setup of Cursor failed: {}", e),
+    if cursor_config.parent().map(|p| p.exists()).unwrap_or(false) || cursor_config.exists() {
+        match upsert_mcp_config(&cursor_config) {
+            Ok(true) => {
+                println!("[ok] Configured Cursor at {}", cursor_config.display());
+                println!("     Restart Cursor to apply changes.");
+                configured += 1;
+            }
+            Ok(false) => {
+                println!("[ok] Cursor already configured.");
+                skipped += 1;
+            }
+            Err(e) => println!("[err] Cursor: {}", e),
+        }
     }
 
-    // VS Code (user settings)
+    // VS Code — only if settings.json already exists
     let vscode_config = home.join("Library/Application Support/Code/User/settings.json");
     if vscode_config.exists() {
         match upsert_vscode_config(&vscode_config) {
-            Ok(true) => eprintln!("Auto-configured VS Code at {}", vscode_config.display()),
-            Ok(false) => {}
-            Err(e) => eprintln!("Warning: auto-setup of VS Code failed: {}", e),
+            Ok(true) => {
+                println!("[ok] Configured VS Code at {}", vscode_config.display());
+                println!("     Restart VS Code to apply changes.");
+                configured += 1;
+            }
+            Ok(false) => {
+                println!("[ok] VS Code already configured.");
+                skipped += 1;
+            }
+            Err(e) => println!("[err] VS Code: {}", e),
         }
     }
+
+    if configured == 0 && skipped == 0 {
+        println!("[info] No supported agents detected (Claude Desktop, Cursor, VS Code).");
+        println!("       Run 'axon setup <target>' to configure a specific agent.");
+    }
+
+    Ok(())
 }
 
 // ── Setup Helpers ─────────────────────────────────────────────────────────────
