@@ -49,7 +49,7 @@ axon exposes 5 MCP tools that any compatible agent can call:
 | Tool | Purpose |
 |---|---|
 | `process_blame` | Identify the top culprit process, its impact severity, and a specific fix |
-| `hw_snapshot` | CPU usage, die temperature, RAM used/total, pressure level, throttling state |
+| `hw_snapshot` | CPU usage, die temperature, RAM used/total, disk used/total, pressure levels, throttling state |
 | `battery_status` | Battery percentage, charging state, estimated time remaining |
 | `system_profile` | Machine model, chip, core count, total RAM, OS version |
 | `hardware_trend` | Historical CPU/RAM/temp trends over a time window (last_1h to last_30d) |
@@ -86,7 +86,7 @@ If you are an AI agent with axon available as an MCP tool, here is when to use e
 
 - **Session start** -- call `system_profile` once to understand the machine you are running on (chip, cores, RAM, OS). This is cached and cheap.
 - **Build slow or session lagging** -- call `process_blame` to identify what is causing the slowdown and get a specific fix. This is your primary diagnostic tool.
-- **Before starting a heavy task** (large build, test suite, code generation) -- call `hw_snapshot` to check if the machine has headroom. If RAM pressure is warn/critical or CPU is saturated, suggest the user close other applications first.
+- **Before starting a heavy task** (large build, test suite, code generation) -- call `hw_snapshot` to check if the machine has headroom. If RAM pressure is warn/critical, disk pressure is warn/critical, or CPU is saturated, suggest the user close other applications or free disk space first.
 - **Battery concerns** -- call `battery_status` to check remaining charge. If battery is low and not charging, warn the user before starting long-running tasks.
 - **Investigating performance over time** -- call `hardware_trend` with a time range (last_1h, last_6h, last_24h, last_7d, last_30d) to see if the machine is degrading or if there is a pattern.
 
@@ -138,7 +138,7 @@ Or add to any MCP-compatible agent's config manually:
 
 ## Alerts
 
-axon fires edge-triggered alerts on state transitions -- not every tick. RAM pressure spikes, thermal throttle onset, impact escalation. Delivered via webhook POST or MCP logging notifications.
+axon fires edge-triggered alerts on state transitions -- not every tick. RAM pressure spikes, disk pressure warnings, thermal throttle onset, impact escalation. Delivered via webhook POST or MCP logging notifications.
 
 ![Live alert firing](tapes/demo-alerts-live.gif)
 
@@ -171,7 +171,7 @@ Key design decisions:
 - **stdio transport** -- universal MCP compatibility with all current agents.
 - **EWMA baselines** -- simple, effective anomaly detection at 2-second granularity.
 - **SQLite persistence** -- snapshots every 10s, alerts on state transitions. Powers `hardware_trend` and alert history.
-- **Edge-triggered alerts** -- fire once on state transitions (Normal->Warn, Healthy->Strained), not on every tick. Delivered via webhook POST or MCP logging notifications.
+- **Edge-triggered alerts** -- fire once on state transitions (Normal->Warn, Healthy->Strained), not on every tick. Covers RAM pressure, disk pressure, thermal throttling, and impact escalation. Delivered via webhook POST or MCP logging notifications.
 
 ## Requirements
 

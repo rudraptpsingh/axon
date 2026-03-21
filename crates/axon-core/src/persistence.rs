@@ -32,6 +32,7 @@ pub fn open(path: PathBuf) -> Result<DbHandle> {
     conn.pragma_update(None, "synchronous", "normal")?;
     init_schema(&conn)?;
     migrate_disk_columns(&conn)?;
+    migrate_disk_pressure_column(&conn)?;
     prune_old_rows(&conn)?;
     Ok(Arc::new(Mutex::new(conn)))
 }
@@ -51,7 +52,8 @@ fn init_schema(conn: &Connection) -> Result<()> {
             anomaly_score REAL,
             culprit_group_name TEXT,
             disk_used_gb REAL,
-            disk_total_gb REAL
+            disk_total_gb REAL,
+            disk_pressure TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_snapshots_ts ON snapshots(ts);
         CREATE TABLE IF NOT EXISTS alerts (
@@ -87,6 +89,18 @@ fn migrate_disk_columns(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+fn migrate_disk_pressure_column(conn: &Connection) -> Result<()> {
+    let has_col: bool = conn
+        .prepare("PRAGMA table_info(snapshots)")?
+        .query_map([], |row| row.get::<_, String>(1))?
+        .filter_map(|r| r.ok())
+        .any(|name| name == "disk_pressure");
+    if !has_col {
+        conn.execute_batch("ALTER TABLE snapshots ADD COLUMN disk_pressure TEXT;")?;
+    }
+    Ok(())
+}
+
 fn prune_old_rows(conn: &Connection) -> Result<()> {
     let cutoff = Utc::now() - chrono::Duration::days(30);
     let cutoff_str = cutoff.to_rfc3339();
@@ -117,12 +131,17 @@ pub fn insert_snapshot(db: &DbHandle, hw: &HwSnapshot, blame: &ProcessBlame) {
         RamPressure::Warn => "warn",
         RamPressure::Critical => "critical",
     };
+    let disk_pressure_str = match hw.disk_pressure {
+        DiskPressure::Normal => "normal",
+        DiskPressure::Warn => "warn",
+        DiskPressure::Critical => "critical",
+    };
     let anomaly_str = format!("{:?}", blame.anomaly_type).to_lowercase();
     let impact_str = format!("{:?}", blame.impact_level).to_lowercase();
 
     if let Err(e) = conn.execute(
-        "INSERT INTO snapshots (ts, cpu_pct, ram_used_gb, die_temp_c, throttling, ram_pressure, anomaly_type, impact_level, anomaly_score, culprit_group_name, disk_used_gb, disk_total_gb)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+        "INSERT INTO snapshots (ts, cpu_pct, ram_used_gb, die_temp_c, throttling, ram_pressure, anomaly_type, impact_level, anomaly_score, culprit_group_name, disk_used_gb, disk_total_gb, disk_pressure)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
         params![
             hw.ts.to_rfc3339(),
             hw.cpu_usage_pct,
@@ -136,6 +155,7 @@ pub fn insert_snapshot(db: &DbHandle, hw: &HwSnapshot, blame: &ProcessBlame) {
             group_name,
             hw.disk_used_gb,
             hw.disk_total_gb,
+            disk_pressure_str,
         ],
     ) {
         tracing::warn!("failed to insert snapshot: {}", e);
@@ -230,6 +250,7 @@ pub fn query_alerts(
             let alert_type = match type_str.as_str() {
                 "thermal_throttle" => AlertType::ThermalThrottle,
                 "impact_escalation" => AlertType::ImpactEscalation,
+                "disk_pressure" => AlertType::DiskPressure,
                 _ => AlertType::MemoryPressure,
             };
 
@@ -238,6 +259,7 @@ pub fn query_alerts(
                     ram_pct: None,
                     cpu_pct: None,
                     temp_c: None,
+                    disk_pct: None,
                     culprit: None,
                     culprit_group: None,
                 });
@@ -421,6 +443,7 @@ mod tests {
             cpu_usage_pct: cpu,
             disk_used_gb: 250.0,
             disk_total_gb: 500.0,
+            disk_pressure: DiskPressure::Normal,
             ts: Utc::now(),
         }
     }

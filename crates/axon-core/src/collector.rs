@@ -15,6 +15,7 @@ struct TestPrevStateConfig {
     ram_pressure: Option<RamPressure>,
     throttling: Option<bool>,
     impact_level: Option<ImpactLevel>,
+    disk_pressure: Option<DiskPressure>,
     preserve_during_warmup: bool,
 }
 
@@ -30,6 +31,9 @@ impl TestPrevStateConfig {
             impact_level: std::env::var("AXON_TEST_PREV_IMPACT_LEVEL")
                 .ok()
                 .and_then(|v| parse_impact_level(&v)),
+            disk_pressure: std::env::var("AXON_TEST_PREV_DISK_PRESSURE")
+                .ok()
+                .and_then(|v| parse_disk_pressure(&v)),
             preserve_during_warmup: std::env::var("AXON_TEST_PRESERVE_PREV_DURING_WARMUP")
                 .ok()
                 .and_then(|v| parse_bool(&v))
@@ -65,6 +69,15 @@ fn parse_impact_level(s: &str) -> Option<ImpactLevel> {
     }
 }
 
+fn parse_disk_pressure(s: &str) -> Option<DiskPressure> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "normal" => Some(DiskPressure::Normal),
+        "warn" | "warning" => Some(DiskPressure::Warn),
+        "critical" => Some(DiskPressure::Critical),
+        _ => None,
+    }
+}
+
 // ── Shared Application State ──────────────────────────────────────────────────
 
 pub struct AppState {
@@ -90,6 +103,7 @@ impl AppState {
                 cpu_usage_pct: 0.0,
                 disk_used_gb: 0.0,
                 disk_total_gb: 0.0,
+                disk_pressure: DiskPressure::Normal,
                 ts: now,
             },
             blame: ProcessBlame {
@@ -128,6 +142,7 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle) {
     let mut prev_ram_pressure = test_prev.ram_pressure.unwrap_or(RamPressure::Normal);
     let mut prev_throttling = test_prev.throttling.unwrap_or(false);
     let mut prev_impact_level = test_prev.impact_level.unwrap_or(ImpactLevel::Healthy);
+    let mut prev_disk_pressure = test_prev.disk_pressure.unwrap_or(DiskPressure::Normal);
 
     let mut ticker = interval(Duration::from_secs(2));
 
@@ -171,6 +186,13 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle) {
             })
             .unwrap_or((0.0, 0.0));
 
+        let disk_pct = if disk_total_gb > 0.0 {
+            disk_used_gb / disk_total_gb * 100.0
+        } else {
+            0.0
+        };
+        let disk_pressure = crate::thresholds::disk_pressure_from_pct(disk_pct);
+
         let hw = HwSnapshot {
             die_temp_celsius: die_temp,
             throttling,
@@ -180,6 +202,7 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle) {
             cpu_usage_pct: cpu_pct,
             disk_used_gb,
             disk_total_gb,
+            disk_pressure: disk_pressure.clone(),
             ts: chrono::Utc::now(),
         };
 
@@ -305,6 +328,10 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle) {
                 ram_used_gb,
                 ram_total_gb,
                 cpu_pct,
+                prev_disk_pressure: &prev_disk_pressure,
+                disk_pressure: &disk_pressure,
+                disk_used_gb,
+                disk_total_gb,
                 prev_impact_level: &prev_impact_level,
                 impact_level: &impact_level,
                 impact_message: &blame.impact,
@@ -315,6 +342,7 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle) {
             prev_ram_pressure = ram_pressure;
             prev_throttling = throttling;
             prev_impact_level = impact_level;
+            prev_disk_pressure = disk_pressure;
             a
         } else {
             // Optional test hook: preserve injected previous-state values through warm-up so
@@ -323,6 +351,7 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle) {
                 prev_ram_pressure = ram_pressure;
                 prev_throttling = throttling;
                 prev_impact_level = impact_level;
+                prev_disk_pressure = disk_pressure;
             }
             Vec::new()
         };

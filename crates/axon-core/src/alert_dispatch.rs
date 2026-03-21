@@ -19,6 +19,7 @@ pub struct WebhookMetrics {
     pub ram_pct: Option<f64>,
     pub cpu_pct: Option<f64>,
     pub temp_c: Option<f64>,
+    pub disk_pct: Option<f64>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -46,6 +47,7 @@ impl From<&Alert> for WebhookPayload {
                 ram_pct: alert.metadata.ram_pct,
                 cpu_pct: alert.metadata.cpu_pct,
                 temp_c: alert.metadata.temp_c,
+                disk_pct: alert.metadata.disk_pct,
             },
             culprit,
         }
@@ -169,6 +171,7 @@ mod tests {
                 ram_pct: Some(85.0),
                 cpu_pct: Some(72.0),
                 temp_c: Some(65.0),
+                disk_pct: None,
                 culprit: Some(ProcessInfo {
                     pid: 1234,
                     cmd: "chrome".to_string(),

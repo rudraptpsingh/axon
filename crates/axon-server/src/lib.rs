@@ -52,7 +52,7 @@ impl AxonServer {
 #[tool_router(router = tool_router)]
 impl AxonServer {
     #[tool(
-        description = "Real-time hardware snapshot: CPU usage %, die temperature, RAM used/total, RAM pressure level (normal/warn/critical), disk used/total, and whether the CPU is thermally throttling."
+        description = "Real-time hardware snapshot: CPU usage %, die temperature, RAM used/total, RAM pressure level (normal/warn/critical), disk used/total, disk pressure level (normal/warn/critical), and whether the CPU is thermally throttling."
     )]
     async fn hw_snapshot(&self, _p: Parameters<EmptyParams>) -> String {
         let hw = {
@@ -196,7 +196,15 @@ fn hw_narrative(hw: &HwSnapshot) -> String {
     };
     let disk_str = if hw.disk_total_gb > 0.0 {
         let disk_pct = hw.disk_used_gb / hw.disk_total_gb * 100.0;
-        format!(" Disk {:.1}/{:.0}GB ({:.0}%).", hw.disk_used_gb, hw.disk_total_gb, disk_pct)
+        let disk_pressure_str = match hw.disk_pressure {
+            DiskPressure::Normal => "normal",
+            DiskPressure::Warn => "warn",
+            DiskPressure::Critical => "critical",
+        };
+        format!(
+            " Disk {:.1}/{:.0}GB ({:.0}%, {} pressure).",
+            hw.disk_used_gb, hw.disk_total_gb, disk_pct, disk_pressure_str
+        )
     } else {
         String::new()
     };

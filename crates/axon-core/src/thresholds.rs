@@ -1,7 +1,7 @@
 //! Central tuning for hardware pressure and impact triggers.
 //! Lower values here make warnings and impact escalation easier to reach.
 
-use crate::types::RamPressure;
+use crate::types::{DiskPressure, RamPressure};
 
 // ── RAM pressure tiers (collector → `RamPressure`, memory alerts) ─────────────
 
@@ -9,6 +9,13 @@ use crate::types::RamPressure;
 pub const RAM_PCT_WARN: f64 = 55.0;
 /// RAM % of total used: at or above → critical tier.
 pub const RAM_PCT_CRITICAL: f64 = 75.0;
+
+// ── Disk pressure tiers (collector → `DiskPressure`, disk alerts) ────────────
+
+/// Disk % of total used: at or above → warn tier.
+pub const DISK_PCT_WARN: f64 = 80.0;
+/// Disk % of total used: at or above → critical tier.
+pub const DISK_PCT_CRITICAL: f64 = 90.0;
 
 // ── Thermal ─────────────────────────────────────────────────────────────────
 
@@ -49,6 +56,17 @@ pub fn ram_pressure_from_pct(ram_pct: f64) -> RamPressure {
     }
 }
 
+/// Map total-disk-used percentage to pressure tier.
+pub fn disk_pressure_from_pct(disk_pct: f64) -> DiskPressure {
+    if disk_pct >= DISK_PCT_CRITICAL {
+        DiskPressure::Critical
+    } else if disk_pct >= DISK_PCT_WARN {
+        DiskPressure::Warn
+    } else {
+        DiskPressure::Normal
+    }
+}
+
 /// True when die temperature indicates thermal throttling (collector `throttling` flag).
 pub fn thermal_throttling_from_temp_c(temp_c: Option<f64>) -> bool {
     temp_c.is_some_and(|t| t > THERMAL_THROTTLE_C)
@@ -67,6 +85,14 @@ mod tests {
         assert_eq!(ram_pressure_from_pct(55.0), RamPressure::Warn);
         assert_eq!(ram_pressure_from_pct(74.9), RamPressure::Warn);
         assert_eq!(ram_pressure_from_pct(75.0), RamPressure::Critical);
+    }
+
+    #[test]
+    fn disk_pressure_boundaries_match_constants() {
+        assert_eq!(disk_pressure_from_pct(79.9), DiskPressure::Normal);
+        assert_eq!(disk_pressure_from_pct(80.0), DiskPressure::Warn);
+        assert_eq!(disk_pressure_from_pct(89.9), DiskPressure::Warn);
+        assert_eq!(disk_pressure_from_pct(90.0), DiskPressure::Critical);
     }
 
     #[test]

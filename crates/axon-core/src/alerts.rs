@@ -10,6 +10,10 @@ pub struct AlertContext<'a> {
     pub ram_used_gb: f64,
     pub ram_total_gb: f64,
     pub cpu_pct: f64,
+    pub prev_disk_pressure: &'a DiskPressure,
+    pub disk_pressure: &'a DiskPressure,
+    pub disk_used_gb: f64,
+    pub disk_total_gb: f64,
     pub prev_impact_level: &'a ImpactLevel,
     pub impact_level: &'a ImpactLevel,
     pub impact_message: &'a str,
@@ -23,10 +27,16 @@ fn build_metadata(ctx: &AlertContext) -> AlertMetadata {
     } else {
         None
     };
+    let disk_pct = if ctx.disk_total_gb > 0.0 {
+        Some(ctx.disk_used_gb / ctx.disk_total_gb * 100.0)
+    } else {
+        None
+    };
     AlertMetadata {
         ram_pct,
         cpu_pct: Some(ctx.cpu_pct),
         temp_c: ctx.die_temp,
+        disk_pct,
         culprit: ctx.culprit.cloned(),
         culprit_group: ctx.culprit_group.cloned(),
     }
@@ -84,6 +94,42 @@ pub fn detect_alerts(ctx: &AlertContext) -> Vec<Alert> {
         });
     }
 
+    // Disk pressure escalation
+    if ctx.disk_pressure != ctx.prev_disk_pressure {
+        let disk_pct = if ctx.disk_total_gb > 0.0 {
+            ctx.disk_used_gb / ctx.disk_total_gb * 100.0
+        } else {
+            0.0
+        };
+        match (ctx.prev_disk_pressure, ctx.disk_pressure) {
+            (DiskPressure::Normal, DiskPressure::Warn) => {
+                alerts.push(Alert {
+                    severity: AlertSeverity::Warning,
+                    alert_type: AlertType::DiskPressure,
+                    message: format!(
+                        "Disk usage elevated to warn ({:.0}/{:.0}GB, {:.0}% used).",
+                        ctx.disk_used_gb, ctx.disk_total_gb, disk_pct
+                    ),
+                    ts: now,
+                    metadata: metadata.clone(),
+                });
+            }
+            (_, DiskPressure::Critical) => {
+                alerts.push(Alert {
+                    severity: AlertSeverity::Critical,
+                    alert_type: AlertType::DiskPressure,
+                    message: format!(
+                        "Disk usage critical ({:.0}/{:.0}GB, {:.0}% used). Free space is running low.",
+                        ctx.disk_used_gb, ctx.disk_total_gb, disk_pct
+                    ),
+                    ts: now,
+                    metadata: metadata.clone(),
+                });
+            }
+            _ => {}
+        }
+    }
+
     // Impact level escalation
     if ctx.impact_level != ctx.prev_impact_level {
         match (ctx.prev_impact_level, ctx.impact_level) {
@@ -137,9 +183,40 @@ mod tests {
             ram_used_gb: ram_used,
             ram_total_gb: ram_total,
             cpu_pct: 50.0,
+            prev_disk_pressure: &DiskPressure::Normal,
+            disk_pressure: &DiskPressure::Normal,
+            disk_used_gb: 250.0,
+            disk_total_gb: 500.0,
             prev_impact_level: prev_impact,
             impact_level: impact,
             impact_message: msg,
+            culprit: None,
+            culprit_group: None,
+        }
+    }
+
+    fn make_disk_ctx<'a>(
+        prev_disk: &'a DiskPressure,
+        disk: &'a DiskPressure,
+        disk_used: f64,
+        disk_total: f64,
+    ) -> AlertContext<'a> {
+        AlertContext {
+            prev_ram_pressure: &RamPressure::Normal,
+            ram_pressure: &RamPressure::Normal,
+            prev_throttling: false,
+            throttling: false,
+            die_temp: None,
+            ram_used_gb: 4.0,
+            ram_total_gb: 8.0,
+            cpu_pct: 30.0,
+            prev_disk_pressure: prev_disk,
+            disk_pressure: disk,
+            disk_used_gb: disk_used,
+            disk_total_gb: disk_total,
+            prev_impact_level: &ImpactLevel::Healthy,
+            impact_level: &ImpactLevel::Healthy,
+            impact_message: "",
             culprit: None,
             culprit_group: None,
         }
@@ -360,6 +437,10 @@ mod tests {
             ram_used_gb: 7.5,
             ram_total_gb: 8.0,
             cpu_pct: 85.0,
+            prev_disk_pressure: &DiskPressure::Normal,
+            disk_pressure: &DiskPressure::Normal,
+            disk_used_gb: 250.0,
+            disk_total_gb: 500.0,
             prev_impact_level: &ImpactLevel::Healthy,
             impact_level: &ImpactLevel::Healthy,
             impact_message: "",
@@ -408,6 +489,10 @@ mod tests {
             ram_used_gb: 5.6,
             ram_total_gb: 8.0,
             cpu_pct: 44.0,
+            prev_disk_pressure: &DiskPressure::Normal,
+            disk_pressure: &DiskPressure::Normal,
+            disk_used_gb: 250.0,
+            disk_total_gb: 500.0,
             prev_impact_level: &ImpactLevel::Healthy,
             impact_level: &ImpactLevel::Healthy,
             impact_message: "",
@@ -459,5 +544,40 @@ mod tests {
         assert_eq!(alerts.len(), 1);
         assert_eq!(alerts[0].alert_type, AlertType::ImpactEscalation);
         assert_eq!(alerts[0].message, "escalated");
+    }
+
+    #[test]
+    fn test_disk_normal_to_warn() {
+        let ctx = make_disk_ctx(&DiskPressure::Normal, &DiskPressure::Warn, 420.0, 500.0);
+        let alerts = detect_alerts(&ctx);
+        assert_eq!(alerts.len(), 1);
+        assert_eq!(alerts[0].severity, AlertSeverity::Warning);
+        assert_eq!(alerts[0].alert_type, AlertType::DiskPressure);
+        assert!(alerts[0].message.contains("warn"));
+        assert!(alerts[0].metadata.disk_pct.is_some());
+    }
+
+    #[test]
+    fn test_disk_warn_to_critical() {
+        let ctx = make_disk_ctx(&DiskPressure::Warn, &DiskPressure::Critical, 460.0, 500.0);
+        let alerts = detect_alerts(&ctx);
+        assert_eq!(alerts.len(), 1);
+        assert_eq!(alerts[0].severity, AlertSeverity::Critical);
+        assert_eq!(alerts[0].alert_type, AlertType::DiskPressure);
+        assert!(alerts[0].message.contains("critical"));
+    }
+
+    #[test]
+    fn test_disk_no_change_no_alert() {
+        let ctx = make_disk_ctx(&DiskPressure::Warn, &DiskPressure::Warn, 420.0, 500.0);
+        let alerts = detect_alerts(&ctx);
+        assert!(alerts.is_empty());
+    }
+
+    #[test]
+    fn test_disk_critical_to_normal_no_alert() {
+        let ctx = make_disk_ctx(&DiskPressure::Critical, &DiskPressure::Normal, 200.0, 500.0);
+        let alerts = detect_alerts(&ctx);
+        assert!(alerts.is_empty());
     }
 }

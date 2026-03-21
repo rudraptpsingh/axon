@@ -15,6 +15,14 @@ pub enum RamPressure {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
+pub enum DiskPressure {
+    Normal,
+    Warn,
+    Critical,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
 pub enum AnomalyType {
     None,
     MemoryPressure,
@@ -44,6 +52,7 @@ pub struct HwSnapshot {
     pub cpu_usage_pct: f64,
     pub disk_used_gb: f64,
     pub disk_total_gb: f64,
+    pub disk_pressure: DiskPressure,
     pub ts: DateTime<Utc>,
 }
 
@@ -112,6 +121,7 @@ pub enum AlertType {
     MemoryPressure,
     ThermalThrottle,
     ImpactEscalation,
+    DiskPressure,
 }
 
 impl std::fmt::Display for AlertType {
@@ -120,6 +130,7 @@ impl std::fmt::Display for AlertType {
             AlertType::MemoryPressure => write!(f, "memory_pressure"),
             AlertType::ThermalThrottle => write!(f, "thermal_throttle"),
             AlertType::ImpactEscalation => write!(f, "impact_escalation"),
+            AlertType::DiskPressure => write!(f, "disk_pressure"),
         }
     }
 }
@@ -138,6 +149,7 @@ pub struct AlertMetadata {
     pub ram_pct: Option<f64>,
     pub cpu_pct: Option<f64>,
     pub temp_c: Option<f64>,
+    pub disk_pct: Option<f64>,
     pub culprit: Option<ProcessInfo>,
     pub culprit_group: Option<ProcessGroup>,
 }

@@ -114,6 +114,7 @@ async fn dispatcher_posts_webhook_json_without_hardware() {
             ram_pct: Some(85.0),
             cpu_pct: Some(72.0),
             temp_c: Some(65.0),
+            disk_pct: None,
             culprit: Some(ProcessInfo {
                 pid: 1234,
                 cmd: "chrome".to_string(),

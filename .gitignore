@@ -19,3 +19,4 @@ ROADMAP.md
 .idea/
 .vscode/
 dist/
+*.code-workspace
