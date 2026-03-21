@@ -61,6 +61,13 @@ enum Commands {
     /// Print current hardware snapshot as JSON
     Status,
 
+    /// Call an MCP tool directly and print the JSON response (e.g. process_blame, hw_snapshot)
+    Query {
+        /// Tool name: process_blame | hw_snapshot | battery_status | system_profile
+        #[arg(value_name = "TOOL")]
+        tool: String,
+    },
+
     /// Auto-configure an AI agent to use axon
     Setup {
         /// Target client: claude-desktop | claude-code | cursor | vscode
@@ -92,6 +99,7 @@ async fn main() -> Result<()> {
         Some(Commands::Serve(args)) => run_serve(args).await,
         Some(Commands::Diagnose) => run_diagnose().await,
         Some(Commands::Status) => run_status().await,
+        Some(Commands::Query { tool }) => run_query(&tool).await,
         Some(Commands::Setup { target }) => run_setup(&target),
     }
 }
@@ -140,7 +148,7 @@ async fn run_serve(args: ServeArgs) -> Result<()> {
 }
 
 async fn run_diagnose() -> Result<()> {
-    eprintln!("[info] Collecting system data (4s)...\n");
+    tracing::info!("collecting system data (4s)");
 
     let profile = build_system_profile();
     let state = Arc::new(Mutex::new(AppState::new(profile)));
@@ -232,6 +240,61 @@ async fn run_status() -> Result<()> {
     let guard = state.lock().unwrap();
     let json = serde_json::to_string_pretty(&guard.hw)?;
     println!("{}", json);
+    Ok(())
+}
+
+async fn run_query(tool: &str) -> Result<()> {
+    let profile = build_system_profile();
+    let state = Arc::new(Mutex::new(AppState::new(profile)));
+
+    let db_path = persistence::default_db_path()?;
+    let db = persistence::open(db_path)?;
+
+    let state_bg = state.clone();
+    tokio::spawn(async move {
+        start_collector(state_bg, db).await;
+    });
+
+    tokio::time::sleep(tokio::time::Duration::from_secs(4)).await;
+
+    let json_str = {
+        let guard = state.lock().unwrap();
+        match tool {
+            "process_blame" => {
+                let narrative = axon_server::blame_narrative_pub(&guard.blame);
+                let response = axon_core::types::McpResponse::success(guard.blame.clone(), narrative);
+                serde_json::to_string_pretty(&response)?
+            }
+            "hw_snapshot" => {
+                let narrative = axon_server::hw_narrative_pub(&guard.hw);
+                let response = axon_core::types::McpResponse::success(guard.hw.clone(), narrative);
+                serde_json::to_string_pretty(&response)?
+            }
+            "battery_status" => match &guard.battery {
+                Some(b) => {
+                    let narrative = b.narrative.clone();
+                    let response = axon_core::types::McpResponse::success(b.clone(), narrative);
+                    serde_json::to_string_pretty(&response)?
+                }
+                None => r#"{"ok":false,"narrative":"Battery information unavailable."}"#.to_string(),
+            },
+            "system_profile" => {
+                let p = &guard.profile;
+                let narrative = format!(
+                    "{} ({}) — {} cores, {:.0}GB RAM, {}.",
+                    p.model_id, p.chip, p.core_count, p.ram_total_gb, p.os_version
+                );
+                let response = axon_core::types::McpResponse::success(p.clone(), narrative);
+                serde_json::to_string_pretty(&response)?
+            }
+            other => anyhow::bail!(
+                "Unknown tool '{}'. Supported: process_blame, hw_snapshot, battery_status, system_profile",
+                other
+            ),
+        }
+    };
+
+    println!("{}", json_str);
     Ok(())
 }
 

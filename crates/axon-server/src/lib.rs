@@ -175,6 +175,14 @@ impl ServerHandler for AxonServer {
 
 // ── Narrative Helpers ─────────────────────────────────────────────────────────
 
+pub fn hw_narrative_pub(hw: &HwSnapshot) -> String {
+    hw_narrative(hw)
+}
+
+pub fn blame_narrative_pub(blame: &ProcessBlame) -> String {
+    blame_narrative(blame)
+}
+
 fn hw_narrative(hw: &HwSnapshot) -> String {
     let temp_str = hw
         .die_temp_celsius
