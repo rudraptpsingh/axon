@@ -73,6 +73,19 @@ enum Commands {
         /// Target client: claude-desktop | claude-code | cursor | vscode (omit to configure all)
         #[arg(value_name = "TARGET")]
         target: Option<String>,
+        /// Show which agents currently have axon configured
+        #[arg(long)]
+        list: bool,
+    },
+
+    /// Remove axon from AI agent configs (reverse of setup)
+    Uninstall {
+        /// Target client: claude-desktop | claude-code | cursor | vscode (omit to remove from all)
+        #[arg(value_name = "TARGET")]
+        target: Option<String>,
+        /// Also remove axon data (~/.config/axon, ~/Library/Application Support/axon)
+        #[arg(long)]
+        purge: bool,
     },
 }
 
@@ -97,7 +110,14 @@ async fn main() -> Result<()> {
         Some(Commands::Diagnose) => run_diagnose().await,
         Some(Commands::Status) => run_status().await,
         Some(Commands::Query { tool }) => run_query(&tool).await,
-        Some(Commands::Setup { target }) => run_setup(target.as_deref()),
+        Some(Commands::Setup { target, list }) => {
+            if list {
+                run_setup_list()
+            } else {
+                run_setup(target.as_deref())
+            }
+        }
+        Some(Commands::Uninstall { target, purge }) => run_uninstall(target.as_deref(), purge),
     }
 }
 
@@ -553,5 +573,302 @@ fn setup_claude_code() -> Result<()> {
             );
         }
     }
+    Ok(())
+}
+
+// ── Setup List ───────────────────────────────────────────────────────────────
+
+fn run_setup_list() -> Result<()> {
+    let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Cannot find home directory"))?;
+    let mut found = 0;
+
+    // Claude Desktop
+    let claude_config = home.join("Library/Application Support/Claude/claude_desktop_config.json");
+    let claude_ok = check_mcp_config(&claude_config, "mcpServers");
+    print_agent_status("Claude Desktop", &claude_config, claude_ok);
+    if claude_ok {
+        found += 1;
+    }
+
+    // Cursor
+    let cursor_config = home.join(".cursor/mcp.json");
+    let cursor_ok = check_mcp_config(&cursor_config, "mcpServers");
+    print_agent_status("Cursor", &cursor_config, cursor_ok);
+    if cursor_ok {
+        found += 1;
+    }
+
+    // VS Code
+    let vscode_config = home.join("Library/Application Support/Code/User/settings.json");
+    let vscode_ok = check_vscode_config(&vscode_config);
+    print_agent_status("VS Code", &vscode_config, vscode_ok);
+    if vscode_ok {
+        found += 1;
+    }
+
+    // Claude Code
+    let claude_code_ok = check_claude_code();
+    if claude_code_ok {
+        println!("[ok]  Claude Code     -- configured (via claude mcp list)");
+        found += 1;
+    } else {
+        println!("[ ]   Claude Code     -- not configured");
+    }
+
+    println!();
+    println!("{} agent(s) configured.", found);
+    Ok(())
+}
+
+fn check_mcp_config(path: &std::path::Path, key: &str) -> bool {
+    if !path.exists() {
+        return false;
+    }
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+        .and_then(|cfg| cfg.get(key)?.get("axon").cloned())
+        .is_some()
+}
+
+fn check_vscode_config(path: &std::path::Path) -> bool {
+    if !path.exists() {
+        return false;
+    }
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+        .and_then(|cfg| cfg.get("mcp")?.get("servers")?.get("axon").cloned())
+        .is_some()
+}
+
+fn check_claude_code() -> bool {
+    use std::process::Command;
+    Command::new("claude")
+        .args(["mcp", "get", "axon"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+fn print_agent_status(name: &str, path: &std::path::Path, configured: bool) {
+    if configured {
+        println!("[ok]  {:<14} -- configured at {}", name, path.display());
+    } else if path.exists() {
+        println!("[ ]   {:<14} -- not configured (config exists at {})", name, path.display());
+    } else {
+        println!("[ ]   {:<14} -- not detected", name);
+    }
+}
+
+// ── Uninstall ────────────────────────────────────────────────────────────────
+
+fn run_uninstall(target: Option<&str>, purge: bool) -> Result<()> {
+    match target {
+        Some("claude-desktop") => uninstall_claude_desktop()?,
+        Some("claude-code") | Some("claude-cli") => uninstall_claude_code()?,
+        Some("cursor") => uninstall_cursor()?,
+        Some("vscode") | Some("vs-code") => uninstall_vscode()?,
+        Some(other) => anyhow::bail!(
+            "Unknown target '{}'. Supported: claude-desktop, claude-code, cursor, vscode",
+            other
+        ),
+        None => uninstall_all()?,
+    }
+
+    if purge {
+        purge_data()?;
+    }
+
+    Ok(())
+}
+
+fn uninstall_all() -> Result<()> {
+    let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Cannot find home directory"))?;
+    let mut removed = 0;
+
+    // Claude Desktop
+    let claude_config = home.join("Library/Application Support/Claude/claude_desktop_config.json");
+    if remove_from_mcp_config(&claude_config, "mcpServers")? {
+        println!("[ok] Removed axon from Claude Desktop config.");
+        removed += 1;
+    }
+
+    // Cursor
+    let cursor_config = home.join(".cursor/mcp.json");
+    if remove_from_mcp_config(&cursor_config, "mcpServers")? {
+        println!("[ok] Removed axon from Cursor config.");
+        removed += 1;
+    }
+
+    // VS Code
+    let vscode_config = home.join("Library/Application Support/Code/User/settings.json");
+    if remove_from_vscode_config(&vscode_config)? {
+        println!("[ok] Removed axon from VS Code config.");
+        removed += 1;
+    }
+
+    // Claude Code
+    if uninstall_claude_code_inner() {
+        println!("[ok] Removed axon from Claude Code.");
+        removed += 1;
+    }
+
+    if removed == 0 {
+        println!("[info] axon was not configured in any agent.");
+    } else {
+        println!("[info] Removed from {} agent(s). Restart agents to apply.", removed);
+    }
+
+    Ok(())
+}
+
+/// Remove the "axon" key from a `{ "<key>": { "axon": ... } }` config file.
+/// Returns true if axon was found and removed.
+fn remove_from_mcp_config(path: &std::path::Path, key: &str) -> Result<bool> {
+    if !path.exists() {
+        return Ok(false);
+    }
+    let raw = std::fs::read_to_string(path)?;
+    let mut config: serde_json::Value = serde_json::from_str(&raw)?;
+
+    let had_axon = config
+        .get(key)
+        .and_then(|s| s.get("axon"))
+        .is_some();
+
+    if !had_axon {
+        return Ok(false);
+    }
+
+    if let Some(servers) = config.get_mut(key).and_then(|s| s.as_object_mut()) {
+        servers.remove("axon");
+    }
+
+    std::fs::write(path, serde_json::to_string_pretty(&config)?)?;
+    Ok(true)
+}
+
+/// Remove axon from VS Code's `{ "mcp": { "servers": { "axon": ... } } }` structure.
+fn remove_from_vscode_config(path: &std::path::Path) -> Result<bool> {
+    if !path.exists() {
+        return Ok(false);
+    }
+    let raw = std::fs::read_to_string(path)?;
+    let mut config: serde_json::Value = serde_json::from_str(&raw)?;
+
+    let had_axon = config
+        .get("mcp")
+        .and_then(|m| m.get("servers"))
+        .and_then(|s| s.get("axon"))
+        .is_some();
+
+    if !had_axon {
+        return Ok(false);
+    }
+
+    if let Some(servers) = config
+        .get_mut("mcp")
+        .and_then(|m| m.get_mut("servers"))
+        .and_then(|s| s.as_object_mut())
+    {
+        servers.remove("axon");
+    }
+
+    std::fs::write(path, serde_json::to_string_pretty(&config)?)?;
+    Ok(true)
+}
+
+fn uninstall_claude_desktop() -> Result<()> {
+    let path = dirs::home_dir()
+        .ok_or_else(|| anyhow::anyhow!("Cannot find home directory"))?
+        .join("Library/Application Support/Claude/claude_desktop_config.json");
+    if remove_from_mcp_config(&path, "mcpServers")? {
+        println!("[ok] Removed axon from Claude Desktop config.");
+        println!("     Restart Claude Desktop to apply changes.");
+    } else {
+        println!("[info] axon was not configured in Claude Desktop.");
+    }
+    Ok(())
+}
+
+fn uninstall_cursor() -> Result<()> {
+    let path = dirs::home_dir()
+        .ok_or_else(|| anyhow::anyhow!("Cannot find home directory"))?
+        .join(".cursor/mcp.json");
+    if remove_from_mcp_config(&path, "mcpServers")? {
+        println!("[ok] Removed axon from Cursor config.");
+        println!("     Restart Cursor to apply changes.");
+    } else {
+        println!("[info] axon was not configured in Cursor.");
+    }
+    Ok(())
+}
+
+fn uninstall_vscode() -> Result<()> {
+    let path = dirs::home_dir()
+        .ok_or_else(|| anyhow::anyhow!("Cannot find home directory"))?
+        .join("Library/Application Support/Code/User/settings.json");
+    if remove_from_vscode_config(&path)? {
+        println!("[ok] Removed axon from VS Code config.");
+        println!("     Restart VS Code to apply changes.");
+    } else {
+        println!("[info] axon was not configured in VS Code.");
+    }
+    Ok(())
+}
+
+fn uninstall_claude_code() -> Result<()> {
+    if uninstall_claude_code_inner() {
+        println!("[ok] Removed axon from Claude Code.");
+    } else {
+        println!("[info] axon was not configured in Claude Code (or 'claude' CLI not found).");
+    }
+    Ok(())
+}
+
+fn uninstall_claude_code_inner() -> bool {
+    use std::process::Command;
+    Command::new("claude")
+        .args(["mcp", "remove", "axon"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+fn purge_data() -> Result<()> {
+    let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Cannot find home directory"))?;
+
+    let config_dir = home.join(".config/axon");
+    if config_dir.exists() {
+        std::fs::remove_dir_all(&config_dir)?;
+        println!("[ok] Removed {}", config_dir.display());
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let data_dir = home.join("Library/Application Support/axon");
+        if data_dir.exists() {
+            std::fs::remove_dir_all(&data_dir)?;
+            println!("[ok] Removed {}", data_dir.display());
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        if let Some(data_dir) = dirs::data_dir() {
+            let axon_data = data_dir.join("axon");
+            if axon_data.exists() {
+                std::fs::remove_dir_all(&axon_data)?;
+                println!("[ok] Removed {}", axon_data.display());
+            }
+        }
+    }
+
+    println!("[ok] Purged all axon data and config.");
     Ok(())
 }
