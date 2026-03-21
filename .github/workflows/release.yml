@@ -90,3 +90,44 @@ jobs:
             artifacts/axon-x86_64-apple-darwin/axon-x86_64-apple-darwin.sha256
             artifacts/axon-universal-apple-darwin/axon-universal-apple-darwin
             artifacts/axon-universal-apple-darwin/axon-universal-apple-darwin.sha256
+
+  homebrew:
+    name: Update Homebrew Tap
+    needs: release
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: axon-aarch64-apple-darwin
+          path: arm64/
+
+      - name: Extract version and SHA
+        id: meta
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          SHA256=$(cat arm64/axon-aarch64-apple-darwin.sha256 | awk '{print $1}')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "sha256=$SHA256" >> "$GITHUB_OUTPUT"
+          echo "[info] version=$VERSION sha256=$SHA256"
+
+      - name: Clone homebrew tap
+        run: |
+          git clone https://x-access-token:${{ secrets.HOMEBREW_TAP_TOKEN }}@github.com/rudraptpsingh/homebrew-axon.git tap
+
+      - name: Update formula
+        run: |
+          cd tap
+          sed -i 's/version ".*"/version "${{ steps.meta.outputs.version }}"/' Formula/axon.rb
+          sed -i 's/sha256 ".*"/sha256 "${{ steps.meta.outputs.sha256 }}"/' Formula/axon.rb
+          cat Formula/axon.rb
+
+      - name: Commit and push
+        run: |
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/axon.rb
+          git diff --cached --quiet && echo "[info] No changes" && exit 0
+          git commit -m "Bump to v${{ steps.meta.outputs.version }}"
+          git push
