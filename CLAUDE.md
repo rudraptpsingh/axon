@@ -9,12 +9,12 @@ axon is a zero-cloud, privacy-first MCP (Model Context Protocol) server that giv
 ```
 crates/
   axon-core/     # Data types, EWMA baseline tracker, impact engine, process grouping, collector loop
-  axon-server/   # MCP server (6 tools via rmcp #[tool_router])
+  axon-server/   # MCP server (7 tools via rmcp #[tool_router])
   axon-cli/      # Binary: serve | diagnose | status | setup | query
 ```
 
 - **axon-core** is a library crate. All data types live in `types.rs`. The collector loop in `collector.rs` runs every 2 seconds, refreshing sysinfo and updating per-process EWMA baselines. Process grouping in `grouping.rs` aggregates child processes by app name (e.g., Chrome helpers → "Google Chrome").
-- **axon-server** exposes 6 MCP tools over stdio: `hw_snapshot`, `process_blame`, `battery_status`, `system_profile`, `hardware_trend`, `session_health`. Uses rmcp 1.x with `#[tool_router]` and `#[tool_handler]` macros.
+- **axon-server** exposes 7 MCP tools over stdio: `hw_snapshot`, `process_blame`, `battery_status`, `system_profile`, `hardware_trend`, `session_health`, `gpu_snapshot`. Uses rmcp 1.x with `#[tool_router]` and `#[tool_handler]` macros.
 - **axon-cli** is the binary entry point (package name `axon`). Agent setup is explicit via `axon setup` (supports claude-desktop, claude-code, cursor, vscode).
 
 ## Key Technical Details
@@ -30,6 +30,7 @@ crates/
 - **Alert dispatch config**: Default path is `~/.config/axon/alert-dispatch.json`. Set **`AXON_CONFIG_DIR`** to a directory to load `<dir>/alert-dispatch.json` instead, or pass **`axon serve --config-dir <dir>`** (CLI wins over the env var). **`--alert-webhook ID=URL`** and **`--alert-filter channel.key=value`** merge into the loaded file config (see `axon_core::alert_config::apply_cli_overrides`).
 - **Alert triggers and consumption**: Alerts are **edge-triggered** (RAM/throttle/impact transitions), not periodic pings. **Persistence is in the collector** (`collector.rs`): alerts are inserted into SQLite the moment they are detected, independent of any MCP connection. `alert_sender` in `axon-server` only handles webhook dispatch and MCP logging notifications (`dispatch_webhooks_only`). **Webhooks**: add a `webhook`-type channel in `alert-dispatch.json`; Axon POSTs JSON (`WebhookPayload`) to the URL (fire-and-forget). To consume locally, run `python3 scripts/alert_receiver_minimal.py` and paste the printed URL into config, then reload MCP. **MCP**: eligible alerts also use `notifications/message` (logging), which many clients do not surface prominently—prefer webhooks for reliable delivery. Proof of POST + filters: `cargo test -p axon-core --test alert_integration`. Live machine runs may see zero webhooks if nothing transitions; use `ALERT_E2E_WAIT` with `scripts/test_alert_webhooks_live.py` or generate load.
 - **Alert state injection for tests**: Set `AXON_TEST_PREV_RAM_PRESSURE`, `AXON_TEST_PREV_IMPACT_LEVEL`, `AXON_TEST_PREV_THROTTLING` to inject previous state into the collector (forces a known edge transition on tick 4). Set `AXON_TEST_PRESERVE_PREV_DURING_WARMUP=1` to hold those injected values through the 3-tick warm-up window.
+- **GPU monitoring**: Implemented in `crates/axon-core/src/gpu.rs`. macOS reads `ioreg -r -c IOAccelerator` (no sudo). Linux tries `nvidia-smi` first, then AMD sysfs (`/sys/class/drm/cardN/device/gpu_busy_percent`, `mem_info_vram_used`, `mem_info_vram_total`). `GpuSnapshot.detected` is `false` when no GPU is found; the narrative will say "No GPU detected" rather than returning all-null fields silently. The collector always stores the snapshot (never skips it) so `detected=false` reaches the MCP layer. Unit tests for the nvidia-smi CSV parser run on Linux without hardware; live tests are gated behind `--ignored`.
 
 ## Build & Test
 
@@ -39,7 +40,9 @@ cargo test --workspace                     # Library + CLI tests (run counts var
 cargo test -p axon --test smoke -- --ignored   # ~5s: real diagnose + status binaries
 cargo install --path crates/axon-cli       # Install to ~/.cargo/bin
 axon diagnose                              # Quick smoke test
-python3 scripts/mcp_exercise_all_tools.py /path/to/axon  # Exercise all 6 MCP tools
+python3 scripts/mcp_exercise_all_tools.py /path/to/axon  # Exercise all 7 MCP tools
+cargo test -p axon-core --lib gpu          # GPU parser unit tests (no hardware needed)
+cargo test -p axon-core --lib gpu -- --ignored --nocapture  # Live GPU smoke test (requires GPU)
 ```
 Live webhook E2E (needs release binary; may wait up to `ALERT_E2E_WAIT` seconds): `scripts/e2e-webhook-config-file.sh`, `scripts/e2e-webhook-cli-override.sh`, `scripts/e2e-mcp-and-webhook.sh`.
 - **Live stress test (ignored)**: `cargo test -p axon --test live_hardware_alert -- --ignored --nocapture` — real `axon serve`, baseline RAM from `axon_core::probe`, memory hog + `yes` CPU stress, asserts webhook or new `alerts` rows. Works on machines with Critical baseline RAM via injected prev-state env vars (edge transition guaranteed on tick 4). Typically completes in ~5 minutes.
@@ -56,10 +59,11 @@ Live webhook E2E (needs release binary; may wait up to `ALERT_E2E_WAIT` seconds)
 
 ## MCP Tool Signatures
 
-4 tools take `EmptyParams` (no arguments). `hardware_trend` accepts `TrendParams { time_range: Option<String>, interval: Option<String> }`. `session_health` accepts `SessionHealthParams { since: Option<String> }` (ISO 8601 timestamp, defaults to 1 hour ago). All return a JSON string wrapped in `McpResponse<T>`:
+5 tools take `EmptyParams` (no arguments): `hw_snapshot`, `process_blame`, `battery_status`, `system_profile`, `gpu_snapshot`. `hardware_trend` accepts `TrendParams { time_range: Option<String>, interval: Option<String> }`. `session_health` accepts `SessionHealthParams { since: Option<String> }` (ISO 8601 timestamp, defaults to 1 hour ago). All return a JSON string wrapped in `McpResponse<T>`:
 ```json
 {"ok": true, "ts": "...", "data": {...}, "narrative": "human-readable summary"}
 ```
+`gpu_snapshot` always returns `ok: true`. When no GPU is present `data.detected` is `false` and the narrative explains why (e.g. "No GPU detected on this system. nvidia-smi not found and no DRM sysfs device present.").
 
 ## Agent Setup Targets
 
@@ -70,5 +74,4 @@ The CLI supports: `claude-desktop`, `claude-code`, `cursor`, `vscode`. Each writ
 - Do not add network calls or telemetry of any kind
 - Do not write to stdout from the server path (breaks MCP JSON-RPC)
 - Do not use `std::sync::Mutex` in async code paths without careful consideration (current usage is safe because locks are held briefly)
-- Do not add GPU monitoring yet (Phase 3 — complex, platform-specific)
 - Do not add fleet/team APIs yet (Phase 3 — requires privacy model rethink)

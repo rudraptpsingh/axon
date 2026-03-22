@@ -237,6 +237,10 @@ pub struct GpuSnapshot {
     pub model: Option<String>,
     /// Number of GPU cores.
     pub core_count: Option<u32>,
+    /// True if a GPU was detected on this machine.  False means no GPU was
+    /// found (no nvidia-smi, no DRM sysfs card, ioreg returned nothing) and
+    /// all metric fields will be None.
+    pub detected: bool,
     pub ts: DateTime<Utc>,
 }
 
