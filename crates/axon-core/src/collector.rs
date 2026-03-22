@@ -338,7 +338,8 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
         // ── System anomaly scoring + persistence ───────────────────────────
 
         let swap_gb = sys.used_swap() as f64 / 1_073_741_824.0;
-        let score = impact::compute_score(ram_pct, cpu_pct, swap_gb);
+        let io_wait_pct = impact::read_io_wait_pct();
+        let score = impact::compute_score_with_io(ram_pct, cpu_pct, swap_gb, io_wait_pct);
 
         if score > crate::thresholds::IMPACT_SCORE_ELEVATED {
             above_threshold_count = above_threshold_count.saturating_add(1);
