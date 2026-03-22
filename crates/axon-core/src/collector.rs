@@ -7,7 +7,9 @@ use tracing::debug;
 use crate::{
     alerts::{self, AlertContext},
     ewma::EwmaStore,
-    gpu, grouping, impact, persistence, temperature,
+    gpu, grouping, impact, persistence,
+    ring_buffer::SnapshotRing,
+    temperature,
     types::*,
 };
 
@@ -176,7 +178,7 @@ impl DebounceState {
 
 /// Spawns a background Tokio task that refreshes hardware state every 2 seconds.
 /// Updates the SharedState in place for the MCP server to read.
-pub async fn start_collector(state: SharedState, db: persistence::DbHandle) {
+pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring: SnapshotRing) {
     let mut sys = System::new_all();
     let mut ewma = EwmaStore::default();
     let mut tick_count: u32 = 0;
@@ -575,6 +577,9 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle) {
         guard.pending_alerts.append(&mut new_alerts);
         guard.gpu = gpu;
         drop(guard);
+
+        // ── Push to ring buffer every tick (full 2s resolution) ────────
+        ring.push(hw.clone());
 
         // ── Persist snapshot every 5 ticks (~10s) ────────────────────────
 

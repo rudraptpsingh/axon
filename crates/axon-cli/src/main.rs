@@ -9,6 +9,7 @@ use axon_core::alert_config;
 use axon_core::alert_dispatch::AlertDispatcher;
 use axon_core::collector::{build_system_profile, start_collector, AppState};
 use axon_core::persistence;
+use axon_core::ring_buffer::SnapshotRing;
 use axon_server::run_server;
 
 // ── CLI Definition ────────────────────────────────────────────────────────────
@@ -142,7 +143,7 @@ async fn run_serve(args: ServeArgs) -> Result<()> {
     let state_bg = state.clone();
     let db_bg = db.clone();
     tokio::spawn(async move {
-        start_collector(state_bg, db_bg).await;
+        start_collector(state_bg, db_bg, SnapshotRing::new()).await;
     });
 
     // Brief warm-up so first tool call isn't stale
@@ -165,7 +166,7 @@ async fn run_diagnose() -> Result<()> {
 
     let state_bg = state.clone();
     tokio::spawn(async move {
-        start_collector(state_bg, db).await;
+        start_collector(state_bg, db, SnapshotRing::new()).await;
     });
 
     // Wait for at least 2 EWMA ticks (4s) so baselines stabilise
@@ -267,7 +268,7 @@ async fn run_status() -> Result<()> {
 
     let state_bg = state.clone();
     tokio::spawn(async move {
-        start_collector(state_bg, db).await;
+        start_collector(state_bg, db, SnapshotRing::new()).await;
     });
 
     tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
@@ -287,7 +288,7 @@ async fn run_query(tool: &str) -> Result<()> {
 
     let state_bg = state.clone();
     tokio::spawn(async move {
-        start_collector(state_bg, db).await;
+        start_collector(state_bg, db, SnapshotRing::new()).await;
     });
 
     tokio::time::sleep(tokio::time::Duration::from_secs(4)).await;
