@@ -141,8 +141,8 @@ pub fn compute_score(ram_pct: f64, cpu_pct: f64, swap_gb: f64) -> f64 {
         // CPU-dominant: boost CPU weight
         (0.15, 0.65, 0.20)
     } else if ram_norm > 0.7 && cpu_norm < 0.5 {
-        // RAM-dominant: keep original (already favours RAM)
-        (0.50, 0.20, 0.30)
+        // RAM-dominant: boost RAM weight so critical RAM (88%+) reaches Critical band
+        (0.65, 0.15, 0.20)
     } else {
         // Balanced / default
         (0.40, 0.30, 0.30)
@@ -422,6 +422,30 @@ mod tests {
         assert!(
             score >= thresholds::IMPACT_LEVEL_DEGRADING_BELOW,
             "CPU-only saturation score {:.3} should reach strained band (>= {:.2})",
+            score,
+            thresholds::IMPACT_LEVEL_DEGRADING_BELOW
+        );
+    }
+
+    #[test]
+    fn test_compute_score_ram_dominant_reaches_critical() {
+        // RAM at 88% (Critical pressure), low CPU, no swap — should reach critical band (>= 0.55)
+        let score = compute_score(88.0, 1.0, 0.0);
+        assert!(
+            score >= thresholds::IMPACT_LEVEL_STRAINED_BELOW,
+            "RAM-only saturation at 88% score {:.3} should reach critical band (>= {:.2})",
+            score,
+            thresholds::IMPACT_LEVEL_STRAINED_BELOW
+        );
+    }
+
+    #[test]
+    fn test_compute_score_ram_72pct_reaches_strained() {
+        // RAM at 72% (memory_pressure threshold), low CPU — should reach strained band (>= 0.38)
+        let score = compute_score(72.0, 1.0, 0.0);
+        assert!(
+            score >= thresholds::IMPACT_LEVEL_DEGRADING_BELOW,
+            "RAM at 72% score {:.3} should reach strained band (>= {:.2})",
             score,
             thresholds::IMPACT_LEVEL_DEGRADING_BELOW
         );

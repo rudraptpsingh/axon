@@ -175,6 +175,15 @@ async fn run_diagnose() -> Result<()> {
     let blame = &guard.blame;
     let hw = &guard.hw;
 
+    // For diagnose (point-in-time snapshot), compute impact level directly from
+    // the score, bypassing the persistence check. The persistence check exists
+    // to avoid false positives in a long-running session, but diagnose only runs
+    // for 4 seconds — if the score is high, the system IS under stress right now.
+    let instant_level =
+        axon_core::impact::score_to_level(blame.anomaly_score, u32::MAX);
+    let impact_msg =
+        axon_core::impact::impact_message(&instant_level, &blame.anomaly_type);
+
     println!();
     // Prefer group display when multiple processes are grouped
     if let Some(g) = &blame.culprit_group {
@@ -183,7 +192,7 @@ async fn run_diagnose() -> Result<()> {
                 "[warn] {} ({} processes)  --  {:.0}% CPU,  {:.1}GB RAM",
                 g.name, g.process_count, g.total_cpu_pct, g.total_ram_gb
             );
-            println!("       Impact: {}", blame.impact);
+            println!("       Impact: {}", impact_msg);
             println!("       Fix:    {}", blame.fix);
         } else if let Some(p) = &blame.culprit {
             if blame.anomaly_score > 0.10 {
@@ -191,7 +200,7 @@ async fn run_diagnose() -> Result<()> {
                     "[warn] {} (PID {})  --  {:.0}% CPU,  {:.1}GB RAM",
                     p.cmd, p.pid, p.cpu_pct, p.ram_gb
                 );
-                println!("       Impact: {}", blame.impact);
+                println!("       Impact: {}", impact_msg);
                 println!("       Fix:    {}", blame.fix);
             }
         }
@@ -201,7 +210,7 @@ async fn run_diagnose() -> Result<()> {
                 "[warn] {} (PID {})  --  {:.0}% CPU,  {:.1}GB RAM",
                 p.cmd, p.pid, p.cpu_pct, p.ram_gb
             );
-            println!("       Impact: {}", blame.impact);
+            println!("       Impact: {}", impact_msg);
             println!("       Fix:    {}", blame.fix);
         }
     }
