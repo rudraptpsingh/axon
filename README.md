@@ -26,8 +26,7 @@ $ axon diagnose
 
 ```bash
 # Homebrew (recommended)
-brew tap rudraptpsingh/axon
-brew install axon
+brew install rudraptpsingh/tap/axon
 
 # From source (requires Rust toolchain)
 cargo install --path crates/axon-cli

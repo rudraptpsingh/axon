@@ -156,11 +156,11 @@ jobs:
           echo "sha_aarch64_linux=$SHA_AARCH64_LINUX" >> "$GITHUB_OUTPUT"
           echo "sha_x86_64_linux=$SHA_X86_64_LINUX" >> "$GITHUB_OUTPUT"
 
-      - name: Trigger homebrew-axon update
+      - name: Trigger homebrew tap update
         env:
           GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
-          gh api repos/rudraptpsingh/homebrew-axon/dispatches \
+          gh api repos/rudraptpsingh/homebrew-tap/dispatches \
             -f event_type=update-formula \
             -f "client_payload[version]=${{ steps.meta.outputs.version }}" \
             -f "client_payload[sha_aarch64_darwin]=${{ steps.meta.outputs.sha_aarch64_darwin }}" \
