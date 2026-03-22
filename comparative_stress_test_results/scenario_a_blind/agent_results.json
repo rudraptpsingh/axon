@@ -1,0 +1,30 @@
+[
+  {
+    "name": "Build Agent",
+    "task": "Compile project (CPU-heavy)",
+    "duration_s": 120.1,
+    "exit_code": 0,
+    "mode": "blind"
+  },
+  {
+    "name": "Test Agent",
+    "task": "Run test suite (CPU + RAM)",
+    "duration_s": 120.1,
+    "exit_code": 0,
+    "mode": "blind"
+  },
+  {
+    "name": "Analysis Agent",
+    "task": "Codebase analysis (I/O + CPU)",
+    "duration_s": 120.1,
+    "exit_code": 0,
+    "mode": "blind"
+  },
+  {
+    "name": "Data Agent",
+    "task": "Process large dataset (RAM-heavy)",
+    "duration_s": 120.0,
+    "exit_code": 0,
+    "mode": "blind"
+  }
+]

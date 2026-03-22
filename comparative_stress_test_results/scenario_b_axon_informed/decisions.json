@@ -1,0 +1,189 @@
+[
+  {
+    "timestamp": "2026-03-22T10:01:26Z",
+    "agent": "Build Agent",
+    "query": "hw_snapshot+process_blame",
+    "result_summary": {
+      "headroom": "limited",
+      "impact": "healthy"
+    },
+    "decision": "proceed",
+    "reason": "System clear (headroom=limited, impact=healthy)"
+  },
+  {
+    "timestamp": "2026-03-22T10:01:56Z",
+    "agent": "Build Agent",
+    "query": "monitoring",
+    "result_summary": {
+      "headroom": "limited",
+      "impact": "degrading"
+    },
+    "decision": "continue",
+    "reason": "Monitoring: headroom=limited, impact=degrading"
+  },
+  {
+    "timestamp": "2026-03-22T10:02:26Z",
+    "agent": "Build Agent",
+    "query": "monitoring",
+    "result_summary": {
+      "headroom": "limited",
+      "impact": "degrading"
+    },
+    "decision": "continue",
+    "reason": "Monitoring: headroom=limited, impact=degrading"
+  },
+  {
+    "timestamp": "2026-03-22T10:02:56Z",
+    "agent": "Build Agent",
+    "query": "monitoring",
+    "result_summary": {
+      "headroom": "limited",
+      "impact": "degrading"
+    },
+    "decision": "continue",
+    "reason": "Monitoring: headroom=limited, impact=degrading"
+  },
+  {
+    "timestamp": "2026-03-22T10:03:26Z",
+    "agent": "Build Agent",
+    "query": "post_workload",
+    "result_summary": {
+      "headroom": "limited",
+      "alert_count": 1
+    },
+    "decision": "assessment",
+    "reason": "Post-workload: headroom=limited, alerts=1"
+  },
+  {
+    "timestamp": "2026-03-22T10:03:31Z",
+    "agent": "Test Agent",
+    "query": "hw_snapshot+process_blame",
+    "result_summary": {
+      "headroom": "limited",
+      "impact": "healthy"
+    },
+    "decision": "proceed",
+    "reason": "System clear (headroom=limited, impact=healthy)"
+  },
+  {
+    "timestamp": "2026-03-22T10:04:01Z",
+    "agent": "Test Agent",
+    "query": "monitoring",
+    "result_summary": {
+      "headroom": "limited",
+      "impact": "degrading"
+    },
+    "decision": "continue",
+    "reason": "Monitoring: headroom=limited, impact=degrading"
+  },
+  {
+    "timestamp": "2026-03-22T10:04:32Z",
+    "agent": "Test Agent",
+    "query": "monitoring",
+    "result_summary": {
+      "headroom": "limited",
+      "impact": "degrading"
+    },
+    "decision": "continue",
+    "reason": "Monitoring: headroom=limited, impact=degrading"
+  },
+  {
+    "timestamp": "2026-03-22T10:05:02Z",
+    "agent": "Test Agent",
+    "query": "monitoring",
+    "result_summary": {
+      "headroom": "limited",
+      "impact": "degrading"
+    },
+    "decision": "continue",
+    "reason": "Monitoring: headroom=limited, impact=degrading"
+  },
+  {
+    "timestamp": "2026-03-22T10:05:32Z",
+    "agent": "Test Agent",
+    "query": "post_workload",
+    "result_summary": {
+      "headroom": "limited",
+      "alert_count": 1
+    },
+    "decision": "assessment",
+    "reason": "Post-workload: headroom=limited, alerts=1"
+  },
+  {
+    "timestamp": "2026-03-22T10:05:37Z",
+    "agent": "Analysis Agent",
+    "query": "hw_snapshot+process_blame",
+    "result_summary": {
+      "headroom": "limited",
+      "impact": "healthy"
+    },
+    "decision": "proceed",
+    "reason": "System clear (headroom=limited, impact=healthy)"
+  },
+  {
+    "timestamp": "2026-03-22T10:07:37Z",
+    "agent": "Analysis Agent",
+    "query": "post_workload",
+    "result_summary": {
+      "headroom": "insufficient",
+      "alert_count": 2
+    },
+    "decision": "assessment",
+    "reason": "Post-workload: headroom=insufficient, alerts=2"
+  },
+  {
+    "timestamp": "2026-03-22T10:07:43Z",
+    "agent": "Data Agent",
+    "query": "hw_snapshot+process_blame",
+    "result_summary": {
+      "headroom": "limited",
+      "impact": "healthy"
+    },
+    "decision": "proceed",
+    "reason": "System clear (headroom=limited, impact=healthy)"
+  },
+  {
+    "timestamp": "2026-03-22T10:08:13Z",
+    "agent": "Data Agent",
+    "query": "monitoring",
+    "result_summary": {
+      "headroom": "limited",
+      "impact": "healthy"
+    },
+    "decision": "continue",
+    "reason": "Monitoring: headroom=limited, impact=healthy"
+  },
+  {
+    "timestamp": "2026-03-22T10:08:43Z",
+    "agent": "Data Agent",
+    "query": "monitoring",
+    "result_summary": {
+      "headroom": "insufficient",
+      "impact": "degrading"
+    },
+    "decision": "continue",
+    "reason": "Monitoring: headroom=insufficient, impact=degrading"
+  },
+  {
+    "timestamp": "2026-03-22T10:09:13Z",
+    "agent": "Data Agent",
+    "query": "monitoring",
+    "result_summary": {
+      "headroom": "insufficient",
+      "impact": "degrading"
+    },
+    "decision": "continue",
+    "reason": "Monitoring: headroom=insufficient, impact=degrading"
+  },
+  {
+    "timestamp": "2026-03-22T10:09:46Z",
+    "agent": "Data Agent",
+    "query": "post_workload",
+    "result_summary": {
+      "headroom": "limited",
+      "alert_count": 4
+    },
+    "decision": "assessment",
+    "reason": "Post-workload: headroom=limited, alerts=4"
+  }
+]

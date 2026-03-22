@@ -1,0 +1,32 @@
+{
+  "ok": true,
+  "ts": "2026-03-22T10:09:51.160205928Z",
+  "data": {
+    "anomaly_type": "agent_accumulation",
+    "impact_level": "healthy",
+    "culprit": {
+      "pid": 560,
+      "cmd": "HTTP Client",
+      "cpu_pct": 0.9987515211105347,
+      "ram_gb": 0.363739013671875,
+      "blame_score": 0.0007975727374549921
+    },
+    "culprit_group": {
+      "name": "claude",
+      "process_count": 2,
+      "total_cpu_pct": 2.9962546825408936,
+      "total_ram_gb": 0.72747802734375,
+      "blame_score": 0.000630821513711332,
+      "top_pid": 549,
+      "pids": [
+        549,
+        550
+      ]
+    },
+    "anomaly_score": 0.023284703048426725,
+    "impact": "Multiple AI agent instances detected. Combined resource usage is growing.",
+    "fix": "2 claude instances are running. Close unused sessions to free ~0.7GB and reduce background CPU.",
+    "ts": "2026-03-22T10:09:50.675873294Z"
+  },
+  "narrative": "Multiple AI agent instances detected. Combined resource usage is growing. 2 claude instances are running. Close unused sessions to free ~0.7GB and reduce background CPU."
+}

@@ -20,3 +20,4 @@ ROADMAP.md
 .vscode/
 dist/
 *.code-workspace
+scripts/__pycache__/

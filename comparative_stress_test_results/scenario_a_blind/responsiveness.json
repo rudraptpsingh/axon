@@ -1,0 +1,434 @@
+[
+  {
+    "timestamp": "2026-03-22T09:58:44.559525+00:00",
+    "command": "ls_root",
+    "latency_ms": 25.72,
+    "exit_code": 0
+  },
+  {
+    "timestamp": "2026-03-22T09:58:44.585276+00:00",
+    "command": "ps_aux",
+    "latency_ms": 75.13,
+    "exit_code": 0
+  },
+  {
+    "timestamp": "2026-03-22T09:58:44.660424+00:00",
+    "command": "uptime",
+    "latency_ms": 6.51,
+    "exit_code": 0
+  },
+  {
+    "timestamp": "2026-03-22T09:58:49.667073+00:00",
+    "command": "ls_root",
+    "latency_ms": 8.68,
+    "exit_code": 0
+  },
+  {
+    "timestamp": "2026-03-22T09:58:49.675794+00:00",
+    "command": "ps_aux",
+    "latency_ms": 29.36,
+    "exit_code": 0
+  },
+  {
+    "timestamp": "2026-03-22T09:58:49.705185+00:00",
+    "command": "uptime",
+    "latency_ms": 8.06,
+    "exit_code": 0
+  },
+  {
+    "timestamp": "2026-03-22T09:58:54.713375+00:00",
+    "command": "ls_root",
+    "latency_ms": 5.77,
+    "exit_code": 0
+  },
+  {
+    "timestamp": "2026-03-22T09:58:54.719194+00:00",
+    "command": "ps_aux",
+    "latency_ms": 29.97,
+    "exit_code": 0
+  },
+  {
+    "timestamp": "2026-03-22T09:58:54.749188+00:00",
+    "command": "uptime",
+    "latency_ms": 3.94,
+    "exit_code": 0
+  },
+  {
+    "timestamp": "2026-03-22T09:58:59.761066+00:00",
+    "command": "ls_root",
+    "latency_ms": 9.46,
+    "exit_code": 0
+  },
+  {
+    "timestamp": "2026-03-22T09:58:59.770572+00:00",
+    "command": "ps_aux",
+    "latency_ms": 112.41,
+    "exit_code": 0
+  },
+  {
+    "timestamp": "2026-03-22T09:58:59.883010+00:00",
+    "command": "uptime",
+    "latency_ms": 34.11,
+    "exit_code": 0
+  },
+  {
+    "timestamp": "2026-03-22T09:59:04.919649+00:00",
+    "command": "ls_root",
+    "latency_ms": 22.75,
+    "exit_code": 0
+  },
+  {
+    "timestamp": "2026-03-22T09:59:04.942448+00:00",
+    "command": "ps_aux",
+    "latency_ms": 55.59,
+    "exit_code": 0
+  },
+  {
+    "timestamp": "2026-03-22T09:59:04.998062+00:00",
+    "command": "uptime",
+    "latency_ms": 43.27,
+    "exit_code": 0
+  },
+  {
+    "timestamp": "2026-03-22T09:59:10.045065+00:00",
+    "command": "ls_root",
+    "latency_ms": 9.51,
+    "exit_code": 0
+  },
+  {
+    "timestamp": "2026-03-22T09:59:10.054621+00:00",
+    "command": "ps_aux",
+    "latency_ms": 95.92,
+    "exit_code": 0
+  },
+  {
+    "timestamp": "2026-03-22T09:59:10.150570+00:00",
+    "command": "uptime",
+    "latency_ms": 10.66,
+    "exit_code": 0
+  },
+  {
+    "timestamp": "2026-03-22T09:59:15.165080+00:00",
+    "command": "ls_root",
+    "latency_ms": 13.19,
+    "exit_code": 0
+  },
+  {
+    "timestamp": "2026-03-22T09:59:15.178320+00:00",
+    "command": "ps_aux",
+    "latency_ms": 110.84,
+    "exit_code": 0
+  },
+  {
+    "timestamp": "2026-03-22T09:59:15.289197+00:00",
+    "command": "uptime",
+    "latency_ms": 16.09,
+    "exit_code": 0
+  },
+  {
+    "timestamp": "2026-03-22T09:59:20.324958+00:00",
+    "command": "ls_root",
+    "latency_ms": 9.73,
+    "exit_code": 0
+  },
+  {
+    "timestamp": "2026-03-22T09:59:20.334735+00:00",
+    "command": "ps_aux",
+    "latency_ms": 87.21,
+    "exit_code": 0
+  },
+  {
+    "timestamp": "2026-03-22T09:59:20.421969+00:00",
+    "command": "uptime",
+    "latency_ms": 27.27,
+    "exit_code": 0
+  },
+  {
+    "timestamp": "2026-03-22T09:59:25.461068+00:00",
+    "command": "ls_root",
+    "latency_ms": 9.44,
+    "exit_code": 0
+  },
+  {
+    "timestamp": "2026-03-22T09:59:25.470556+00:00",
+    "command": "ps_aux",
+    "latency_ms": 130.64,
+    "exit_code": 0
+  },
+  {
+    "timestamp": "2026-03-22T09:59:25.601242+00:00",
+    "command": "uptime",
+    "latency_ms": 36.09,
+    "exit_code": 0
+  },
+  {
+    "timestamp": "2026-03-22T09:59:30.641053+00:00",
+    "command": "ls_root",
+    "latency_ms": 28.22,
+    "exit_code": 0
+  },
+  {
+    "timestamp": "2026-03-22T09:59:30.669322+00:00",
+    "command": "ps_aux",
+    "latency_ms": 76.61,
+    "exit_code": 0
+  },
+  {
+    "timestamp": "2026-03-22T09:59:30.745964+00:00",
+    "command": "uptime",
+    "latency_ms": 32.78,
+    "exit_code": 0
+  },
+  {
+    "timestamp": "2026-03-22T09:59:35.778864+00:00",
+    "command": "ls_root",
+    "latency_ms": 20.31,
+    "exit_code": 0
+  },
+  {
+    "timestamp": "2026-03-22T09:59:35.799242+00:00",
+    "command": "ps_aux",
+    "latency_ms": 155.51,
+    "exit_code": 0
+  },
+  {
+    "timestamp": "2026-03-22T09:59:35.954782+00:00",
+    "command": "uptime",
+    "latency_ms": 18.41,
+    "exit_code": 0
+  },
+  {
+    "timestamp": "2026-03-22T09:59:40.977067+00:00",
+    "command": "ls_root",
+    "latency_ms": 5.58,
+    "exit_code": 0
+  },
+  {
+    "timestamp": "2026-03-22T09:59:40.982696+00:00",
+    "command": "ps_aux",
+    "latency_ms": 75.13,
+    "exit_code": 0
+  },
+  {
+    "timestamp": "2026-03-22T09:59:41.057849+00:00",
+    "command": "uptime",
+    "latency_ms": 9.66,
+    "exit_code": 0
+  },
+  {
+    "timestamp": "2026-03-22T09:59:46.067634+00:00",
+    "command": "ls_root",
+    "latency_ms": 18.66,
+    "exit_code": 0
+  },
+  {
+    "timestamp": "2026-03-22T09:59:46.086350+00:00",
+    "command": "ps_aux",
+    "latency_ms": 99.58,
+    "exit_code": 0
+  },
+  {
+    "timestamp": "2026-03-22T09:59:46.185962+00:00",
+    "command": "uptime",
+    "latency_ms": 19.19,
+    "exit_code": 0
+  },
+  {
+    "timestamp": "2026-03-22T09:59:51.216650+00:00",
+    "command": "ls_root",
+    "latency_ms": 5.91,
+    "exit_code": 0
+  },
+  {
+    "timestamp": "2026-03-22T09:59:51.222739+00:00",
+    "command": "ps_aux",
+    "latency_ms": 109.2,
+    "exit_code": 0
+  },
+  {
+    "timestamp": "2026-03-22T09:59:51.331968+00:00",
+    "command": "uptime",
+    "latency_ms": 29.1,
+    "exit_code": 0
+  },
+  {
+    "timestamp": "2026-03-22T09:59:56.377083+00:00",
+    "command": "ls_root",
+    "latency_ms": 13.24,
+    "exit_code": 0
+  },
+  {
+    "timestamp": "2026-03-22T09:59:56.390369+00:00",
+    "command": "ps_aux",
+    "latency_ms": 135.46,
+    "exit_code": 0
+  },
+  {
+    "timestamp": "2026-03-22T09:59:56.525855+00:00",
+    "command": "uptime",
+    "latency_ms": 31.44,
+    "exit_code": 0
+  },
+  {
+    "timestamp": "2026-03-22T10:00:01.561042+00:00",
+    "command": "ls_root",
+    "latency_ms": 5.5,
+    "exit_code": 0
+  },
+  {
+    "timestamp": "2026-03-22T10:00:01.566587+00:00",
+    "command": "ps_aux",
+    "latency_ms": 112.25,
+    "exit_code": 0
+  },
+  {
+    "timestamp": "2026-03-22T10:00:01.678858+00:00",
+    "command": "uptime",
+    "latency_ms": 7.85,
+    "exit_code": 0
+  },
+  {
+    "timestamp": "2026-03-22T10:00:06.686840+00:00",
+    "command": "ls_root",
+    "latency_ms": 22.41,
+    "exit_code": 0
+  },
+  {
+    "timestamp": "2026-03-22T10:00:06.709298+00:00",
+    "command": "ps_aux",
+    "latency_ms": 88.7,
+    "exit_code": 0
+  },
+  {
+    "timestamp": "2026-03-22T10:00:06.798031+00:00",
+    "command": "uptime",
+    "latency_ms": 8.01,
+    "exit_code": 0
+  },
+  {
+    "timestamp": "2026-03-22T10:00:11.809061+00:00",
+    "command": "ls_root",
+    "latency_ms": 48.07,
+    "exit_code": 0
+  },
+  {
+    "timestamp": "2026-03-22T10:00:11.857179+00:00",
+    "command": "ps_aux",
+    "latency_ms": 149.51,
+    "exit_code": 0
+  },
+  {
+    "timestamp": "2026-03-22T10:00:12.006722+00:00",
+    "command": "uptime",
+    "latency_ms": 51.56,
+    "exit_code": 0
+  },
+  {
+    "timestamp": "2026-03-22T10:00:17.081048+00:00",
+    "command": "ls_root",
+    "latency_ms": 16.46,
+    "exit_code": 0
+  },
+  {
+    "timestamp": "2026-03-22T10:00:17.097552+00:00",
+    "command": "ps_aux",
+    "latency_ms": 80.47,
+    "exit_code": 0
+  },
+  {
+    "timestamp": "2026-03-22T10:00:17.178047+00:00",
+    "command": "uptime",
+    "latency_ms": 5.89,
+    "exit_code": 0
+  },
+  {
+    "timestamp": "2026-03-22T10:00:22.184094+00:00",
+    "command": "ls_root",
+    "latency_ms": 26.2,
+    "exit_code": 0
+  },
+  {
+    "timestamp": "2026-03-22T10:00:22.210341+00:00",
+    "command": "ps_aux",
+    "latency_ms": 56.47,
+    "exit_code": 0
+  },
+  {
+    "timestamp": "2026-03-22T10:00:22.266833+00:00",
+    "command": "uptime",
+    "latency_ms": 1.9,
+    "exit_code": 0
+  },
+  {
+    "timestamp": "2026-03-22T10:00:27.293061+00:00",
+    "command": "ls_root",
+    "latency_ms": 6.68,
+    "exit_code": 0
+  },
+  {
+    "timestamp": "2026-03-22T10:00:27.299789+00:00",
+    "command": "ps_aux",
+    "latency_ms": 42.09,
+    "exit_code": 0
+  },
+  {
+    "timestamp": "2026-03-22T10:00:27.341901+00:00",
+    "command": "uptime",
+    "latency_ms": 7.33,
+    "exit_code": 0
+  },
+  {
+    "timestamp": "2026-03-22T10:00:32.353048+00:00",
+    "command": "ls_root",
+    "latency_ms": 4.09,
+    "exit_code": 0
+  },
+  {
+    "timestamp": "2026-03-22T10:00:32.357174+00:00",
+    "command": "ps_aux",
+    "latency_ms": 27.14,
+    "exit_code": 0
+  },
+  {
+    "timestamp": "2026-03-22T10:00:32.384335+00:00",
+    "command": "uptime",
+    "latency_ms": 3.57,
+    "exit_code": 0
+  },
+  {
+    "timestamp": "2026-03-22T10:00:37.413909+00:00",
+    "command": "ls_root",
+    "latency_ms": 15.75,
+    "exit_code": 0
+  },
+  {
+    "timestamp": "2026-03-22T10:00:37.429700+00:00",
+    "command": "ps_aux",
+    "latency_ms": 91.97,
+    "exit_code": 0
+  },
+  {
+    "timestamp": "2026-03-22T10:00:37.521701+00:00",
+    "command": "uptime",
+    "latency_ms": 6.87,
+    "exit_code": 0
+  },
+  {
+    "timestamp": "2026-03-22T10:00:42.528697+00:00",
+    "command": "ls_root",
+    "latency_ms": 12.32,
+    "exit_code": 0
+  },
+  {
+    "timestamp": "2026-03-22T10:00:42.541071+00:00",
+    "command": "ps_aux",
+    "latency_ms": 46.62,
+    "exit_code": 0
+  },
+  {
+    "timestamp": "2026-03-22T10:00:42.587717+00:00",
+    "command": "uptime",
+    "latency_ms": 13.36,
+    "exit_code": 0
+  }
+]

@@ -1,0 +1,74 @@
+[
+  {
+    "alert_type": "disk_pressure",
+    "severity": "warning",
+    "timestamp": "2026-03-22T10:01:24.675890325+00:00",
+    "message": "Disk usage elevated to warn (224/252GB, 89% used).",
+    "metrics": {
+      "ram_pct": 4.91816141319134,
+      "cpu_pct": 0.8771929740905762,
+      "temp_c": null,
+      "disk_pct": 89.00829229294447
+    },
+    "culprit": {
+      "name": "claude",
+      "pid": 549,
+      "ram_gb": 0.35868072509765625,
+      "cpu_pct": 3.5087718963623047
+    }
+  },
+  {
+    "alert_type": "disk_pressure",
+    "severity": "critical",
+    "timestamp": "2026-03-22T10:05:38.675704608+00:00",
+    "message": "Disk usage critical (228/252GB, 91% used). Free space is running low.",
+    "metrics": {
+      "ram_pct": 5.039886898052782,
+      "cpu_pct": 15.881560325622559,
+      "temp_c": null,
+      "disk_pct": 90.59586540334014
+    },
+    "culprit": {
+      "name": "yes",
+      "pid": 28126,
+      "ram_gb": 0.0017852783203125,
+      "cpu_pct": 107.13324737548828
+    }
+  },
+  {
+    "alert_type": "memory_pressure",
+    "severity": "warning",
+    "timestamp": "2026-03-22T10:08:20.675845664+00:00",
+    "message": "RAM pressure elevated to warn (9.0/16GB used).",
+    "metrics": {
+      "ram_pct": 57.39608029849587,
+      "cpu_pct": 4.135338306427002,
+      "temp_c": null,
+      "disk_pct": 89.00844217253893
+    },
+    "culprit": {
+      "name": "python3",
+      "pid": 28307,
+      "ram_gb": 8.258930206298828,
+      "cpu_pct": 14.035087585449219
+    }
+  },
+  {
+    "alert_type": "memory_pressure",
+    "severity": "critical",
+    "timestamp": "2026-03-22T10:08:34.675307130+00:00",
+    "message": "RAM pressure critical (12.0/16GB used). System may freeze.",
+    "metrics": {
+      "ram_pct": 76.56979964242684,
+      "cpu_pct": 4.993758201599121,
+      "temp_c": null,
+      "disk_pct": 89.00845125615072
+    },
+    "culprit": {
+      "name": "python3",
+      "pid": 28307,
+      "ram_gb": 11.259025573730469,
+      "cpu_pct": 15.980024337768555
+    }
+  }
+]
