@@ -151,7 +151,7 @@ fn extract_perf_stats(text: &str) -> Option<String> {
     let marker = "\"PerformanceStatistics\" = {";
     let start = text.find(marker)?;
     let brace_start = start + marker.len() - 1; // points at '{'
-    // Walk forward tracking brace depth to find the matching '}'
+                                                // Walk forward tracking brace depth to find the matching '}'
     let bytes = text.as_bytes();
     let mut depth = 0usize;
     let mut end = brace_start;
@@ -425,7 +425,11 @@ mod tests {
             "Expected utilization_pct from real ioreg"
         );
         let pct = snap.utilization_pct.unwrap();
-        assert!(pct >= 0.0 && pct <= 100.0, "utilization out of range: {}", pct);
+        assert!(
+            pct >= 0.0 && pct <= 100.0,
+            "utilization out of range: {}",
+            pct
+        );
         assert!(snap.model.is_some(), "Expected model string");
         if let Some(used) = snap.vram_used_bytes {
             assert!(used > 0, "Expected non-zero VRAM usage");
@@ -506,10 +510,7 @@ mod tests {
             );
         }
         if let (Some(used), Some(total)) = (snap.vram_used_bytes, snap.vram_alloc_bytes) {
-            assert!(
-                used <= total,
-                "VRAM used ({used}) > total ({total})"
-            );
+            assert!(used <= total, "VRAM used ({used}) > total ({total})");
         }
     }
 }

@@ -181,10 +181,8 @@ impl AxonServer {
                 serde_json::to_string(&response)
                     .unwrap_or_else(|e| format!("{{\"ok\":false,\"error\":\"{}\"}}", e))
             }
-            None => {
-                r#"{"ok":false,"narrative":"GPU metrics unavailable on this platform."}"#
-                    .to_string()
-            }
+            None => r#"{"ok":false,"narrative":"GPU metrics unavailable on this platform."}"#
+                .to_string(),
         }
     }
 
