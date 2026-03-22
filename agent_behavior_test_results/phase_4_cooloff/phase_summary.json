@@ -1,0 +1,26 @@
+{
+  "phase": "4_cooloff",
+  "duration_sec": 60,
+  "with_stress": false,
+  "sync_mode": false,
+  "adaptation_triggered": false,
+  "adaptation_decisions": [],
+  "final_task_stats": {
+    "timestamp": "2026-03-22T11:22:43.836465",
+    "elapsed_sec": 60.06316137313843,
+    "mode": "async",
+    "items_processed": 1000,
+    "queue_depth": 0,
+    "throughput_items_sec": 16.65,
+    "latency_p50_ms": 2.27,
+    "latency_p95_ms": 2.4,
+    "latency_p99_ms": 2.5,
+    "memory_mb": 20.51
+  },
+  "final_metrics": {
+    "timestamp": "2026-03-22T11:22:41.779228+00:00",
+    "cpu_pct": 0.38,
+    "ram_pct": 4.32,
+    "disk_pct": 3.88
+  }
+}

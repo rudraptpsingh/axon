@@ -1,0 +1,106 @@
+{
+  "phase_1": {
+    "phase": "1_baseline",
+    "duration_sec": 60,
+    "with_stress": false,
+    "sync_mode": false,
+    "adaptation_triggered": false,
+    "adaptation_decisions": [],
+    "final_task_stats": {
+      "timestamp": "2026-03-22T11:17:40.110951",
+      "elapsed_sec": 60.0559184551239,
+      "mode": "async",
+      "items_processed": 1000,
+      "queue_depth": 0,
+      "throughput_items_sec": 16.65,
+      "latency_p50_ms": 2.27,
+      "latency_p95_ms": 2.3,
+      "latency_p99_ms": 2.35,
+      "memory_mb": 20.51
+    },
+    "final_metrics": {
+      "timestamp": "2026-03-22T11:17:38.049035+00:00",
+      "cpu_pct": 0.75,
+      "ram_pct": 4.25,
+      "disk_pct": 3.88
+    }
+  },
+  "phase_2": {
+    "phase": "2_stress",
+    "duration_sec": 120,
+    "with_stress": true,
+    "sync_mode": false,
+    "adaptation_triggered": false,
+    "adaptation_decisions": [],
+    "final_task_stats": {
+      "timestamp": "2026-03-22T11:19:40.381678",
+      "elapsed_sec": 120.0401861667633,
+      "mode": "async",
+      "items_processed": 1000,
+      "queue_depth": 0,
+      "throughput_items_sec": 8.33,
+      "latency_p50_ms": 2.26,
+      "latency_p95_ms": 3.94,
+      "latency_p99_ms": 6.55,
+      "memory_mb": 20.53
+    },
+    "final_metrics": {
+      "timestamp": "2026-03-22T11:19:38.373519+00:00",
+      "cpu_pct": 100.0,
+      "ram_pct": 73.75,
+      "disk_pct": 3.88
+    }
+  },
+  "phase_3": {
+    "phase": "3_adaptation",
+    "duration_sec": 120,
+    "with_stress": true,
+    "sync_mode": false,
+    "adaptation_triggered": false,
+    "adaptation_decisions": [],
+    "final_task_stats": {
+      "timestamp": "2026-03-22T11:21:43.695239",
+      "elapsed_sec": 120.06870079040527,
+      "mode": "async",
+      "items_processed": 1000,
+      "queue_depth": 0,
+      "throughput_items_sec": 8.33,
+      "latency_p50_ms": 2.73,
+      "latency_p95_ms": 9.4,
+      "latency_p99_ms": 10.97,
+      "memory_mb": 20.62
+    },
+    "final_metrics": {
+      "timestamp": "2026-03-22T11:21:41.563943+00:00",
+      "cpu_pct": 99.63,
+      "ram_pct": 20.5,
+      "disk_pct": 3.88
+    }
+  },
+  "phase_4": {
+    "phase": "4_cooloff",
+    "duration_sec": 60,
+    "with_stress": false,
+    "sync_mode": false,
+    "adaptation_triggered": false,
+    "adaptation_decisions": [],
+    "final_task_stats": {
+      "timestamp": "2026-03-22T11:22:43.836465",
+      "elapsed_sec": 60.06316137313843,
+      "mode": "async",
+      "items_processed": 1000,
+      "queue_depth": 0,
+      "throughput_items_sec": 16.65,
+      "latency_p50_ms": 2.27,
+      "latency_p95_ms": 2.4,
+      "latency_p99_ms": 2.5,
+      "memory_mb": 20.51
+    },
+    "final_metrics": {
+      "timestamp": "2026-03-22T11:22:41.779228+00:00",
+      "cpu_pct": 0.38,
+      "ram_pct": 4.32,
+      "disk_pct": 3.88
+    }
+  }
+}
