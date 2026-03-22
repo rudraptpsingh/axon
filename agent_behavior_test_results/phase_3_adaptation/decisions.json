@@ -1,0 +1,278 @@
+[
+  {
+    "timestamp": "2026-03-22T12:08:45.379931",
+    "query": "hw_snapshot",
+    "result": {
+      "headroom": "limited",
+      "headroom_reason": "Disk at 89% (Warn)",
+      "cpu_pct": 58.82556915283203,
+      "ram_pct": 24.3
+    },
+    "adaptation_triggered": true,
+    "action": "switch_to_sync (headroom=limited (Disk at 89% (Warn)))"
+  },
+  {
+    "timestamp": "2026-03-22T12:08:50.418058",
+    "query": "hw_snapshot",
+    "result": {
+      "headroom": "limited",
+      "headroom_reason": "Disk at 89% (Warn)",
+      "cpu_pct": 100.0,
+      "ram_pct": 34.7
+    },
+    "adaptation_triggered": false,
+    "action": null
+  },
+  {
+    "timestamp": "2026-03-22T12:08:55.426244",
+    "query": "hw_snapshot",
+    "result": {
+      "headroom": "insufficient",
+      "headroom_reason": "RAM warn + CPU at 100%",
+      "cpu_pct": 100.0,
+      "ram_pct": 55.9
+    },
+    "adaptation_triggered": false,
+    "action": null
+  },
+  {
+    "timestamp": "2026-03-22T12:09:00.429737",
+    "query": "hw_snapshot",
+    "result": {
+      "headroom": "insufficient",
+      "headroom_reason": "RAM warn + CPU at 100%",
+      "cpu_pct": 100.0,
+      "ram_pct": 67.1
+    },
+    "adaptation_triggered": false,
+    "action": null
+  },
+  {
+    "timestamp": "2026-03-22T12:09:05.449969",
+    "query": "hw_snapshot",
+    "result": {
+      "headroom": "insufficient",
+      "headroom_reason": "RAM at 90% (Critical)",
+      "cpu_pct": 100.0,
+      "ram_pct": 89.8
+    },
+    "adaptation_triggered": false,
+    "action": null
+  },
+  {
+    "timestamp": "2026-03-22T12:09:10.562619",
+    "query": "hw_snapshot",
+    "result": {
+      "headroom": "insufficient",
+      "headroom_reason": "RAM at 100% (Critical)",
+      "cpu_pct": 100.0,
+      "ram_pct": 99.7
+    },
+    "adaptation_triggered": false,
+    "action": null
+  },
+  {
+    "timestamp": "2026-03-22T12:09:15.563265",
+    "query": "hw_snapshot",
+    "result": {
+      "headroom": "limited",
+      "headroom_reason": "Disk at 89% (Warn)",
+      "cpu_pct": 99.87483978271484,
+      "ram_pct": 4.2
+    },
+    "adaptation_triggered": false,
+    "action": null
+  },
+  {
+    "timestamp": "2026-03-22T12:09:20.574361",
+    "query": "hw_snapshot",
+    "result": {
+      "headroom": "limited",
+      "headroom_reason": "Disk at 89% (Warn)",
+      "cpu_pct": 100.0,
+      "ram_pct": 4.2
+    },
+    "adaptation_triggered": false,
+    "action": null
+  },
+  {
+    "timestamp": "2026-03-22T12:09:25.578359",
+    "query": "hw_snapshot",
+    "result": {
+      "headroom": "limited",
+      "headroom_reason": "Disk at 89% (Warn)",
+      "cpu_pct": 100.0,
+      "ram_pct": 4.2
+    },
+    "adaptation_triggered": false,
+    "action": null
+  },
+  {
+    "timestamp": "2026-03-22T12:09:30.579037",
+    "query": "hw_snapshot",
+    "result": {
+      "headroom": "limited",
+      "headroom_reason": "Disk at 89% (Warn)",
+      "cpu_pct": 100.0,
+      "ram_pct": 4.2
+    },
+    "adaptation_triggered": false,
+    "action": null
+  },
+  {
+    "timestamp": "2026-03-22T12:09:35.579622",
+    "query": "hw_snapshot",
+    "result": {
+      "headroom": "limited",
+      "headroom_reason": "Disk at 89% (Warn)",
+      "cpu_pct": 100.0,
+      "ram_pct": 4.2
+    },
+    "adaptation_triggered": false,
+    "action": null
+  },
+  {
+    "timestamp": "2026-03-22T12:09:40.593979",
+    "query": "hw_snapshot",
+    "result": {
+      "headroom": "limited",
+      "headroom_reason": "Disk at 89% (Warn)",
+      "cpu_pct": 100.0,
+      "ram_pct": 4.2
+    },
+    "adaptation_triggered": false,
+    "action": null
+  },
+  {
+    "timestamp": "2026-03-22T12:09:45.626013",
+    "query": "hw_snapshot",
+    "result": {
+      "headroom": "limited",
+      "headroom_reason": "Disk at 89% (Warn)",
+      "cpu_pct": 100.0,
+      "ram_pct": 4.2
+    },
+    "adaptation_triggered": false,
+    "action": null
+  },
+  {
+    "timestamp": "2026-03-22T12:09:50.637968",
+    "query": "hw_snapshot",
+    "result": {
+      "headroom": "limited",
+      "headroom_reason": "Disk at 89% (Warn)",
+      "cpu_pct": 100.0,
+      "ram_pct": 4.2
+    },
+    "adaptation_triggered": false,
+    "action": null
+  },
+  {
+    "timestamp": "2026-03-22T12:09:55.638645",
+    "query": "hw_snapshot",
+    "result": {
+      "headroom": "limited",
+      "headroom_reason": "Disk at 89% (Warn)",
+      "cpu_pct": 100.0,
+      "ram_pct": 4.2
+    },
+    "adaptation_triggered": false,
+    "action": null
+  },
+  {
+    "timestamp": "2026-03-22T12:10:00.649984",
+    "query": "hw_snapshot",
+    "result": {
+      "headroom": "limited",
+      "headroom_reason": "Disk at 89% (Warn)",
+      "cpu_pct": 100.0,
+      "ram_pct": 4.2
+    },
+    "adaptation_triggered": false,
+    "action": null
+  },
+  {
+    "timestamp": "2026-03-22T12:10:05.654594",
+    "query": "hw_snapshot",
+    "result": {
+      "headroom": "limited",
+      "headroom_reason": "Disk at 89% (Warn)",
+      "cpu_pct": 100.0,
+      "ram_pct": 4.2
+    },
+    "adaptation_triggered": false,
+    "action": null
+  },
+  {
+    "timestamp": "2026-03-22T12:10:10.690001",
+    "query": "hw_snapshot",
+    "result": {
+      "headroom": "limited",
+      "headroom_reason": "Disk at 89% (Warn)",
+      "cpu_pct": 100.0,
+      "ram_pct": 4.2
+    },
+    "adaptation_triggered": false,
+    "action": null
+  },
+  {
+    "timestamp": "2026-03-22T12:10:15.702374",
+    "query": "hw_snapshot",
+    "result": {
+      "headroom": "limited",
+      "headroom_reason": "Disk at 89% (Warn)",
+      "cpu_pct": 100.0,
+      "ram_pct": 4.2
+    },
+    "adaptation_triggered": false,
+    "action": null
+  },
+  {
+    "timestamp": "2026-03-22T12:10:20.714017",
+    "query": "hw_snapshot",
+    "result": {
+      "headroom": "limited",
+      "headroom_reason": "Disk at 89% (Warn)",
+      "cpu_pct": 100.0,
+      "ram_pct": 4.2
+    },
+    "adaptation_triggered": false,
+    "action": null
+  },
+  {
+    "timestamp": "2026-03-22T12:10:25.726004",
+    "query": "hw_snapshot",
+    "result": {
+      "headroom": "limited",
+      "headroom_reason": "Disk at 89% (Warn)",
+      "cpu_pct": 100.0,
+      "ram_pct": 4.2
+    },
+    "adaptation_triggered": false,
+    "action": null
+  },
+  {
+    "timestamp": "2026-03-22T12:10:30.741976",
+    "query": "hw_snapshot",
+    "result": {
+      "headroom": "limited",
+      "headroom_reason": "Disk at 89% (Warn)",
+      "cpu_pct": 100.0,
+      "ram_pct": 4.2
+    },
+    "adaptation_triggered": false,
+    "action": null
+  },
+  {
+    "timestamp": "2026-03-22T12:10:35.776883",
+    "query": "hw_snapshot",
+    "result": {
+      "headroom": "limited",
+      "headroom_reason": "Disk at 89% (Warn)",
+      "cpu_pct": 100.0,
+      "ram_pct": 4.2
+    },
+    "adaptation_triggered": false,
+    "action": null
+  }
+]

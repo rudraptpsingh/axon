@@ -17,22 +17,22 @@ This test demonstrates how agents can adapt behavior in real-time based on hardw
 
 |-------|--------|-------|--------|--------|
 
-| Baseline | 17 | 2.3 | 20.5 | 1.1 |
+| Baseline | 466 | 2.2 | 20.5 | 96.7 |
 
-| Stress | 8 | 3.9 | 20.5 | 98.3 |
+| Stress | 392 | 5.8 | 15.7 | 98.3 |
 
-| Adapted | 8 | 9.4 | 20.6 | 98.3 |
+| Adapted | 158 | 2.9 | 16.6 | 98.3 |
 
-| Cooloff | 17 | 2.4 | 20.5 | 1.2 |
+| Cooloff | 464 | 2.2 | 20.6 | 96.7 |
 
 
 ## Key Improvements (Phase 2 → Phase 3)
 
-- **Latency P95**: +138.6% (3.9ms → 9.4ms)
+- **Latency P95**: -50.3% (5.8ms → 2.9ms)
 
-- **Throughput**: +0.0% (8 → 8 items/s)
+- **Throughput**: -59.5% (392 → 158 items/s)
 
-- **Memory**: +0.4% (20.5MB → 20.6MB)
+- **Memory**: +5.7% (15.7MB → 16.6MB)
 
 
 ## Detailed Phase Analysis
@@ -42,10 +42,10 @@ This test demonstrates how agents can adapt behavior in real-time based on hardw
 
 System idle, no stress. Async queue task processes items efficiently.
 
-- Throughput: 17 items/sec
-- P95 Latency: 2.3ms
+- Throughput: 466 items/sec
+- P95 Latency: 2.2ms
 - Memory: 20.5MB
-- CPU: 1.1% avg, 8.4% peak
+- CPU: 96.7% avg, 100.0% peak
 
 
 ### Phase 2: Stress (120s)
@@ -53,9 +53,9 @@ System idle, no stress. Async queue task processes items efficiently.
 Background stress processes: CPU (yes × 8), Memory (60% of available), Disk I/O (4× dd processes).
 Same async task continues without adaptation.
 
-- Throughput: 8 items/sec (↓ -50.0%)
-- P95 Latency: 3.9ms (↑ +71.3%)
-- Memory: 20.5MB (↑ +0.1%)
+- Throughput: 392 items/sec (↓ -15.9%)
+- P95 Latency: 5.8ms (↑ +169.9%)
+- Memory: 15.7MB (↑ -23.4%)
 - CPU: 98.3% avg, 100.0% peak
 
 
@@ -65,9 +65,9 @@ Stress continues. Agent queries Axon hw_snapshot every 5s.
 At T≈0s: Axon detects RAM pressure (headroom=limited).
 Agent adapts: switches to sync mode (blocking dequeue), reducing queue buildup.
 
-- Throughput: 8 items/sec (↑ +0.0%)
-- P95 Latency: 9.4ms (↓ +138.6%)
-- Memory: 20.6MB (↓ +0.4%)
+- Throughput: 158 items/sec (↑ -59.5%)
+- P95 Latency: 2.9ms (↓ -50.3%)
+- Memory: 16.6MB (↓ +5.7%)
 - CPU: 98.3% avg, 100.0% peak
 
 
@@ -76,10 +76,10 @@ Agent adapts: switches to sync mode (blocking dequeue), reducing queue buildup.
 All stress processes stopped. Agent continues with adapted parameters.
 System returns to normal, metrics recover toward baseline.
 
-- Throughput: 17 items/sec (recovery: +99.9%)
-- P95 Latency: 2.4ms
-- Memory: 20.5MB
-- CPU: 1.2% avg, 6.3% peak
+- Throughput: 464 items/sec (recovery: +192.5%)
+- P95 Latency: 2.2ms
+- Memory: 20.6MB
+- CPU: 96.7% avg, 100.0% peak
 
 
 ## Conclusion
@@ -88,7 +88,7 @@ This test demonstrates the value of Axon hardware awareness for agent adaptation
 
 ✓ **Agent detects stress** via Axon hw_snapshot queries (every 5s)
 ✓ **Agent adapts behavior** when headroom becomes limited
-✓ **Performance improvement**: +138.6% latency reduction, +0.0% throughput recovery
+✓ **Performance improvement**: -50.3% latency reduction, -59.5% throughput recovery
 ✓ **Memory efficiency**: Reduced memory pressure despite ongoing stress
 ✓ **Recovery**: Metrics return to baseline after stress removal
 

@@ -7,20 +7,20 @@
     "adaptation_triggered": false,
     "adaptation_decisions": [],
     "final_task_stats": {
-      "timestamp": "2026-03-22T11:17:40.110951",
-      "elapsed_sec": 60.0559184551239,
+      "timestamp": "2026-03-22T12:06:38.080884",
+      "elapsed_sec": 60.00153112411499,
       "mode": "async",
-      "items_processed": 1000,
+      "items_processed": 27943,
       "queue_depth": 0,
-      "throughput_items_sec": 16.65,
-      "latency_p50_ms": 2.27,
-      "latency_p95_ms": 2.3,
-      "latency_p99_ms": 2.35,
-      "memory_mb": 20.51
+      "throughput_items_sec": 465.7,
+      "latency_p50_ms": 2.11,
+      "latency_p95_ms": 2.16,
+      "latency_p99_ms": 2.3,
+      "memory_mb": 20.54
     },
     "final_metrics": {
-      "timestamp": "2026-03-22T11:17:38.049035+00:00",
-      "cpu_pct": 0.75,
+      "timestamp": "2026-03-22T12:06:36.035855+00:00",
+      "cpu_pct": 100.0,
       "ram_pct": 4.25,
       "disk_pct": 3.88
     }
@@ -33,21 +33,21 @@
     "adaptation_triggered": false,
     "adaptation_decisions": [],
     "final_task_stats": {
-      "timestamp": "2026-03-22T11:19:40.381678",
-      "elapsed_sec": 120.0401861667633,
+      "timestamp": "2026-03-22T12:08:38.538591",
+      "elapsed_sec": 120.10013151168823,
       "mode": "async",
-      "items_processed": 1000,
+      "items_processed": 47032,
       "queue_depth": 0,
-      "throughput_items_sec": 8.33,
-      "latency_p50_ms": 2.26,
-      "latency_p95_ms": 3.94,
-      "latency_p99_ms": 6.55,
-      "memory_mb": 20.53
+      "throughput_items_sec": 391.61,
+      "latency_p50_ms": 2.11,
+      "latency_p95_ms": 5.83,
+      "latency_p99_ms": 10.16,
+      "memory_mb": 15.73
     },
     "final_metrics": {
-      "timestamp": "2026-03-22T11:19:38.373519+00:00",
+      "timestamp": "2026-03-22T12:08:37.781881+00:00",
       "cpu_pct": 100.0,
-      "ram_pct": 73.75,
+      "ram_pct": 4.13,
       "disk_pct": 3.88
     }
   },
@@ -56,24 +56,24 @@
     "duration_sec": 120,
     "with_stress": true,
     "sync_mode": false,
-    "adaptation_triggered": false,
+    "adaptation_triggered": true,
     "adaptation_decisions": [],
     "final_task_stats": {
-      "timestamp": "2026-03-22T11:21:43.695239",
-      "elapsed_sec": 120.06870079040527,
-      "mode": "async",
-      "items_processed": 1000,
-      "queue_depth": 0,
-      "throughput_items_sec": 8.33,
-      "latency_p50_ms": 2.73,
-      "latency_p95_ms": 9.4,
-      "latency_p99_ms": 10.97,
-      "memory_mb": 20.62
+      "timestamp": "2026-03-22T12:10:40.242044",
+      "elapsed_sec": 120.07825994491577,
+      "mode": "sync",
+      "items_processed": 19029,
+      "queue_depth": 30367,
+      "throughput_items_sec": 158.47,
+      "latency_p50_ms": 2.19,
+      "latency_p95_ms": 2.9,
+      "latency_p99_ms": 4.04,
+      "memory_mb": 16.62
     },
     "final_metrics": {
-      "timestamp": "2026-03-22T11:21:41.563943+00:00",
-      "cpu_pct": 99.63,
-      "ram_pct": 20.5,
+      "timestamp": "2026-03-22T12:10:38.722994+00:00",
+      "cpu_pct": 100.0,
+      "ram_pct": 4.17,
       "disk_pct": 3.88
     }
   },
@@ -85,21 +85,21 @@
     "adaptation_triggered": false,
     "adaptation_decisions": [],
     "final_task_stats": {
-      "timestamp": "2026-03-22T11:22:43.836465",
-      "elapsed_sec": 60.06316137313843,
+      "timestamp": "2026-03-22T12:11:41.944553",
+      "elapsed_sec": 60.02797174453735,
       "mode": "async",
-      "items_processed": 1000,
+      "items_processed": 27828,
       "queue_depth": 0,
-      "throughput_items_sec": 16.65,
-      "latency_p50_ms": 2.27,
-      "latency_p95_ms": 2.4,
-      "latency_p99_ms": 2.5,
-      "memory_mb": 20.51
+      "throughput_items_sec": 463.58,
+      "latency_p50_ms": 2.12,
+      "latency_p95_ms": 2.22,
+      "latency_p99_ms": 2.25,
+      "memory_mb": 20.56
     },
     "final_metrics": {
-      "timestamp": "2026-03-22T11:22:41.779228+00:00",
-      "cpu_pct": 0.38,
-      "ram_pct": 4.32,
+      "timestamp": "2026-03-22T12:11:39.882152+00:00",
+      "cpu_pct": 100.0,
+      "ram_pct": 4.22,
       "disk_pct": 3.88
     }
   }

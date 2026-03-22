@@ -3,24 +3,24 @@
   "duration_sec": 120,
   "with_stress": true,
   "sync_mode": false,
-  "adaptation_triggered": false,
+  "adaptation_triggered": true,
   "adaptation_decisions": [],
   "final_task_stats": {
-    "timestamp": "2026-03-22T11:21:43.695239",
-    "elapsed_sec": 120.06870079040527,
-    "mode": "async",
-    "items_processed": 1000,
-    "queue_depth": 0,
-    "throughput_items_sec": 8.33,
-    "latency_p50_ms": 2.73,
-    "latency_p95_ms": 9.4,
-    "latency_p99_ms": 10.97,
-    "memory_mb": 20.62
+    "timestamp": "2026-03-22T12:10:40.242044",
+    "elapsed_sec": 120.07825994491577,
+    "mode": "sync",
+    "items_processed": 19029,
+    "queue_depth": 30367,
+    "throughput_items_sec": 158.47,
+    "latency_p50_ms": 2.19,
+    "latency_p95_ms": 2.9,
+    "latency_p99_ms": 4.04,
+    "memory_mb": 16.62
   },
   "final_metrics": {
-    "timestamp": "2026-03-22T11:21:41.563943+00:00",
-    "cpu_pct": 99.63,
-    "ram_pct": 20.5,
+    "timestamp": "2026-03-22T12:10:38.722994+00:00",
+    "cpu_pct": 100.0,
+    "ram_pct": 4.17,
     "disk_pct": 3.88
   }
 }

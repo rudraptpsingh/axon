@@ -18,6 +18,9 @@ from collections import deque
 from datetime import datetime
 from typing import Any
 
+# Control file written by orchestrator when Axon headroom signal fires
+CONTROL_FILE = "/tmp/axon_task_control.json"
+
 
 class AsyncQueueTask:
     """Simulates an agent processing items from an async queue."""
@@ -35,22 +38,35 @@ class AsyncQueueTask:
         """Switch between sync and async modes."""
         self.sync_mode = enable
 
-    async def enqueue_items(self):
-        """Producer: enqueue items rapidly."""
-        for i in range(self.total_items):
-            await self.queue.put(i)
-            await asyncio.sleep(0.001)  # Minimal delay between enqueues
+    def _check_control_file(self):
+        """Read mode signal from control file written by orchestrator via Axon headroom."""
+        try:
+            with open(CONTROL_FILE) as f:
+                ctrl = json.load(f)
+            new_mode = ctrl.get("sync_mode", False)
+            if new_mode != self.sync_mode:
+                reason = ctrl.get("reason", "axon signal")
+                print(f"[task] Mode switch: sync_mode={new_mode} ({reason})", file=sys.stderr)
+                self.sync_mode = new_mode
+        except (FileNotFoundError, json.JSONDecodeError):
+            pass
+
+    async def enqueue_items(self, deadline: float):
+        """Producer: continuously enqueue items until deadline."""
+        i = 0
+        while time.time() < deadline:
+            await self.queue.put(i % self.total_items)
+            i += 1
+            await asyncio.sleep(0.002)  # Throttle producer to match worker speed
 
     async def dequeue_worker(self, worker_id: int):
         """Worker: dequeue and process items."""
         while True:
             try:
                 if self.sync_mode:
-                    # Sync mode: block until item available (slows down processing)
-                    try:
-                        item = self.queue.get_nowait()
-                    except asyncio.QueueEmpty:
-                        break
+                    # Sync mode: blocking dequeue with throttle (reduces throughput)
+                    item = await asyncio.wait_for(self.queue.get(), timeout=0.5)
+                    await asyncio.sleep(0.010)  # Extra work delay in sync mode
                 else:
                     # Async mode: non-blocking dequeue
                     item = await asyncio.wait_for(self.queue.get(), timeout=0.1)
@@ -64,8 +80,20 @@ class AsyncQueueTask:
                 self.processed_count += 1
                 self.queue.task_done()
 
+                # Check for mode switch signal from orchestrator every 10 items
+                if self.processed_count % 10 == 0:
+                    self._check_control_file()
+
             except (asyncio.TimeoutError, asyncio.QueueEmpty):
-                await asyncio.sleep(0.01)
+                # Also check control file when idle (queue empty)
+                self._check_control_file()
+                await asyncio.sleep(0.05)
+
+    async def _control_watcher(self):
+        """Dedicated coroutine: check control file every 2s, independent of processing."""
+        while True:
+            self._check_control_file()
+            await asyncio.sleep(2.0)
 
     def get_memory_mb(self) -> float:
         """Get current process memory usage in MB."""
@@ -114,11 +142,12 @@ class AsyncQueueTask:
         self.start_time = time.time()
         deadline = self.start_time + duration_s
 
-        # Start producer and workers
-        producer_task = asyncio.create_task(self.enqueue_items())
+        # Start producer (continuous until deadline), workers, and control watcher
+        producer_task = asyncio.create_task(self.enqueue_items(deadline))
         worker_tasks = [
             asyncio.create_task(self.dequeue_worker(i)) for i in range(num_workers)
         ]
+        watcher_task = asyncio.create_task(self._control_watcher())
 
         # Sampling task
         async def sample_loop():
@@ -136,10 +165,11 @@ class AsyncQueueTask:
         producer_task.cancel()
         for task in worker_tasks:
             task.cancel()
+        watcher_task.cancel()
         sampler_task.cancel()
 
         # Wait for cancellations
-        await asyncio.gather(producer_task, *worker_tasks, sampler_task, return_exceptions=True)
+        await asyncio.gather(producer_task, *worker_tasks, watcher_task, sampler_task, return_exceptions=True)
 
         # Final sample
         self.collect_sample()
