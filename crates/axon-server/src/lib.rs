@@ -268,9 +268,16 @@ fn hw_narrative(hw: &HwSnapshot) -> String {
         String::new()
     };
     let headroom_str = match hw.headroom {
-        HeadroomLevel::Adequate => "Headroom: adequate.",
-        HeadroomLevel::Limited => "Headroom: limited.",
-        HeadroomLevel::Insufficient => "Headroom: INSUFFICIENT -- defer heavy tasks.",
+        HeadroomLevel::Adequate => "Headroom: adequate.".to_string(),
+        HeadroomLevel::Limited => {
+            format!("Headroom: limited ({}).", hw.headroom_reason)
+        }
+        HeadroomLevel::Insufficient => {
+            format!(
+                "Headroom: INSUFFICIENT ({}) -- defer heavy tasks.",
+                hw.headroom_reason
+            )
+        }
     };
     format!(
         "CPU {:.0}%, die {}{} RAM {:.1}/{:.0}GB ({} pressure).{} {}",

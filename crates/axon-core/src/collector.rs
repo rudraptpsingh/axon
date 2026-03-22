@@ -147,6 +147,7 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle) {
     let mut prev_throttling = test_prev.throttling.unwrap_or(false);
     let mut prev_impact_level = test_prev.impact_level.unwrap_or(ImpactLevel::Healthy);
     let mut prev_disk_pressure = test_prev.disk_pressure.unwrap_or(DiskPressure::Normal);
+    let mut prev_cpu_saturated = false;
 
     let mut ticker = interval(Duration::from_secs(2));
 
@@ -291,10 +292,22 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle) {
         let culprit = process_infos.first().cloned();
         let groups = grouping::build_groups(&process_infos);
 
-        // Check for agent accumulation (overrides anomaly_type when detected)
+        // Check for agent accumulation — only override anomaly_type when the
+        // agent group is actually the top blame group (highest blame_score).
+        // Otherwise a 2-process claude sitting idle would mask a `yes` process
+        // burning 400% CPU.
         let (anomaly_type, culprit_group) =
             if let Some(agent_group) = impact::detect_agent_accumulation(&groups) {
-                (AnomalyType::AgentAccumulation, Some(agent_group.clone()))
+                let top_group = groups.first();
+                let agents_are_top = top_group
+                    .map(|g| g.name == agent_group.name)
+                    .unwrap_or(false);
+                if agents_are_top {
+                    (AnomalyType::AgentAccumulation, Some(agent_group.clone()))
+                } else {
+                    // Agents exist but aren't the primary resource consumer
+                    (anomaly_type, top_group.cloned())
+                }
             } else {
                 (anomaly_type, groups.first().cloned())
             };
@@ -341,6 +354,7 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle) {
 
         // Skip alerts during warm-up (first 3 ticks)
         let mut new_alerts = if tick_count > 3 {
+            let cpu_saturated = cpu_pct > crate::thresholds::ANOMALY_CPU_PCT;
             let ctx = AlertContext {
                 prev_ram_pressure: &prev_ram_pressure,
                 ram_pressure: &ram_pressure,
@@ -350,6 +364,8 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle) {
                 ram_used_gb,
                 ram_total_gb,
                 cpu_pct,
+                prev_cpu_saturated,
+                cpu_saturated,
                 prev_disk_pressure: &prev_disk_pressure,
                 disk_pressure: &disk_pressure,
                 disk_used_gb,
@@ -365,6 +381,7 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle) {
             prev_throttling = throttling;
             prev_impact_level = impact_level;
             prev_disk_pressure = disk_pressure;
+            prev_cpu_saturated = cpu_saturated;
             a
         } else {
             // Optional test hook: preserve injected previous-state values through warm-up so
@@ -374,6 +391,7 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle) {
                 prev_throttling = throttling;
                 prev_impact_level = impact_level;
                 prev_disk_pressure = disk_pressure;
+                prev_cpu_saturated = cpu_pct > crate::thresholds::ANOMALY_CPU_PCT;
             }
             Vec::new()
         };

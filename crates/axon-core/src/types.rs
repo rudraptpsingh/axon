@@ -135,6 +135,7 @@ pub enum AlertType {
     ThermalThrottle,
     ImpactEscalation,
     DiskPressure,
+    CpuSaturation,
 }
 
 impl std::fmt::Display for AlertType {
@@ -144,6 +145,7 @@ impl std::fmt::Display for AlertType {
             AlertType::ThermalThrottle => write!(f, "thermal_throttle"),
             AlertType::ImpactEscalation => write!(f, "impact_escalation"),
             AlertType::DiskPressure => write!(f, "disk_pressure"),
+            AlertType::CpuSaturation => write!(f, "cpu_saturation"),
         }
     }
 }

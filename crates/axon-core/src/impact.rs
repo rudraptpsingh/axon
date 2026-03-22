@@ -48,6 +48,12 @@ pub fn compute_headroom(snap: &HwSnapshot) -> (HeadroomLevel, String) {
             format!("RAM warn + CPU at {:.0}%", snap.cpu_usage_pct),
         );
     }
+    if snap.disk_pressure == DiskPressure::Warn && snap.cpu_usage_pct >= 70.0 {
+        return (
+            HeadroomLevel::Insufficient,
+            format!("Disk warn + CPU at {:.0}%", snap.cpu_usage_pct),
+        );
+    }
     if snap.ram_pressure == RamPressure::Warn {
         let ram_pct = if snap.ram_total_gb > 0.0 {
             snap.ram_used_gb / snap.ram_total_gb * 100.0
@@ -121,12 +127,28 @@ pub fn detect_anomaly_type(ram_pct: f64, cpu_pct: f64, temp: Option<f64>) -> Ano
 }
 
 /// Compute weighted anomaly score [0.0, 1.0].
-/// Uses multi-signal fusion: RAM pressure + CPU saturation + swap usage.
+/// Uses multi-signal fusion with anomaly-aware weights so that a single
+/// saturated signal (e.g. CPU at 100% with low RAM) can still reach the
+/// "strained" band instead of being capped at "degrading".
 pub fn compute_score(ram_pct: f64, cpu_pct: f64, swap_gb: f64) -> f64 {
     let ram_norm = (ram_pct / 100.0).min(1.0);
     let cpu_norm = (cpu_pct / 100.0).min(1.0);
     let swap_norm = (swap_gb / 8.0).min(1.0); // 8GB swap = saturated
-    (0.4 * ram_norm + 0.3 * cpu_norm + 0.3 * swap_norm).min(1.0)
+
+    // Boost the dominant signal so single-resource saturation is not capped
+    // at a low band.  Default weights: RAM 0.40, CPU 0.30, swap 0.30.
+    let (w_ram, w_cpu, w_swap) = if cpu_norm > 0.9 && ram_norm < 0.5 {
+        // CPU-dominant: boost CPU weight
+        (0.15, 0.65, 0.20)
+    } else if ram_norm > 0.7 && cpu_norm < 0.5 {
+        // RAM-dominant: keep original (already favours RAM)
+        (0.50, 0.20, 0.30)
+    } else {
+        // Balanced / default
+        (0.40, 0.30, 0.30)
+    };
+
+    (w_ram * ram_norm + w_cpu * cpu_norm + w_swap * swap_norm).min(1.0)
 }
 
 /// Map anomaly score → ImpactLevel with persistence check.
@@ -351,6 +373,18 @@ mod tests {
     }
 
     #[test]
+    fn test_compute_score_cpu_dominant_reaches_strained() {
+        // CPU at 100%, low RAM, no swap — should reach strained band (>= 0.38)
+        let score = compute_score(5.0, 100.0, 0.0);
+        assert!(
+            score >= thresholds::IMPACT_LEVEL_DEGRADING_BELOW,
+            "CPU-only saturation score {:.3} should reach strained band (>= {:.2})",
+            score,
+            thresholds::IMPACT_LEVEL_DEGRADING_BELOW
+        );
+    }
+
+    #[test]
     fn test_score_to_level_persistence() {
         // Below persistence threshold: always Healthy
         assert_eq!(score_to_level(0.6, 1), ImpactLevel::Healthy);
@@ -540,6 +574,21 @@ mod tests {
 
         let hw_at = make_hw(RamPressure::Warn, DiskPressure::Normal, false, 70.0, None);
         assert_eq!(compute_headroom(&hw_at).0, HeadroomLevel::Insufficient);
+    }
+
+    #[test]
+    fn test_headroom_disk_warn_cpu_boundary() {
+        let hw_below = make_hw(RamPressure::Normal, DiskPressure::Warn, false, 69.9, None);
+        assert_eq!(compute_headroom(&hw_below).0, HeadroomLevel::Limited);
+
+        let hw_at = make_hw(RamPressure::Normal, DiskPressure::Warn, false, 70.0, None);
+        assert_eq!(compute_headroom(&hw_at).0, HeadroomLevel::Insufficient);
+
+        let hw_high = make_hw(RamPressure::Normal, DiskPressure::Warn, false, 100.0, None);
+        let (level, reason) = compute_headroom(&hw_high);
+        assert_eq!(level, HeadroomLevel::Insufficient);
+        assert!(reason.contains("Disk warn"), "reason: {}", reason);
+        assert!(reason.contains("CPU"), "reason: {}", reason);
     }
 
     // ── Agent Accumulation Tests ─────────────────────────────────────────
