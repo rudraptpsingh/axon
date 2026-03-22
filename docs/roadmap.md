@@ -9,7 +9,7 @@ defines what must be verified after implementation.
 
 ## Item 1: Multi-Instance Agent Process Detection
 
-### Status: Planned
+### Status: Done (v0.2.0)
 
 ### Problem this solves
 
@@ -117,7 +117,7 @@ In `crates/axon-core/src/impact.rs`, update `impact_message` to handle
 
 ## Item 2: Headroom Field in hw_snapshot
 
-### Status: Planned
+### Status: Done (v0.2.0)
 
 ### Problem this solves
 
@@ -239,7 +239,7 @@ derived from the other fields. No schema change needed.
 
 ## Item 3: Session-Scoped Health Summary
 
-### Status: Planned
+### Status: Done (v0.2.0)
 
 ### Problem this solves
 
@@ -367,7 +367,7 @@ Update `crates/axon-cli/src/main.rs` (the `query` subcommand) to accept
 
 ## Item 4: Linux and Windows Support
 
-### Status: Planned (Phase 2)
+### Status: Linux done (v0.2.0), Windows planned
 
 ### Problem this solves
 

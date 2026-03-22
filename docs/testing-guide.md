@@ -53,7 +53,7 @@ cargo run -- query system_profile
     "core_count": 8,
     "ram_total_gb": 8.0,
     "os_version": "macOS ...",
-    "axon_version": "0.1.4"
+    "axon_version": "0.2.0"
   }
 }
 ```

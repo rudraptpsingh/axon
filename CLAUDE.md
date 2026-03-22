@@ -2,19 +2,19 @@
 
 ## Project Overview
 
-axon is a zero-cloud, privacy-first MCP (Model Context Protocol) server that gives AI coding agents real-time local hardware awareness. It tells developers what is slowing their machine and how to fix it -- without sending a single byte off-device. Currently targets macOS; Linux and Windows support planned.
+axon is a zero-cloud, privacy-first MCP (Model Context Protocol) server that gives AI coding agents real-time local hardware awareness. It tells developers what is slowing their machine and how to fix it -- without sending a single byte off-device. Supports macOS and Linux; Windows support planned.
 
 ## Architecture
 
 ```
 crates/
   axon-core/     # Data types, EWMA baseline tracker, impact engine, process grouping, collector loop
-  axon-server/   # MCP server (5 tools via rmcp #[tool_router])
+  axon-server/   # MCP server (6 tools via rmcp #[tool_router])
   axon-cli/      # Binary: serve | diagnose | status | setup | query
 ```
 
 - **axon-core** is a library crate. All data types live in `types.rs`. The collector loop in `collector.rs` runs every 2 seconds, refreshing sysinfo and updating per-process EWMA baselines. Process grouping in `grouping.rs` aggregates child processes by app name (e.g., Chrome helpers → "Google Chrome").
-- **axon-server** exposes 5 MCP tools over stdio: `hw_snapshot`, `process_blame`, `battery_status`, `system_profile`, `hardware_trend`. Uses rmcp 1.x with `#[tool_router]` and `#[tool_handler]` macros.
+- **axon-server** exposes 6 MCP tools over stdio: `hw_snapshot`, `process_blame`, `battery_status`, `system_profile`, `hardware_trend`, `session_health`. Uses rmcp 1.x with `#[tool_router]` and `#[tool_handler]` macros.
 - **axon-cli** is the binary entry point (package name `axon`). Agent setup is explicit via `axon setup` (supports claude-desktop, claude-code, cursor, vscode).
 
 ## Key Technical Details
@@ -39,7 +39,7 @@ cargo test --workspace                     # Library + CLI tests (run counts var
 cargo test -p axon --test smoke -- --ignored   # ~5s: real diagnose + status binaries
 cargo install --path crates/axon-cli       # Install to ~/.cargo/bin
 axon diagnose                              # Quick smoke test
-python3 scripts/mcp_exercise_all_tools.py /path/to/axon  # Exercise all 5 MCP tools
+python3 scripts/mcp_exercise_all_tools.py /path/to/axon  # Exercise all 6 MCP tools
 ```
 Live webhook E2E (needs release binary; may wait up to `ALERT_E2E_WAIT` seconds): `scripts/e2e-webhook-config-file.sh`, `scripts/e2e-webhook-cli-override.sh`, `scripts/e2e-mcp-and-webhook.sh`.
 - **Live stress test (ignored)**: `cargo test -p axon --test live_hardware_alert -- --ignored --nocapture` — real `axon serve`, baseline RAM from `axon_core::probe`, memory hog + `yes` CPU stress, asserts webhook or new `alerts` rows. Works on machines with Critical baseline RAM via injected prev-state env vars (edge transition guaranteed on tick 4). Typically completes in ~5 minutes.
@@ -56,7 +56,7 @@ Live webhook E2E (needs release binary; may wait up to `ALERT_E2E_WAIT` seconds)
 
 ## MCP Tool Signatures
 
-4 tools take `EmptyParams` (no arguments). `hardware_trend` accepts `TrendParams { time_range: Option<String>, interval: Option<String> }`. All return a JSON string wrapped in `McpResponse<T>`:
+4 tools take `EmptyParams` (no arguments). `hardware_trend` accepts `TrendParams { time_range: Option<String>, interval: Option<String> }`. `session_health` accepts `SessionHealthParams { since: Option<String> }` (ISO 8601 timestamp, defaults to 1 hour ago). All return a JSON string wrapped in `McpResponse<T>`:
 ```json
 {"ok": true, "ts": "...", "data": {...}, "narrative": "human-readable summary"}
 ```

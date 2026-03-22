@@ -6,7 +6,7 @@ It keeps going. More tokens. More confusion. Same degraded hardware. A single `c
 
 axon is an [MCP](https://modelcontextprotocol.io/) server that gives AI agents real-time hardware awareness. It tells the agent what process is slowing things down, how to fix it, and whether the machine can handle the next task.
 
-Works with Claude Desktop, Cursor, VS Code, and Claude Code. macOS today. Linux and Windows coming.
+Works with Claude Desktop, Cursor, VS Code, and Claude Code. macOS and Linux today. Windows coming.
 
 ![axon diagnose](tapes/demo.gif)
 
@@ -44,15 +44,16 @@ Then restart your agent.
 
 ## What It Does
 
-axon exposes 5 MCP tools that any compatible agent can call:
+axon exposes 6 MCP tools that any compatible agent can call:
 
 | Tool | Purpose |
 |---|---|
-| `process_blame` | Identify the top culprit process, its impact severity, and a specific fix |
-| `hw_snapshot` | CPU usage, die temperature, RAM used/total, disk used/total, pressure levels, throttling state |
+| `process_blame` | Identify the top culprit process, its impact severity, and a specific fix. Detects multi-instance agent accumulation (Claude, Cursor, Windsurf, VS Code, Zed) |
+| `hw_snapshot` | CPU usage, die temperature, RAM/disk used/total, pressure levels, throttling state, and a `headroom` field (adequate/limited/insufficient) for pre-task gating |
 | `battery_status` | Battery percentage, charging state, estimated time remaining |
 | `system_profile` | Machine model, chip, core count, total RAM, OS version |
 | `hardware_trend` | Historical CPU/RAM/temp trends over a time window (last_1h to last_30d) |
+| `session_health` | Retrospective session summary: snapshot count, alert count, peak/avg CPU/RAM/temp, worst impact level since a given timestamp |
 
 The hero tool is `process_blame`. When your AI session lags, the agent calls it and gets back:
 
@@ -85,10 +86,11 @@ Without hardware context, the agent guesses: "Let me try -j 4 instead of -j 8...
 If you are an AI agent with axon available as an MCP tool, here is when to use each tool:
 
 - **Session start** -- call `system_profile` once to understand the machine you are running on (chip, cores, RAM, OS). This is cached and cheap.
-- **Build slow or session lagging** -- call `process_blame` to identify what is causing the slowdown and get a specific fix. This is your primary diagnostic tool.
-- **Before starting a heavy task** (large build, test suite, code generation) -- call `hw_snapshot` to check if the machine has headroom. If RAM pressure is warn/critical, disk pressure is warn/critical, or CPU is saturated, suggest the user close other applications or free disk space first.
+- **Before starting a heavy task** (large build, test suite, code generation) -- call `hw_snapshot` and check the `headroom` field. If `headroom` is `insufficient`, warn the user or defer the task. If `limited`, proceed with caution.
+- **Build slow or session lagging** -- call `process_blame` to identify what is causing the slowdown and get a specific fix. It also detects multi-instance agent accumulation (e.g., 4 Claude sessions eating 60GB RAM).
 - **Battery concerns** -- call `battery_status` to check remaining charge. If battery is low and not charging, warn the user before starting long-running tasks.
 - **Investigating performance over time** -- call `hardware_trend` with a time range (last_1h, last_6h, last_24h, last_7d, last_30d) to see if the machine is degrading or if there is a pattern.
+- **End of long session** -- call `session_health` for a retrospective summary: how many alerts fired, what was the worst state, peak CPU/RAM/temp since session start.
 
 All tools return structured JSON with an `ok` boolean, timestamp, data payload, and a human-readable `narrative` field.
 
@@ -162,7 +164,7 @@ After an alert fires, the agent queries full context:
 ```
 crates/
   axon-core/     # Types, EWMA tracker, impact engine, collector loop, alert dispatch, SQLite persistence
-  axon-server/   # MCP server (5 tools via rmcp)
+  axon-server/   # MCP server (6 tools via rmcp)
   axon-cli/      # Binary entry point
 ```
 
@@ -175,7 +177,7 @@ Key design decisions:
 
 ## Requirements
 
-- macOS (Apple Silicon or Intel). Linux and Windows support planned -- the underlying `sysinfo` crate already supports both platforms.
+- macOS (Apple Silicon or Intel) and Linux. Windows support planned -- the underlying `sysinfo` crate already supports it.
 - Rust 1.75+ (for building from source)
 
 ## License
