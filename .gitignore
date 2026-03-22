@@ -21,3 +21,4 @@ ROADMAP.md
 dist/
 *.code-workspace
 scripts/__pycache__/
+.claude/worktrees/
