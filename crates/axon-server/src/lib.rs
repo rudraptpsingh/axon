@@ -167,6 +167,28 @@ impl AxonServer {
     }
 
     #[tool(
+        description = "Real-time GPU snapshot. Returns GPU utilization %, tiler and renderer stage utilization, VRAM in use and allocated (bytes), cumulative GPU hang/reset count, model name, and core count. macOS only (Apple Silicon and Intel). Returns null fields on unsupported platforms. Call before GPU-heavy workloads (ML inference, 3D rendering, video encoding) to check GPU headroom and detect driver crashes."
+    )]
+    async fn gpu_snapshot(&self, _p: Parameters<EmptyParams>) -> String {
+        let gpu = {
+            let guard = self.state.lock().unwrap();
+            guard.gpu.clone()
+        };
+        match gpu {
+            Some(g) => {
+                let narrative = gpu_narrative(&g);
+                let response = McpResponse::success(g, narrative);
+                serde_json::to_string(&response)
+                    .unwrap_or_else(|e| format!("{{\"ok\":false,\"error\":\"{}\"}}", e))
+            }
+            None => {
+                r#"{"ok":false,"narrative":"GPU metrics unavailable on this platform."}"#
+                    .to_string()
+            }
+        }
+    }
+
+    #[tool(
         description = "Session health summary since a given timestamp. Returns worst impact level, worst anomaly type, alert count, throttle events, average and peak CPU/RAM/temperature. Use at the end of long sessions or periodically to detect gradual degradation that edge-triggered alerts may miss."
     )]
     async fn session_health(&self, params: Parameters<SessionHealthParams>) -> String {
@@ -205,7 +227,9 @@ impl ServerHandler for AxonServer {
                    It detects agent accumulation (multiple Claude/Cursor instances). \
                 4. Call battery_status before long agentic tasks on laptops. \
                 5. Call hardware_trend for degradation patterns over time. \
-                6. Call session_health at end of long sessions for a retrospective summary.",
+                6. Call session_health at end of long sessions for a retrospective summary. \
+                7. Call gpu_snapshot before GPU-heavy workloads (ML inference, video encoding, 3D rendering) \
+                   to check GPU utilization and VRAM pressure. Also check recovery_count for GPU driver crashes.",
         )
     }
 }
@@ -322,6 +346,38 @@ fn trend_narrative(trend: &TrendData, range: &str) -> String {
         parts.join(", "),
         range,
         trend.total_snapshots
+    )
+}
+
+fn gpu_narrative(gpu: &GpuSnapshot) -> String {
+    let util = gpu
+        .utilization_pct
+        .map(|v| format!("{:.0}%", v))
+        .unwrap_or_else(|| "N/A".to_string());
+    let vram_str = match (gpu.vram_used_bytes, gpu.vram_alloc_bytes) {
+        (Some(used), Some(alloc)) => format!(
+            "{:.0}/{:.0}MB VRAM",
+            used as f64 / 1_048_576.0,
+            alloc as f64 / 1_048_576.0
+        ),
+        (Some(used), None) => format!("{:.0}MB VRAM used", used as f64 / 1_048_576.0),
+        _ => "VRAM N/A".to_string(),
+    };
+    let model_str = gpu
+        .model
+        .as_deref()
+        .unwrap_or("unknown GPU");
+    let cores_str = gpu
+        .core_count
+        .map(|c| format!(" ({} cores)", c))
+        .unwrap_or_default();
+    let hang_str = match gpu.recovery_count {
+        Some(0) | None => String::new(),
+        Some(n) => format!(" [WARN: {} GPU hang(s)]", n),
+    };
+    format!(
+        "GPU {}{}: util {}, {}.{}",
+        model_str, cores_str, util, vram_str, hang_str
     )
 }
 

@@ -94,6 +94,7 @@ def main() -> int:
             "system_profile",
             "hardware_trend",
             "session_health",
+            "gpu_snapshot",
         }
         missing = expected - names
         if missing:
@@ -107,6 +108,7 @@ def main() -> int:
             (5, "system_profile", {}),
             (6, "hardware_trend", {"time_range": "last_1h", "interval": "15m"}),
             (7, "session_health", {}),
+            (8, "gpu_snapshot", {}),
         ]
 
         for mid, name, args in calls:
@@ -125,11 +127,11 @@ def main() -> int:
                 print(f"[err] {name}: {res['error']}", file=sys.stderr)
                 return 1
             data = parse_mcp_tool_text(res)
-            if name == "battery_status":
+            if name in ("battery_status", "gpu_snapshot"):
                 if data.get("ok"):
                     assert "data" in data
                 else:
-                    print("[info] battery_status: ok=false (e.g. desktop or no pmset data)")
+                    print(f"[info] {name}: ok=false (platform unavailable or no data)")
             else:
                 if not data.get("ok"):
                     print(f"[err] {name}: expected ok true, got {data!r}", file=sys.stderr)

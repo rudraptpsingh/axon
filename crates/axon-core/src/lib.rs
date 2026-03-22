@@ -3,6 +3,7 @@ pub mod alert_dispatch;
 pub mod alerts;
 pub mod collector;
 pub mod ewma;
+pub mod gpu;
 pub mod grouping;
 pub mod impact;
 pub mod persistence;

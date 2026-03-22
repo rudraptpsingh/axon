@@ -7,7 +7,7 @@ use tracing::debug;
 use crate::{
     alerts::{self, AlertContext},
     ewma::EwmaStore,
-    grouping, impact, persistence, temperature,
+    gpu, grouping, impact, persistence, temperature,
     types::*,
 };
 
@@ -88,6 +88,7 @@ pub struct AppState {
     pub processes: Vec<ProcessInfo>,
     pub groups: Vec<ProcessGroup>,
     pub pending_alerts: Vec<Alert>,
+    pub gpu: Option<GpuSnapshot>,
 }
 
 impl AppState {
@@ -123,6 +124,7 @@ impl AppState {
             processes: Vec::new(),
             groups: Vec::new(),
             pending_alerts: Vec::new(),
+            gpu: None,
         }
     }
 }
@@ -319,6 +321,12 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle) {
             "tick"
         );
 
+        // ── GPU snapshot (every tick) ─────────────────────────────────────
+
+        let gpu_snap = gpu::read_gpu_snapshot();
+        let gpu_available = gpu_snap.utilization_pct.is_some();
+        let gpu = if gpu_available { Some(gpu_snap) } else { None };
+
         // ── Battery (every 15 ticks ≈ 30s) ────────────────────────────────
 
         let battery = if tick_count % 15 == 1 {
@@ -387,6 +395,7 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle) {
         guard.processes = process_infos;
         guard.groups = groups;
         guard.pending_alerts.append(&mut new_alerts);
+        guard.gpu = gpu;
         drop(guard);
 
         // ── Persist snapshot every 5 ticks (~10s) ────────────────────────

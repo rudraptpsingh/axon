@@ -217,6 +217,29 @@ pub struct SessionHealth {
     pub throttle_event_count: u32,
 }
 
+// ── GPU Types ─────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GpuSnapshot {
+    /// Overall GPU busy percentage (0–100), from IOAccelerator PerformanceStatistics.
+    pub utilization_pct: Option<f64>,
+    /// Geometry/tiling stage utilization percentage.
+    pub tiler_utilization_pct: Option<f64>,
+    /// Fragment/render stage utilization percentage.
+    pub renderer_utilization_pct: Option<f64>,
+    /// GPU-accessible memory currently in use (bytes mapped to VRAM equivalent).
+    pub vram_used_bytes: Option<u64>,
+    /// Total GPU-allocated memory (bytes).
+    pub vram_alloc_bytes: Option<u64>,
+    /// Cumulative GPU hang/reset count since boot. Any delta signals a driver crash.
+    pub recovery_count: Option<u64>,
+    /// GPU model name (e.g. "Apple M2").
+    pub model: Option<String>,
+    /// Number of GPU cores.
+    pub core_count: Option<u32>,
+    pub ts: DateTime<Utc>,
+}
+
 // ── MCP Response Envelope ─────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize)]
