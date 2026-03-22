@@ -100,11 +100,16 @@ fn test_uninstall_purges_db() {
     let db_path = data_dir.path().join("hardware.db");
     assert!(db_path.exists(), "DB should exist before uninstall");
 
-    // Uninstall with HOME override (purge uses HOME-relative paths on macOS)
+    // Uninstall with HOME override (purge uses HOME-relative paths per platform)
     // Create the data dir where uninstall expects it
-    let mac_data = home.join("Library/Application Support/axon");
-    std::fs::create_dir_all(&mac_data).unwrap();
-    std::fs::write(mac_data.join("hardware.db"), "fake").unwrap();
+    #[cfg(target_os = "macos")]
+    let axon_data = home.join("Library/Application Support/axon");
+    #[cfg(target_os = "linux")]
+    let axon_data = home.join(".local/share/axon");
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    let axon_data = home.join(".local/share/axon");
+    std::fs::create_dir_all(&axon_data).unwrap();
+    std::fs::write(axon_data.join("hardware.db"), "fake").unwrap();
 
     let output = Command::new(axon_bin())
         .args(["uninstall"])
@@ -114,7 +119,7 @@ fn test_uninstall_purges_db() {
 
     assert!(output.status.success());
     assert!(
-        !mac_data.exists(),
+        !axon_data.exists(),
         "data dir should be removed after uninstall"
     );
 }
