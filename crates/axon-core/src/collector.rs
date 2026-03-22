@@ -104,6 +104,8 @@ impl AppState {
                 disk_used_gb: 0.0,
                 disk_total_gb: 0.0,
                 disk_pressure: DiskPressure::Normal,
+                headroom: HeadroomLevel::Adequate,
+                headroom_reason: "System has headroom".to_string(),
                 ts: now,
             },
             blame: ProcessBlame {
@@ -193,7 +195,7 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle) {
         };
         let disk_pressure = crate::thresholds::disk_pressure_from_pct(disk_pct);
 
-        let hw = HwSnapshot {
+        let mut hw = HwSnapshot {
             die_temp_celsius: die_temp,
             throttling,
             ram_used_gb,
@@ -203,8 +205,13 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle) {
             disk_used_gb,
             disk_total_gb,
             disk_pressure: disk_pressure.clone(),
+            headroom: HeadroomLevel::Adequate,
+            headroom_reason: String::new(),
             ts: chrono::Utc::now(),
         };
+        let (headroom, headroom_reason) = impact::compute_headroom(&hw);
+        hw.headroom = headroom;
+        hw.headroom_reason = headroom_reason;
 
         // ── Process collection + EWMA update ──────────────────────────────
 
@@ -269,8 +276,7 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle) {
 
         // ── System anomaly scoring + persistence ───────────────────────────
 
-        // swap_gb: sysinfo doesn't expose swap directly on macOS, default 0
-        let swap_gb = 0.0_f64;
+        let swap_gb = sys.used_swap() as f64 / 1_073_741_824.0;
         let score = impact::compute_score(ram_pct, cpu_pct, swap_gb);
 
         if score > crate::thresholds::IMPACT_SCORE_ELEVATED {
@@ -282,7 +288,15 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle) {
         let impact_level = impact::score_to_level(score, above_threshold_count);
         let culprit = process_infos.first().cloned();
         let groups = grouping::build_groups(&process_infos);
-        let culprit_group = groups.first().cloned();
+
+        // Check for agent accumulation (overrides anomaly_type when detected)
+        let (anomaly_type, culprit_group) =
+            if let Some(agent_group) = impact::detect_agent_accumulation(&groups) {
+                (AnomalyType::AgentAccumulation, Some(agent_group.clone()))
+            } else {
+                (anomaly_type, groups.first().cloned())
+            };
+
         let impact_msg = impact::impact_message(&impact_level, &anomaly_type);
         let fix = impact::suggest_fix(culprit.as_ref(), culprit_group.as_ref(), &anomaly_type);
 
@@ -383,9 +397,25 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle) {
     }
 }
 
-// ── Battery Reader (pmset) ────────────────────────────────────────────────────
+// ── Battery Reader ────────────────────────────────────────────────────────────
 
 fn read_battery() -> Option<BatteryStatus> {
+    #[cfg(target_os = "macos")]
+    {
+        read_battery_macos()
+    }
+    #[cfg(target_os = "linux")]
+    {
+        read_battery_linux()
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        None
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn read_battery_macos() -> Option<BatteryStatus> {
     use std::process::Command;
 
     let output = Command::new("pmset").args(["-g", "batt"]).output().ok()?;
@@ -396,14 +426,12 @@ fn read_battery() -> Option<BatteryStatus> {
 
     let is_charging = stdout.contains("AC Power") || stdout.contains("charging");
 
-    // Extract percentage: look for a number immediately before '%'
     let percentage: f32 = stdout.split('%').next().and_then(|s| {
         s.split(|c: char| c.is_whitespace() || c == '\t' || c == ';')
             .rfind(|sub| !sub.is_empty())
             .and_then(|sub| sub.trim().parse().ok())
     })?;
 
-    // Extract time remaining: "H:MM remaining" (not "-1:-1" or "no estimate")
     let time_to_empty = if !is_charging {
         stdout.lines().find_map(|line| {
             if line.contains("remaining")
@@ -430,6 +458,59 @@ fn read_battery() -> Option<BatteryStatus> {
         None
     };
 
+    Some(build_battery_status(percentage, is_charging, time_to_empty))
+}
+
+#[cfg(target_os = "linux")]
+fn read_battery_linux() -> Option<BatteryStatus> {
+    // Read from /sys/class/power_supply/BAT0 (or BAT1)
+    let bat_dir = if std::path::Path::new("/sys/class/power_supply/BAT0/capacity").exists() {
+        "/sys/class/power_supply/BAT0"
+    } else if std::path::Path::new("/sys/class/power_supply/BAT1/capacity").exists() {
+        "/sys/class/power_supply/BAT1"
+    } else {
+        return None;
+    };
+
+    let percentage: f32 = std::fs::read_to_string(format!("{}/capacity", bat_dir))
+        .ok()?
+        .trim()
+        .parse()
+        .ok()?;
+
+    let status = std::fs::read_to_string(format!("{}/status", bat_dir))
+        .ok()
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
+    let is_charging = status == "Charging" || status == "Full";
+
+    // Try to compute time remaining from energy/power
+    let time_to_empty = if !is_charging {
+        let energy_now: f64 = std::fs::read_to_string(format!("{}/energy_now", bat_dir))
+            .ok()
+            .and_then(|s| s.trim().parse().ok())
+            .unwrap_or(0.0);
+        let power_now: f64 = std::fs::read_to_string(format!("{}/power_now", bat_dir))
+            .ok()
+            .and_then(|s| s.trim().parse().ok())
+            .unwrap_or(0.0);
+        if power_now > 0.0 {
+            Some((energy_now / power_now * 60.0) as u32)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    Some(build_battery_status(percentage, is_charging, time_to_empty))
+}
+
+fn build_battery_status(
+    percentage: f32,
+    is_charging: bool,
+    time_to_empty: Option<u32>,
+) -> BatteryStatus {
     let narrative = if is_charging {
         format!("Battery at {:.0}% and charging.", percentage)
     } else if let Some(mins) = time_to_empty {
@@ -444,20 +525,38 @@ fn read_battery() -> Option<BatteryStatus> {
         format!("Battery at {:.0}% (estimating remaining time).", percentage)
     };
 
-    Some(BatteryStatus {
+    BatteryStatus {
         percentage,
         is_charging,
         time_to_empty_min: time_to_empty,
         narrative,
-    })
+    }
 }
 
 // ── System Profile (built once at startup) ────────────────────────────────────
 
 pub fn build_system_profile() -> SystemProfile {
-    use std::process::Command;
-
     let sys = System::new_all();
+
+    let os_version = System::long_os_version().unwrap_or_else(|| "Unknown".to_string());
+    let core_count = sys.cpus().len();
+    let ram_total_gb = sys.total_memory() as f64 / 1_073_741_824.0;
+
+    let (model_id, chip) = detect_platform_info(&sys);
+
+    SystemProfile {
+        model_id,
+        chip,
+        core_count,
+        ram_total_gb,
+        os_version,
+        axon_version: VERSION.to_string(),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn detect_platform_info(_sys: &System) -> (String, String) {
+    use std::process::Command;
 
     let model_id = Command::new("sysctl")
         .args(["-n", "hw.model"])
@@ -476,7 +575,6 @@ pub fn build_system_profile() -> SystemProfile {
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| {
-            // Apple Silicon: try sysctl hw.chip_id or default
             Command::new("sysctl")
                 .args(["-n", "hw.perflevel0.name"])
                 .output()
@@ -486,16 +584,45 @@ pub fn build_system_profile() -> SystemProfile {
                 .unwrap_or_else(|| "Apple Silicon".to_string())
         });
 
-    let os_version = System::long_os_version().unwrap_or_else(|| "Unknown".to_string());
-    let core_count = sys.cpus().len();
-    let ram_total_gb = sys.total_memory() as f64 / 1_073_741_824.0;
+    (model_id, chip)
+}
 
-    SystemProfile {
-        model_id,
-        chip,
-        core_count,
-        ram_total_gb,
-        os_version,
-        axon_version: VERSION.to_string(),
-    }
+#[cfg(target_os = "linux")]
+fn detect_platform_info(sys: &System) -> (String, String) {
+    // CPU model from sysinfo (reads /proc/cpuinfo internally)
+    let chip = sys
+        .cpus()
+        .first()
+        .map(|cpu| cpu.brand().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "Unknown CPU".to_string());
+
+    // Model ID: try DMI product name, fall back to hostname or "Linux Machine"
+    let model_id = std::fs::read_to_string("/sys/devices/virtual/dmi/id/product_name")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty() && s != "None" && s != "To Be Filled By O.E.M.")
+        .or_else(|| {
+            std::fs::read_to_string("/sys/devices/virtual/dmi/id/board_name")
+                .ok()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty() && s != "None")
+        })
+        .unwrap_or_else(|| {
+            sysinfo::System::host_name().unwrap_or_else(|| "Linux Machine".to_string())
+        });
+
+    (model_id, chip)
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn detect_platform_info(sys: &System) -> (String, String) {
+    let chip = sys
+        .cpus()
+        .first()
+        .map(|cpu| cpu.brand().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "Unknown CPU".to_string());
+    let model_id = sysinfo::System::host_name().unwrap_or_else(|| "Unknown Machine".to_string());
+    (model_id, chip)
 }

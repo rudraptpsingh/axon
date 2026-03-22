@@ -291,8 +291,24 @@ async fn run_query(tool: &str) -> Result<()> {
                 let response = axon_core::types::McpResponse::success(p.clone(), narrative);
                 serde_json::to_string_pretty(&response)?
             }
+            "session_health" => {
+                let since = chrono::Utc::now() - chrono::Duration::hours(1);
+                let db_path = axon_core::persistence::default_db_path()?;
+                let db = axon_core::persistence::open(db_path)?;
+                let health = axon_core::persistence::query_session_health(&db, since)?;
+                let narrative = format!(
+                    "Session health since {}: {} snapshots, {} alerts, worst impact: {:?}",
+                    health.since.format("%H:%M"),
+                    health.snapshot_count,
+                    health.alert_count,
+                    health.worst_impact_level
+                );
+                let response = axon_core::types::McpResponse::success(health, narrative);
+                drop(guard); // release collector state lock before DB query
+                serde_json::to_string_pretty(&response)?
+            }
             other => anyhow::bail!(
-                "Unknown tool '{}'. Supported: process_blame, hw_snapshot, battery_status, system_profile",
+                "Unknown tool '{}'. Supported: process_blame, hw_snapshot, battery_status, system_profile, session_health",
                 other
             ),
         }
@@ -320,6 +336,53 @@ fn run_setup(target: Option<&str>) -> Result<()> {
 
 fn bin_path() -> std::path::PathBuf {
     std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("axon"))
+}
+
+/// Platform-aware config path for Claude Desktop.
+fn claude_desktop_config_path(home: &std::path::Path) -> std::path::PathBuf {
+    #[cfg(target_os = "macos")]
+    {
+        home.join("Library/Application Support/Claude/claude_desktop_config.json")
+    }
+    #[cfg(target_os = "linux")]
+    {
+        home.join(".config/Claude/claude_desktop_config.json")
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        // Windows: %APPDATA%\Claude
+        home.join("AppData/Roaming/Claude/claude_desktop_config.json")
+    }
+}
+
+/// Platform-aware config path for VS Code.
+fn vscode_config_path(home: &std::path::Path) -> std::path::PathBuf {
+    #[cfg(target_os = "macos")]
+    {
+        home.join("Library/Application Support/Code/User/settings.json")
+    }
+    #[cfg(target_os = "linux")]
+    {
+        home.join(".config/Code/User/settings.json")
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        home.join("AppData/Roaming/Code/User/settings.json")
+    }
+}
+
+/// Platform-aware data directory for axon.
+fn axon_data_dir(home: &std::path::Path) -> std::path::PathBuf {
+    #[cfg(target_os = "macos")]
+    {
+        home.join("Library/Application Support/axon")
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        dirs::data_local_dir()
+            .map(|d| d.join("axon"))
+            .unwrap_or_else(|| home.join(".local/share/axon"))
+    }
 }
 
 fn mcp_entry() -> serde_json::Value {
@@ -421,7 +484,7 @@ fn setup_all() -> Result<()> {
     let mut skipped = 0;
 
     // Claude Desktop — configure if the app directory exists
-    let claude_config = home.join("Library/Application Support/Claude/claude_desktop_config.json");
+    let claude_config = claude_desktop_config_path(&home);
     if claude_config.parent().map(|p| p.exists()).unwrap_or(false) || claude_config.exists() {
         match upsert_mcp_config(&claude_config) {
             Ok(true) => {
@@ -458,7 +521,7 @@ fn setup_all() -> Result<()> {
     }
 
     // VS Code — only if settings.json already exists
-    let vscode_config = home.join("Library/Application Support/Code/User/settings.json");
+    let vscode_config = vscode_config_path(&home);
     if vscode_config.exists() {
         match upsert_vscode_config(&vscode_config) {
             Ok(true) => {
@@ -485,9 +548,8 @@ fn setup_all() -> Result<()> {
 // ── Setup Helpers ─────────────────────────────────────────────────────────────
 
 fn setup_claude_desktop() -> Result<()> {
-    let config_path = dirs::home_dir()
-        .ok_or_else(|| anyhow::anyhow!("Cannot find home directory"))?
-        .join("Library/Application Support/Claude/claude_desktop_config.json");
+    let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Cannot find home directory"))?;
+    let config_path = claude_desktop_config_path(&home);
 
     let wrote = upsert_mcp_config(&config_path)?;
     if wrote {
@@ -515,9 +577,8 @@ fn setup_cursor() -> Result<()> {
 }
 
 fn setup_vscode() -> Result<()> {
-    let config_path = dirs::home_dir()
-        .ok_or_else(|| anyhow::anyhow!("Cannot find home directory"))?
-        .join("Library/Application Support/Code/User/settings.json");
+    let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Cannot find home directory"))?;
+    let config_path = vscode_config_path(&home);
 
     let wrote = upsert_vscode_config(&config_path)?;
     if wrote {
@@ -582,7 +643,7 @@ fn run_setup_list() -> Result<()> {
     let mut agents: Vec<AgentInfo> = Vec::new();
 
     // Claude Desktop
-    let claude_config = home.join("Library/Application Support/Claude/claude_desktop_config.json");
+    let claude_config = claude_desktop_config_path(&home);
     let claude_ok = check_mcp_config(&claude_config, "mcpServers");
     let claude_bin = get_configured_binary(&claude_config, &["mcpServers", "axon", "command"]);
     agents.push(AgentInfo {
@@ -606,7 +667,7 @@ fn run_setup_list() -> Result<()> {
     });
 
     // VS Code
-    let vscode_config = home.join("Library/Application Support/Code/User/settings.json");
+    let vscode_config = vscode_config_path(&home);
     let vscode_ok = check_vscode_config(&vscode_config);
     let vscode_bin = get_configured_binary(&vscode_config, &["mcp", "servers", "axon", "command"]);
     agents.push(AgentInfo {
@@ -633,7 +694,7 @@ fn run_setup_list() -> Result<()> {
 
     // Data directories
     let config_dir = home.join(".config/axon");
-    let data_dir = home.join("Library/Application Support/axon");
+    let data_dir = axon_data_dir(&home);
 
     // Print structured output
     println!("Agent            Status        Config");
@@ -765,7 +826,7 @@ fn uninstall_all() -> Result<()> {
     let mut removed = 0;
 
     // Claude Desktop
-    let claude_config = home.join("Library/Application Support/Claude/claude_desktop_config.json");
+    let claude_config = claude_desktop_config_path(&home);
     if remove_from_mcp_config(&claude_config, "mcpServers")? {
         println!("[ok] Removed axon from Claude Desktop config.");
         removed += 1;
@@ -779,7 +840,7 @@ fn uninstall_all() -> Result<()> {
     }
 
     // VS Code
-    let vscode_config = home.join("Library/Application Support/Code/User/settings.json");
+    let vscode_config = vscode_config_path(&home);
     if remove_from_vscode_config(&vscode_config)? {
         println!("[ok] Removed axon from VS Code config.");
         removed += 1;
@@ -857,9 +918,8 @@ fn remove_from_vscode_config(path: &std::path::Path) -> Result<bool> {
 }
 
 fn uninstall_claude_desktop() -> Result<()> {
-    let path = dirs::home_dir()
-        .ok_or_else(|| anyhow::anyhow!("Cannot find home directory"))?
-        .join("Library/Application Support/Claude/claude_desktop_config.json");
+    let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Cannot find home directory"))?;
+    let path = claude_desktop_config_path(&home);
     if remove_from_mcp_config(&path, "mcpServers")? {
         println!("[ok] Removed axon from Claude Desktop config.");
         println!("     Restart Claude Desktop to apply changes.");
@@ -883,9 +943,8 @@ fn uninstall_cursor() -> Result<()> {
 }
 
 fn uninstall_vscode() -> Result<()> {
-    let path = dirs::home_dir()
-        .ok_or_else(|| anyhow::anyhow!("Cannot find home directory"))?
-        .join("Library/Application Support/Code/User/settings.json");
+    let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Cannot find home directory"))?;
+    let path = vscode_config_path(&home);
     if remove_from_vscode_config(&path)? {
         println!("[ok] Removed axon from VS Code config.");
         println!("     Restart VS Code to apply changes.");
@@ -924,24 +983,10 @@ fn purge_data() -> Result<()> {
         println!("[ok] Removed {}", config_dir.display());
     }
 
-    #[cfg(target_os = "macos")]
-    {
-        let data_dir = home.join("Library/Application Support/axon");
-        if data_dir.exists() {
-            std::fs::remove_dir_all(&data_dir)?;
-            println!("[ok] Removed {}", data_dir.display());
-        }
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    {
-        if let Some(data_dir) = dirs::data_dir() {
-            let axon_data = data_dir.join("axon");
-            if axon_data.exists() {
-                std::fs::remove_dir_all(&axon_data)?;
-                println!("[ok] Removed {}", axon_data.display());
-            }
-        }
+    let data_dir = axon_data_dir(&home);
+    if data_dir.exists() {
+        std::fs::remove_dir_all(&data_dir)?;
+        println!("[ok] Removed {}", data_dir.display());
     }
 
     println!("[ok] Purged all axon data and config.");

@@ -17,16 +17,25 @@ fn with_fake_home(f: impl FnOnce(&std::path::Path)) {
     let dir = tempdir().unwrap();
     let home = dir.path();
 
-    // Create dirs that axon setup checks for existence
-    std::fs::create_dir_all(home.join("Library/Application Support/Claude")).unwrap();
+    // Create dirs that axon setup checks for existence (platform-aware)
+    #[cfg(target_os = "macos")]
+    {
+        std::fs::create_dir_all(home.join("Library/Application Support/Claude")).unwrap();
+        std::fs::create_dir_all(home.join("Library/Application Support/Code/User")).unwrap();
+        std::fs::write(
+            home.join("Library/Application Support/Code/User/settings.json"),
+            "{}",
+        )
+        .unwrap();
+    }
+    #[cfg(target_os = "linux")]
+    {
+        std::fs::create_dir_all(home.join(".config/Claude")).unwrap();
+        std::fs::create_dir_all(home.join(".config/Code/User")).unwrap();
+        std::fs::write(home.join(".config/Code/User/settings.json"), "{}").unwrap();
+    }
+
     std::fs::create_dir_all(home.join(".cursor")).unwrap();
-    // VS Code settings must exist for setup to touch it
-    std::fs::create_dir_all(home.join("Library/Application Support/Code/User")).unwrap();
-    std::fs::write(
-        home.join("Library/Application Support/Code/User/settings.json"),
-        "{}",
-    )
-    .unwrap();
 
     f(home);
 }
@@ -55,14 +64,15 @@ fn test_setup_configures_agents() {
         assert!(stdout.contains("[ok] Configured Cursor"));
         assert!(stdout.contains("[ok] Configured VS Code"));
 
-        // Verify JSON was written correctly
-        let claude: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(
-                home.join("Library/Application Support/Claude/claude_desktop_config.json"),
-            )
-            .unwrap(),
-        )
-        .unwrap();
+        // Verify JSON was written correctly (platform-aware paths)
+        #[cfg(target_os = "macos")]
+        let claude_path =
+            home.join("Library/Application Support/Claude/claude_desktop_config.json");
+        #[cfg(target_os = "linux")]
+        let claude_path = home.join(".config/Claude/claude_desktop_config.json");
+
+        let claude: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&claude_path).unwrap()).unwrap();
         assert!(claude["mcpServers"]["axon"]["command"].is_string());
         assert_eq!(claude["mcpServers"]["axon"]["args"][0], "serve");
 
@@ -71,13 +81,14 @@ fn test_setup_configures_agents() {
                 .unwrap();
         assert!(cursor["mcpServers"]["axon"]["command"].is_string());
 
-        let vscode: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(
-                home.join("Library/Application Support/Code/User/settings.json"),
-            )
-            .unwrap(),
-        )
-        .unwrap();
+        #[cfg(target_os = "macos")]
+        let vscode_path =
+            home.join("Library/Application Support/Code/User/settings.json");
+        #[cfg(target_os = "linux")]
+        let vscode_path = home.join(".config/Code/User/settings.json");
+
+        let vscode: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&vscode_path).unwrap()).unwrap();
         assert!(vscode["mcp"]["servers"]["axon"]["command"].is_string());
     });
 }
@@ -136,13 +147,14 @@ fn test_uninstall_removes_from_all() {
         assert!(stdout.contains("Removed from 3 agent(s)"));
 
         // Verify configs no longer have axon
-        let claude: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(
-                home.join("Library/Application Support/Claude/claude_desktop_config.json"),
-            )
-            .unwrap(),
-        )
-        .unwrap();
+        #[cfg(target_os = "macos")]
+        let claude_path =
+            home.join("Library/Application Support/Claude/claude_desktop_config.json");
+        #[cfg(target_os = "linux")]
+        let claude_path = home.join(".config/Claude/claude_desktop_config.json");
+
+        let claude: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&claude_path).unwrap()).unwrap();
         assert!(claude["mcpServers"]["axon"].is_null());
 
         // setup --list should show 0
@@ -188,8 +200,13 @@ fn test_uninstall_unknown_target() {
 #[test]
 fn test_uninstall_purges_data_dirs() {
     with_fake_home(|home| {
-        // Create fake data dirs that uninstall should remove
+        // Create fake data dirs that uninstall should remove.
+        // Use the platform-appropriate data directory path.
+        #[cfg(target_os = "macos")]
         let data_dir = home.join("Library/Application Support/axon");
+        #[cfg(not(target_os = "macos"))]
+        let data_dir = home.join(".local/share/axon");
+
         std::fs::create_dir_all(&data_dir).unwrap();
         std::fs::write(data_dir.join("hardware.db"), "fake").unwrap();
 
