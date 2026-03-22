@@ -258,7 +258,7 @@ pub fn suggest_fix(
             n if n.contains("cursor") => {
                 Some("Restart Cursor or close unused editor tabs (Cmd+W).".to_string())
             }
-            n if n.contains("cargo") => match anomaly {
+            n if n.contains("cargo") || n.contains("rustc") => match anomaly {
                 AnomalyType::ThermalThrottle | AnomalyType::CpuSaturation => {
                     Some("Reduce build parallelism: cargo build -j 2".to_string())
                 }
@@ -314,18 +314,52 @@ pub fn suggest_fix(
         }
     }
 
-    // Fallback by anomaly type
+    // Fallback by anomaly type — always include the culprit name when available
+    let name_hint = group
+        .map(|g| {
+            if g.process_count > 1 {
+                format!("{} ({} processes, {:.1}GB, {:.0}% CPU)", g.name, g.process_count, g.total_ram_gb, g.total_cpu_pct)
+            } else {
+                g.name.clone()
+            }
+        })
+        .or_else(|| culprit.map(|p| format!("{} (PID {})", p.cmd, p.pid)));
+
     match anomaly {
-        AnomalyType::MemoryPressure => "Close or restart the heaviest application.".to_string(),
-        AnomalyType::CpuSaturation => "Stop or pause the heavy process.".to_string(),
+        AnomalyType::MemoryPressure => {
+            if let Some(n) = &name_hint {
+                format!("Close or restart {} to free memory.", n)
+            } else {
+                "Close or restart the heaviest application.".to_string()
+            }
+        }
+        AnomalyType::CpuSaturation => {
+            if let Some(n) = &name_hint {
+                format!("Stop or pause {} to reduce CPU load.", n)
+            } else {
+                "Stop or pause the heavy process.".to_string()
+            }
+        }
         AnomalyType::ThermalThrottle => {
-            "Allow the system to cool for 30 seconds before continuing.".to_string()
+            if let Some(n) = &name_hint {
+                format!("Pause {} and allow the system to cool.", n)
+            } else {
+                "Allow the system to cool for 30 seconds before continuing.".to_string()
+            }
         }
         AnomalyType::GeneralSlowdown => {
-            "Reduce system load by closing unused applications.".to_string()
+            if let Some(n) = &name_hint {
+                format!("Reduce load from {} or close unused applications.", n)
+            } else {
+                "Reduce system load by closing unused applications.".to_string()
+            }
         }
         AnomalyType::AgentAccumulation => {
-            "Close unused AI agent sessions to free memory.".to_string()
+            if let Some(n) = &name_hint {
+                format!("Close unused sessions of {} to free memory.", n)
+            } else {
+                "Close unused AI agent sessions to free memory.".to_string()
+            }
         }
         AnomalyType::None => "No action needed.".to_string(),
     }
@@ -467,7 +501,28 @@ mod tests {
             blame_score: 0.5,
         };
         let fix = suggest_fix(Some(&unknown), None, &AnomalyType::MemoryPressure);
-        assert_eq!(fix, "Close or restart the heaviest application.");
+        assert!(
+            fix.contains("unknown_app_xyz") && fix.contains("Close or restart"),
+            "expected process-specific fallback, got: {}",
+            fix
+        );
+    }
+
+    #[test]
+    fn test_suggest_fix_rustc_maps_to_cargo() {
+        let rustc = ProcessInfo {
+            pid: 42,
+            cmd: "rustc".to_string(),
+            cpu_pct: 95.0,
+            ram_gb: 1.5,
+            blame_score: 0.6,
+        };
+        let fix = suggest_fix(Some(&rustc), None, &AnomalyType::CpuSaturation);
+        assert!(
+            fix.contains("cargo build -j 2"),
+            "rustc should get cargo build fix, got: {}",
+            fix
+        );
     }
 
     // ── Headroom Tests ──────────────────────────────────────────────────
