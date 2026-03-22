@@ -20,6 +20,10 @@ For each iteration:
 - Memory stress: `python3 -c "x=[bytearray(100_000_000) for _ in range(50)]"` then observe
 - Mixed: run cargo clean && cargo build --release -j 4 with yes workers simultaneously
 - Kill stress and immediately diagnose — check recovery indicator
+- I/O stress: `dd if=/dev/zero of=/tmp/axon_testfile bs=1M count=4096 conv=fdatasync` then observe — check if impact score reflects disk saturation
+- Gradual leak: `python3 -c "import time; x=[]; [x.append(bytearray(50_000_000)) or time.sleep(2) for _ in range(20)]"` — watch for slow drift detection over ~40s
+- Flap test: rapidly alternate stress and idle (5s on, 5s off, repeat 6 times) — verify no alert storm, hysteresis prevents flapping
+- Recovery test: start stress, wait 10s, kill stress, verify recovery/resolved alert fires within 10s
 
 ### Step 3: Evaluate every signal axon gives you
 For each axon response, ask:
@@ -31,6 +35,11 @@ For each axon response, ask:
 - Is the **fix suggestion** specific and correct?
 - Are **alerts** firing when they should? Not firing when they shouldn't?
 - Does **session_health** accurately reflect what happened?
+- Are **recovery alerts** firing when stress ends? (resolved notifications)
+- Is **I/O saturation** reflected in impact scoring during builds or dd stress?
+- Are **hysteresis bands** preventing flap alerts near thresholds?
+- Does the **slow EWMA** catch gradual memory leaks that fast EWMA misses?
+- Does the **ring buffer** provide faster trend queries than SQLite?
 
 ### Step 4: Fix what's broken
 - Read the relevant source file (types.rs, impact.rs, collector.rs, alerts.rs, thresholds.rs, lib.rs, main.rs)
@@ -58,6 +67,12 @@ After each fix, note:
 8. Recovery amnesia (no memory of recent stress)
 9. Agent accumulation masking real culprits
 10. Score formula underweighting single-resource saturation
+11. Alert flapping (same alert firing/resolving repeatedly in <30s)
+12. Missing recovery signals (system recovers but no resolved notification)
+13. Slow drift blindness (gradual memory leak over 5+ minutes not detected)
+14. I/O-blind impact scoring (cargo build saturating disk but impact=Healthy)
+15. Threshold rigidity (55% RAM warn on a 128GB machine is too aggressive)
+16. Spike false alarms (momentary 1-tick spike triggers full alert chain)
 
 ## Constraints
 - Do NOT increase `axon diagnose` duration — it must stay at 4 seconds
