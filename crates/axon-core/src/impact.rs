@@ -176,6 +176,15 @@ pub fn impact_message(level: &ImpactLevel, anomaly: &AnomalyType) -> String {
         (ImpactLevel::Healthy, AnomalyType::AgentAccumulation) => {
             "Multiple AI agent instances detected. Combined resource usage is growing.".to_string()
         }
+        (ImpactLevel::Healthy, AnomalyType::CpuSaturation) => {
+            "CPU usage is elevated. Monitor if it persists.".to_string()
+        }
+        (ImpactLevel::Healthy, AnomalyType::MemoryPressure) => {
+            "Memory usage is elevated. Monitor if it persists.".to_string()
+        }
+        (ImpactLevel::Healthy, AnomalyType::GeneralSlowdown) => {
+            "System load is elevated. Monitor if it persists.".to_string()
+        }
         (ImpactLevel::Healthy, _) => "System is healthy. No action needed.".to_string(),
 
         (_, AnomalyType::AgentAccumulation) => {

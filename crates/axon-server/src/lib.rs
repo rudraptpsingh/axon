@@ -242,6 +242,10 @@ pub fn blame_narrative_pub(blame: &ProcessBlame) -> String {
     blame_narrative(blame)
 }
 
+pub fn session_health_narrative_pub(health: &SessionHealth) -> String {
+    session_health_narrative(health)
+}
+
 fn hw_narrative(hw: &HwSnapshot) -> String {
     let temp_str = hw
         .die_temp_celsius

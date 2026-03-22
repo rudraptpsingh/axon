@@ -238,19 +238,28 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle) {
 
             let (cpu_delta, ram_delta) = ewma.update(pid_u32, cpu_normalised, ram_gb);
 
-            // Compute blame score weighted by anomaly type
+            // Compute blame score weighted by anomaly type.
+            // When EWMA hasn't warmed up (delta = 0,0), fall back to raw
+            // values so that a process at 100% CPU always outranks one at 1%.
+            let using_raw = cpu_delta == 0.0 && ram_delta == 0.0;
+            let (eff_cpu, eff_ram) = if using_raw {
+                (cpu_normalised, ram_gb)
+            } else {
+                (cpu_delta, ram_delta)
+            };
+
             let blame_score = match anomaly_type {
                 AnomalyType::ThermalThrottle | AnomalyType::CpuSaturation => {
-                    0.6 * (cpu_delta / 100.0).min(1.0)
-                        + 0.4 * (ram_delta / ram_total_gb.max(1.0)).min(1.0)
+                    0.6 * (eff_cpu / 100.0).min(1.0)
+                        + 0.4 * (eff_ram / ram_total_gb.max(1.0)).min(1.0)
                 }
                 AnomalyType::MemoryPressure => {
-                    0.25 * (cpu_delta / 100.0).min(1.0)
-                        + 0.75 * (ram_delta / ram_total_gb.max(1.0)).min(1.0)
+                    0.25 * (eff_cpu / 100.0).min(1.0)
+                        + 0.75 * (eff_ram / ram_total_gb.max(1.0)).min(1.0)
                 }
                 _ => {
-                    0.5 * (cpu_delta / 100.0).min(1.0)
-                        + 0.5 * (ram_delta / ram_total_gb.max(1.0)).min(1.0)
+                    0.5 * (eff_cpu / 100.0).min(1.0)
+                        + 0.5 * (eff_ram / ram_total_gb.max(1.0)).min(1.0)
                 }
             };
 

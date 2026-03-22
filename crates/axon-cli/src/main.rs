@@ -292,19 +292,14 @@ async fn run_query(tool: &str) -> Result<()> {
                 serde_json::to_string_pretty(&response)?
             }
             "session_health" => {
+                drop(guard); // release collector state lock before DB query
                 let since = chrono::Utc::now() - chrono::Duration::hours(1);
                 let db_path = axon_core::persistence::default_db_path()?;
                 let db = axon_core::persistence::open(db_path)?;
                 let health = axon_core::persistence::query_session_health(&db, since)?;
-                let narrative = format!(
-                    "Session health since {}: {} snapshots, {} alerts, worst impact: {:?}",
-                    health.since.format("%H:%M"),
-                    health.snapshot_count,
-                    health.alert_count,
-                    health.worst_impact_level
-                );
+                let narrative =
+                    axon_server::session_health_narrative_pub(&health);
                 let response = axon_core::types::McpResponse::success(health, narrative);
-                drop(guard); // release collector state lock before DB query
                 serde_json::to_string_pretty(&response)?
             }
             other => anyhow::bail!(
