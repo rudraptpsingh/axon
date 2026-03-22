@@ -108,6 +108,12 @@ pub const FLAP_WINDOW_TICKS: u32 = 15; // 30 seconds at 2s/tick
 /// Threshold: >N boundary crossings in the flap window → suppress alerts.
 pub const FLAP_THRESHOLD: u32 = 3;
 
+// ── Alert rate limiting ─────────────────────────────────────────────────────
+
+/// Minimum ticks between same-type alerts (30 seconds at 2s/tick).
+/// Recovery (Resolved) alerts bypass rate limiting.
+pub const ALERT_RATE_LIMIT_TICKS: u32 = 15;
+
 // ── Anomaly type classification (`detect_anomaly_type`, priority order) ───────
 
 pub const ANOMALY_TEMP_C: f64 = 85.0;

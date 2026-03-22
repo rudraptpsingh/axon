@@ -129,7 +129,7 @@ pub enum AlertSeverity {
     Resolved,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum AlertType {
     MemoryPressure,

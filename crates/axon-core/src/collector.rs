@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use sysinfo::{Disks, System};
@@ -194,6 +195,9 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
 
     // Debounce / flap detection
     let mut debounce = DebounceState::new();
+
+    // Rate limiting: last tick each alert type fired
+    let mut last_alert_tick: HashMap<AlertType, u32> = HashMap::new();
 
     let mut ticker = interval(Duration::from_secs(2));
 
@@ -558,6 +562,27 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
             }
             Vec::new()
         };
+
+        // ── Rate limit: suppress same-type alerts within cooldown window ──
+        let rate_limit = crate::thresholds::ALERT_RATE_LIMIT_TICKS;
+        new_alerts.retain(|alert| {
+            // Recovery alerts bypass rate limiting
+            if alert.severity == AlertSeverity::Resolved {
+                return true;
+            }
+            let last = last_alert_tick.get(&alert.alert_type).copied().unwrap_or(0);
+            if tick_count.saturating_sub(last) >= rate_limit || last == 0 {
+                last_alert_tick.insert(alert.alert_type.clone(), tick_count);
+                true
+            } else {
+                debug!(
+                    tick = tick_count,
+                    alert_type = %alert.alert_type,
+                    "alert rate-limited (last fired at tick {})", last
+                );
+                false
+            }
+        });
 
         // ── Persist alerts immediately (independent of MCP connection) ───
         // Alerts are persisted here so they land in the DB even when there is no active
