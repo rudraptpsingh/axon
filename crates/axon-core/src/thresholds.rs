@@ -1,7 +1,70 @@
 //! Central tuning for hardware pressure and impact triggers.
 //! Lower values here make warnings and impact escalation easier to reach.
+//! Thresholds can be overridden at runtime via `ThresholdOverrides::init()`.
 
 use crate::types::{DiskPressure, RamPressure};
+use std::sync::OnceLock;
+
+// ── Runtime Overrides ───────────────────────────────────────────────────────
+
+/// Optional per-machine threshold overrides loaded from config file or CLI.
+/// Unset fields fall back to the compiled-in constants.
+#[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
+pub struct ThresholdOverrides {
+    pub ram_warn_pct: Option<f64>,
+    pub ram_critical_pct: Option<f64>,
+    pub disk_warn_pct: Option<f64>,
+    pub disk_critical_pct: Option<f64>,
+    pub thermal_throttle_c: Option<f64>,
+}
+
+static OVERRIDES: OnceLock<ThresholdOverrides> = OnceLock::new();
+
+/// Initialize runtime threshold overrides (call once at startup).
+/// If not called, all thresholds use compiled-in constants.
+pub fn init_overrides(overrides: ThresholdOverrides) {
+    let _ = OVERRIDES.set(overrides);
+}
+
+/// Get the effective RAM warn threshold (override or constant).
+pub fn ram_warn() -> f64 {
+    OVERRIDES
+        .get()
+        .and_then(|o| o.ram_warn_pct)
+        .unwrap_or(RAM_PCT_WARN)
+}
+
+/// Get the effective RAM critical threshold.
+pub fn ram_critical() -> f64 {
+    OVERRIDES
+        .get()
+        .and_then(|o| o.ram_critical_pct)
+        .unwrap_or(RAM_PCT_CRITICAL)
+}
+
+/// Get the effective disk warn threshold.
+pub fn disk_warn() -> f64 {
+    OVERRIDES
+        .get()
+        .and_then(|o| o.disk_warn_pct)
+        .unwrap_or(DISK_PCT_WARN)
+}
+
+/// Get the effective disk critical threshold.
+pub fn disk_critical() -> f64 {
+    OVERRIDES
+        .get()
+        .and_then(|o| o.disk_critical_pct)
+        .unwrap_or(DISK_PCT_CRITICAL)
+}
+
+/// Get the effective thermal throttle threshold.
+pub fn thermal_throttle() -> f64 {
+    OVERRIDES
+        .get()
+        .and_then(|o| o.thermal_throttle_c)
+        .unwrap_or(THERMAL_THROTTLE_C)
+}
 
 // ── RAM pressure tiers (collector → `RamPressure`, memory alerts) ─────────────
 
@@ -69,10 +132,11 @@ pub const IMPACT_LEVEL_STRAINED_BELOW: f64 = 0.55;
 // ── Pure classification (used by collector; unit-tested at boundary values) ───
 
 /// Map total-RAM-used percentage to pressure tier (no hysteresis — used by one-shot probes).
+/// Uses runtime overrides if set, otherwise compiled-in constants.
 pub fn ram_pressure_from_pct(ram_pct: f64) -> RamPressure {
-    if ram_pct >= RAM_PCT_CRITICAL {
+    if ram_pct >= ram_critical() {
         RamPressure::Critical
-    } else if ram_pct >= RAM_PCT_WARN {
+    } else if ram_pct >= ram_warn() {
         RamPressure::Warn
     } else {
         RamPressure::Normal
@@ -81,30 +145,35 @@ pub fn ram_pressure_from_pct(ram_pct: f64) -> RamPressure {
 
 /// Map RAM % to pressure tier with hysteresis.
 /// Rising thresholds differ from falling to prevent oscillation at boundary values.
+/// Uses runtime overrides if set.
 pub fn ram_pressure_with_hysteresis(ram_pct: f64, prev: &RamPressure) -> RamPressure {
+    let warn_rising = ram_warn();
+    let warn_falling = warn_rising - 5.0; // 5% hysteresis gap
+    let crit_rising = ram_critical();
+    let crit_falling = crit_rising - 5.0;
     match prev {
         RamPressure::Normal => {
-            if ram_pct >= RAM_PCT_CRITICAL {
+            if ram_pct >= crit_rising {
                 RamPressure::Critical
-            } else if ram_pct >= RAM_PCT_WARN {
+            } else if ram_pct >= warn_rising {
                 RamPressure::Warn
             } else {
                 RamPressure::Normal
             }
         }
         RamPressure::Warn => {
-            if ram_pct >= RAM_PCT_CRITICAL {
+            if ram_pct >= crit_rising {
                 RamPressure::Critical
-            } else if ram_pct < RAM_PCT_WARN_FALLING {
+            } else if ram_pct < warn_falling {
                 RamPressure::Normal
             } else {
                 RamPressure::Warn
             }
         }
         RamPressure::Critical => {
-            if ram_pct < RAM_PCT_WARN_FALLING {
+            if ram_pct < warn_falling {
                 RamPressure::Normal
-            } else if ram_pct < RAM_PCT_CRITICAL_FALLING {
+            } else if ram_pct < crit_falling {
                 RamPressure::Warn
             } else {
                 RamPressure::Critical
@@ -115,9 +184,9 @@ pub fn ram_pressure_with_hysteresis(ram_pct: f64, prev: &RamPressure) -> RamPres
 
 /// Map total-disk-used percentage to pressure tier (no hysteresis).
 pub fn disk_pressure_from_pct(disk_pct: f64) -> DiskPressure {
-    if disk_pct >= DISK_PCT_CRITICAL {
+    if disk_pct >= disk_critical() {
         DiskPressure::Critical
-    } else if disk_pct >= DISK_PCT_WARN {
+    } else if disk_pct >= disk_warn() {
         DiskPressure::Warn
     } else {
         DiskPressure::Normal
@@ -126,29 +195,33 @@ pub fn disk_pressure_from_pct(disk_pct: f64) -> DiskPressure {
 
 /// Map disk % to pressure tier with hysteresis.
 pub fn disk_pressure_with_hysteresis(disk_pct: f64, prev: &DiskPressure) -> DiskPressure {
+    let warn_rising = disk_warn();
+    let warn_falling = warn_rising - 5.0;
+    let crit_rising = disk_critical();
+    let crit_falling = crit_rising - 5.0;
     match prev {
         DiskPressure::Normal => {
-            if disk_pct >= DISK_PCT_CRITICAL {
+            if disk_pct >= crit_rising {
                 DiskPressure::Critical
-            } else if disk_pct >= DISK_PCT_WARN {
+            } else if disk_pct >= warn_rising {
                 DiskPressure::Warn
             } else {
                 DiskPressure::Normal
             }
         }
         DiskPressure::Warn => {
-            if disk_pct >= DISK_PCT_CRITICAL {
+            if disk_pct >= crit_rising {
                 DiskPressure::Critical
-            } else if disk_pct < DISK_PCT_WARN_FALLING {
+            } else if disk_pct < warn_falling {
                 DiskPressure::Normal
             } else {
                 DiskPressure::Warn
             }
         }
         DiskPressure::Critical => {
-            if disk_pct < DISK_PCT_WARN_FALLING {
+            if disk_pct < warn_falling {
                 DiskPressure::Normal
-            } else if disk_pct < DISK_PCT_CRITICAL_FALLING {
+            } else if disk_pct < crit_falling {
                 DiskPressure::Warn
             } else {
                 DiskPressure::Critical
@@ -157,19 +230,21 @@ pub fn disk_pressure_with_hysteresis(disk_pct: f64, prev: &DiskPressure) -> Disk
     }
 }
 
-/// True when die temperature indicates thermal throttling (collector `throttling` flag, no hysteresis).
+/// True when die temperature indicates thermal throttling (no hysteresis).
 pub fn thermal_throttling_from_temp_c(temp_c: Option<f64>) -> bool {
-    temp_c.is_some_and(|t| t > THERMAL_THROTTLE_C)
+    temp_c.is_some_and(|t| t > thermal_throttle())
 }
 
-/// Thermal throttling with hysteresis: uses higher rising threshold and lower falling threshold.
+/// Thermal throttling with hysteresis.
 pub fn thermal_throttling_with_hysteresis(temp_c: Option<f64>, prev_throttling: bool) -> bool {
+    let rising = thermal_throttle();
+    let falling = rising - 5.0; // 5C hysteresis gap
     match temp_c {
         Some(t) => {
             if prev_throttling {
-                t > THERMAL_THROTTLE_FALLING_C
+                t > falling
             } else {
-                t > THERMAL_THROTTLE_C
+                t > rising
             }
         }
         None => false,

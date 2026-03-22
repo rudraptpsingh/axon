@@ -219,6 +219,7 @@ fn test_config_file_roundtrip() {
                 },
             },
         ],
+        thresholds: None,
     };
 
     // Write config file
@@ -290,6 +291,7 @@ async fn test_dispatcher_with_filtered_webhook() {
                 alert_types: vec![],
             },
         }],
+        thresholds: None,
     };
     let dispatcher = AlertDispatcher::new(config);
     let db = test_db();
@@ -504,6 +506,7 @@ async fn test_webhook_delivery_real_http() {
                 filters: AlertFilters::default(),
             },
         ],
+        thresholds: None,
     };
     let dispatcher = AlertDispatcher::new(config);
 
@@ -573,6 +576,7 @@ async fn test_webhook_fire_and_forget_no_listener() {
             url: "http://127.0.0.1:1/alerts".to_string(), // port 1 = nothing listening
             filters: AlertFilters::default(),
         }],
+        thresholds: None,
     };
     let dispatcher = AlertDispatcher::new(config);
 
@@ -618,6 +622,7 @@ async fn test_webhook_multiple_endpoints() {
                 filters: AlertFilters::default(),
             },
         ],
+        thresholds: None,
     };
     let dispatcher = AlertDispatcher::new(config);
 
@@ -665,6 +670,7 @@ async fn test_webhook_filter_blocks_severity() {
                 alert_types: vec![],
             },
         }],
+        thresholds: None,
     };
     let dispatcher = AlertDispatcher::new(config);
 
@@ -715,6 +721,7 @@ async fn test_webhook_filter_blocks_alert_type() {
                 alert_types: vec!["thermal_throttle".to_string()],
             },
         }],
+        thresholds: None,
     };
     let dispatcher = AlertDispatcher::new(config);
 
@@ -760,6 +767,7 @@ async fn test_webhook_concurrent_alerts_all_delivered() {
             url,
             filters: AlertFilters::default(),
         }],
+        thresholds: None,
     };
     let dispatcher = Arc::new(AlertDispatcher::new(config));
 
@@ -827,6 +835,7 @@ async fn test_full_pipeline_detect_dispatch_webhook_persist() {
                 },
             },
         ],
+        thresholds: None,
     };
     let dispatcher = AlertDispatcher::new(config);
 
@@ -940,6 +949,7 @@ async fn test_webhook_only_config_returns_false_for_mcp() {
             url,
             filters: AlertFilters::default(),
         }],
+        thresholds: None,
     };
     let dispatcher = AlertDispatcher::new(config);
 
@@ -1022,6 +1032,7 @@ async fn test_webhook_json_body_has_null_culprit_when_absent() {
             url,
             filters: AlertFilters::default(),
         }],
+        thresholds: None,
     };
     let dispatcher = AlertDispatcher::new(config);
 
@@ -1122,6 +1133,7 @@ async fn test_dispatcher_routes_to_multiple_channels() {
                 filters: AlertFilters::default(),
             },
         ],
+        thresholds: None,
     };
     let d = AlertDispatcher::new(config);
     let alert = make_test_alert(
@@ -1162,6 +1174,7 @@ async fn test_dispatcher_respects_per_channel_filters() {
                 filters: AlertFilters::default(),
             },
         ],
+        thresholds: None,
     };
     let d = AlertDispatcher::new(config);
     let warn = make_test_alert(AlertSeverity::Warning, AlertType::MemoryPressure, "warn");

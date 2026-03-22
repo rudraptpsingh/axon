@@ -220,30 +220,12 @@ pub fn detect_alerts(ctx: &AlertContext) -> Vec<Alert> {
     // Impact level escalation and recovery
     if ctx.impact_level != ctx.prev_impact_level {
         match (ctx.prev_impact_level, ctx.impact_level) {
-            (_, ImpactLevel::Strained) => {
-                alerts.push(Alert {
-                    severity: AlertSeverity::Warning,
-                    alert_type: AlertType::ImpactEscalation,
-                    message: ctx.impact_message.to_string(),
-                    ts: now,
-                    metadata: metadata.clone(),
-                });
-            }
-            (_, ImpactLevel::Critical) => {
-                alerts.push(Alert {
-                    severity: AlertSeverity::Critical,
-                    alert_type: AlertType::ImpactEscalation,
-                    message: ctx.impact_message.to_string(),
-                    ts: now,
-                    metadata: metadata.clone(),
-                });
-            }
-            // Recovery: any downward transition from Strained/Critical
-            (ImpactLevel::Strained, ImpactLevel::Degrading)
-            | (ImpactLevel::Strained, ImpactLevel::Healthy)
-            | (ImpactLevel::Critical, ImpactLevel::Strained)
+            // Recovery: downward transitions from Strained/Critical (must be checked first)
+            (ImpactLevel::Critical, ImpactLevel::Strained)
             | (ImpactLevel::Critical, ImpactLevel::Degrading)
-            | (ImpactLevel::Critical, ImpactLevel::Healthy) => {
+            | (ImpactLevel::Critical, ImpactLevel::Healthy)
+            | (ImpactLevel::Strained, ImpactLevel::Degrading)
+            | (ImpactLevel::Strained, ImpactLevel::Healthy) => {
                 alerts.push(Alert {
                     severity: AlertSeverity::Resolved,
                     alert_type: AlertType::ImpactEscalation,
@@ -254,6 +236,26 @@ pub fn detect_alerts(ctx: &AlertContext) -> Vec<Alert> {
                     ),
                     ts: now,
                     metadata,
+                });
+            }
+            // Escalation to Strained (from Healthy or Degrading)
+            (_, ImpactLevel::Strained) => {
+                alerts.push(Alert {
+                    severity: AlertSeverity::Warning,
+                    alert_type: AlertType::ImpactEscalation,
+                    message: ctx.impact_message.to_string(),
+                    ts: now,
+                    metadata: metadata.clone(),
+                });
+            }
+            // Escalation to Critical (from Healthy, Degrading, or Strained)
+            (_, ImpactLevel::Critical) => {
+                alerts.push(Alert {
+                    severity: AlertSeverity::Critical,
+                    alert_type: AlertType::ImpactEscalation,
+                    message: ctx.impact_message.to_string(),
+                    ts: now,
+                    metadata: metadata.clone(),
                 });
             }
             _ => {}
