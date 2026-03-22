@@ -463,6 +463,7 @@ async fn alert_sender(
                 let level = match alert.severity {
                     AlertSeverity::Warning => LoggingLevel::Warning,
                     AlertSeverity::Critical => LoggingLevel::Critical,
+                    AlertSeverity::Resolved => LoggingLevel::Info,
                 };
 
                 let param = LoggingMessageNotificationParam {

@@ -8,6 +8,7 @@ use crate::types::Alert;
 pub struct WebhookPayload {
     pub alert_type: String,
     pub severity: String,
+    pub resolved: bool,
     pub timestamp: String,
     pub message: String,
     pub metrics: WebhookMetrics,
@@ -41,6 +42,7 @@ impl From<&Alert> for WebhookPayload {
         WebhookPayload {
             alert_type: alert.alert_type.to_string(),
             severity: alert.severity.to_string(),
+            resolved: alert.severity == crate::types::AlertSeverity::Resolved,
             timestamp: alert.ts.to_rfc3339(),
             message: alert.message.clone(),
             metrics: WebhookMetrics {

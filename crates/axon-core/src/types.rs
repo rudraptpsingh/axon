@@ -126,6 +126,7 @@ pub struct SystemProfile {
 pub enum AlertSeverity {
     Warning,
     Critical,
+    Resolved,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -155,6 +156,7 @@ impl std::fmt::Display for AlertSeverity {
         match self {
             AlertSeverity::Warning => write!(f, "warning"),
             AlertSeverity::Critical => write!(f, "critical"),
+            AlertSeverity::Resolved => write!(f, "resolved"),
         }
     }
 }
