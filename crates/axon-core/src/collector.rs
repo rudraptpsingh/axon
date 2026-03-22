@@ -323,9 +323,9 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle) {
 
         // ── GPU snapshot (every tick) ─────────────────────────────────────
 
-        let gpu_snap = gpu::read_gpu_snapshot();
-        let gpu_available = gpu_snap.utilization_pct.is_some();
-        let gpu = if gpu_available { Some(gpu_snap) } else { None };
+        // Always store the snapshot so the MCP tool can report "no GPU detected"
+        // rather than appearing to have no data at all.
+        let gpu = Some(gpu::read_gpu_snapshot());
 
         // ── Battery (every 15 ticks ≈ 30s) ────────────────────────────────
 
