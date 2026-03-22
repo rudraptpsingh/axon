@@ -82,8 +82,7 @@ fn test_setup_configures_agents() {
         assert!(cursor["mcpServers"]["axon"]["command"].is_string());
 
         #[cfg(target_os = "macos")]
-        let vscode_path =
-            home.join("Library/Application Support/Code/User/settings.json");
+        let vscode_path = home.join("Library/Application Support/Code/User/settings.json");
         #[cfg(target_os = "linux")]
         let vscode_path = home.join(".config/Code/User/settings.json");
 

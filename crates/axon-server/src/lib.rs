@@ -252,7 +252,13 @@ fn hw_narrative(hw: &HwSnapshot) -> String {
     };
     format!(
         "CPU {:.0}%, die {}{} RAM {:.1}/{:.0}GB ({} pressure).{} {}",
-        hw.cpu_usage_pct, temp_str, throttle, hw.ram_used_gb, hw.ram_total_gb, pressure, disk_str,
+        hw.cpu_usage_pct,
+        temp_str,
+        throttle,
+        hw.ram_used_gb,
+        hw.ram_total_gb,
+        pressure,
+        disk_str,
         headroom_str
     )
 }
@@ -351,10 +357,7 @@ fn session_health_narrative(health: &SessionHealth) -> String {
         parts.push(format!("{} alerts fired", health.alert_count));
     }
     if health.throttle_event_count > 0 {
-        parts.push(format!(
-            "{} throttle events",
-            health.throttle_event_count
-        ));
+        parts.push(format!("{} throttle events", health.throttle_event_count));
     }
     if let Some(t) = health.peak_temp_celsius {
         parts.push(format!("peak temp {:.0}C", t));

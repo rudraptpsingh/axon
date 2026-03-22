@@ -174,9 +174,7 @@ fn mcp_initialize(child: &mut std::process::Child) -> std::process::ChildStdin {
         match lines.next() {
             Some(Ok(line)) => {
                 if let Ok(msg) = serde_json::from_str::<serde_json::Value>(&line) {
-                    if msg.get("id") == Some(&serde_json::json!(0))
-                        && msg.get("result").is_some()
-                    {
+                    if msg.get("id") == Some(&serde_json::json!(0)) && msg.get("result").is_some() {
                         eprintln!("[perf] MCP initialized");
                         break;
                     }
@@ -187,9 +185,7 @@ fn mcp_initialize(child: &mut std::process::Child) -> std::process::ChildStdin {
     }
 
     // Drain remaining stdout in background so the server doesn't block on pipe
-    thread::spawn(move || {
-        for _ in lines {}
-    });
+    thread::spawn(move || for _ in lines {});
 
     stdin
 }
@@ -219,12 +215,10 @@ fn run_proxy_task() -> f64 {
         .stderr(Stdio::null())
         .output();
     match r {
-        Ok(o) if o.status.success() => {
-            String::from_utf8_lossy(&o.stdout)
-                .trim()
-                .parse::<f64>()
-                .unwrap_or(start.elapsed().as_secs_f64())
-        }
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
+            .trim()
+            .parse::<f64>()
+            .unwrap_or(start.elapsed().as_secs_f64()),
         _ => start.elapsed().as_secs_f64(),
     }
 }
@@ -401,7 +395,10 @@ fn perf_scenario_cpu_stress() {
     eprintln!("[perf] running task under stress...");
     let stressed_time = run_proxy_task();
     let slowdown = stressed_time / baseline;
-    eprintln!("[perf] stressed task: {:.2}s ({:.1}x baseline)", stressed_time, slowdown);
+    eprintln!(
+        "[perf] stressed task: {:.2}s ({:.1}x baseline)",
+        stressed_time, slowdown
+    );
 
     // --- Kill stress (simulate applying fix) ---
     let fix_time = stress_start.elapsed();
@@ -424,8 +421,14 @@ fn perf_scenario_cpu_stress() {
     // --- Assertions ---
     eprintln!("\n[perf] === RESULTS ===");
     eprintln!("[perf] Baseline:    {:.2}s", baseline);
-    eprintln!("[perf] Stressed:    {:.2}s ({:.1}x)", stressed_time, slowdown);
-    eprintln!("[perf] Recovered:   {:.2}s ({:.1}x)", recovered_time, recovery_factor);
+    eprintln!(
+        "[perf] Stressed:    {:.2}s ({:.1}x)",
+        stressed_time, slowdown
+    );
+    eprintln!(
+        "[perf] Recovered:   {:.2}s ({:.1}x)",
+        recovered_time, recovery_factor
+    );
     if let Some(d) = mttd {
         eprintln!("[perf] MTTD:        {:.1}s", d.as_secs_f64());
     } else {
@@ -575,7 +578,10 @@ fn perf_scenario_combined_stress() {
     thread::sleep(Duration::from_secs(5));
     let recovered = run_proxy_task();
     let recovery_factor = recovered / baseline;
-    eprintln!("[perf] recovered: {:.2}s ({:.1}x)", recovered, recovery_factor);
+    eprintln!(
+        "[perf] recovered: {:.2}s ({:.1}x)",
+        recovered, recovery_factor
+    );
 
     let _ = axon.kill();
     let _ = axon.wait();
@@ -583,13 +589,19 @@ fn perf_scenario_combined_stress() {
     eprintln!("\n[perf] === COMBINED RESULTS ===");
     eprintln!("[perf] Baseline:  {:.2}s", baseline);
     eprintln!("[perf] Stressed:  {:.2}s ({:.1}x)", stressed_time, slowdown);
-    eprintln!("[perf] Recovered: {:.2}s ({:.1}x)", recovered, recovery_factor);
+    eprintln!(
+        "[perf] Recovered: {:.2}s ({:.1}x)",
+        recovered, recovery_factor
+    );
     if let Some(d) = mttd {
         eprintln!("[perf] MTTD:      {:.1}s", d.as_secs_f64());
     } else {
         eprintln!("[perf] MTTD:      no alert received");
     }
-    eprintln!("[perf] Alert:     {}", if alert_received { "yes" } else { "no" });
+    eprintln!(
+        "[perf] Alert:     {}",
+        if alert_received { "yes" } else { "no" }
+    );
 
     assert!(
         slowdown > 1.3,

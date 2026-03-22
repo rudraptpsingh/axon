@@ -453,10 +453,8 @@ fn agent_reactive() {
                         .collect()
                 })
                 .unwrap_or_default();
-            let correct = name == "yes"
-                || name == "dd"
-                || name.contains("yes")
-                || name.contains("dd");
+            let correct =
+                name == "yes" || name == "dd" || name.contains("yes") || name.contains("dd");
 
             eprintln!("[agent] culprit: {} ({} PIDs)", name, pids.len());
             eprintln!("[agent] impact:  {}", level);
@@ -465,7 +463,13 @@ fn agent_reactive() {
             (name, pids, fix, level, correct)
         } else {
             eprintln!("[agent] process_blame returned no data");
-            (String::new(), Vec::new(), String::new(), String::new(), false)
+            (
+                String::new(),
+                Vec::new(),
+                String::new(),
+                String::new(),
+                false,
+            )
         };
 
     // Step 3: Agent applies the fix — kill the culprit PIDs
@@ -520,7 +524,10 @@ fn agent_reactive() {
     eprintln!("[agent] Blame correct: {}", blame_correct);
     eprintln!("[agent] Fix:          {:?}", fix_suggestion);
     eprintln!("[agent] MTTR:         {:.1}s", mttr);
-    eprintln!("[agent] Recovery:     {:.2}s ({:.1}x)", recovered_time, recovery_factor);
+    eprintln!(
+        "[agent] Recovery:     {:.2}s ({:.1}x)",
+        recovered_time, recovery_factor
+    );
 
     // Assertions
     assert!(
@@ -529,7 +536,11 @@ fn agent_reactive() {
         recovery_factor
     );
     assert!(blame.is_some(), "process_blame should return data");
-    assert!(blame_correct, "blame should identify stress processes, got: {}", culprit_name);
+    assert!(
+        blame_correct,
+        "blame should identify stress processes, got: {}",
+        culprit_name
+    );
 }
 
 /// Proactive agent: polls hw_snapshot every few seconds, detects degradation without
@@ -565,7 +576,10 @@ fn agent_proactive() {
         .and_then(|d| d.get("cpu_usage_pct"))
         .and_then(|c| c.as_f64())
         .unwrap_or(0.0);
-    eprintln!("[agent] baseline CPU from hw_snapshot: {:.1}%", baseline_cpu);
+    eprintln!(
+        "[agent] baseline CPU from hw_snapshot: {:.1}%",
+        baseline_cpu
+    );
 
     // Start stress
     eprintln!("[agent] starting CPU stress...");
@@ -633,14 +647,8 @@ fn agent_proactive() {
             .and_then(|n| n.as_str())
             .unwrap_or("unknown")
             .to_string();
-        let fix = data
-            .get("fix")
-            .and_then(|f| f.as_str())
-            .unwrap_or("");
-        let correct = name == "yes"
-            || name == "dd"
-            || name.contains("yes")
-            || name.contains("dd");
+        let fix = data.get("fix").and_then(|f| f.as_str()).unwrap_or("");
+        let correct = name == "yes" || name == "dd" || name.contains("yes") || name.contains("dd");
         eprintln!("[agent] culprit: {} (correct: {})", name, correct);
         eprintln!("[agent] fix: {:?}", fix);
         (name, correct)
@@ -675,19 +683,32 @@ fn agent_proactive() {
     eprintln!("[agent] Stressed CPU:  {:.1}%", detected_cpu);
     eprintln!("[agent] Post-fix CPU:  {:.1}%", post_cpu);
     if let Some(d) = detect_time {
-        eprintln!("[agent] Detect time:   {:.1}s (via polling)", d.as_secs_f64());
+        eprintln!(
+            "[agent] Detect time:   {:.1}s (via polling)",
+            d.as_secs_f64()
+        );
     }
     eprintln!("[agent] Culprit:       {}", culprit_name);
     eprintln!("[agent] Blame correct: {}", blame_correct);
-    eprintln!("[agent] Recovery:      {:.2}s ({:.1}x)", recovered, recovery_factor);
+    eprintln!(
+        "[agent] Recovery:      {:.2}s ({:.1}x)",
+        recovered, recovery_factor
+    );
 
-    assert!(detect_time.is_some(), "Should detect degradation via polling");
+    assert!(
+        detect_time.is_some(),
+        "Should detect degradation via polling"
+    );
     assert!(
         recovery_factor < 2.0,
         "Recovery too slow: {:.1}x",
         recovery_factor
     );
-    assert!(blame_correct, "Blame should identify stress, got: {}", culprit_name);
+    assert!(
+        blame_correct,
+        "Blame should identify stress, got: {}",
+        culprit_name
+    );
 }
 
 /// Monitoring agent: collects alerts and snapshots over a stress window, then produces

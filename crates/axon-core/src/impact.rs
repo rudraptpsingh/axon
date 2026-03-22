@@ -82,19 +82,14 @@ pub fn compute_headroom(snap: &HwSnapshot) -> (HeadroomLevel, String) {
 // ── Agent Accumulation Detection ─────────────────────────────────────────────
 
 /// Known AI agent process names (after normalize_process_name).
-const KNOWN_AGENT_NAMES: &[&str] = &[
-    "claude",
-    "claude code",
-    "cursor",
-    "windsurf",
-    "code",
-    "zed",
-];
+const KNOWN_AGENT_NAMES: &[&str] = &["claude", "claude code", "cursor", "windsurf", "code", "zed"];
 
 /// Check if a normalized group name matches a known AI agent.
 pub fn is_known_agent(name: &str) -> bool {
     let lower = name.to_lowercase();
-    KNOWN_AGENT_NAMES.iter().any(|&a| lower == a || lower.contains(a))
+    KNOWN_AGENT_NAMES
+        .iter()
+        .any(|&a| lower == a || lower.contains(a))
 }
 
 /// Find the first agent group with more than one instance.
@@ -459,7 +454,13 @@ mod tests {
 
     #[test]
     fn test_headroom_insufficient_ram_critical() {
-        let hw = make_hw(RamPressure::Critical, DiskPressure::Normal, false, 50.0, None);
+        let hw = make_hw(
+            RamPressure::Critical,
+            DiskPressure::Normal,
+            false,
+            50.0,
+            None,
+        );
         let (level, reason) = compute_headroom(&hw);
         assert_eq!(level, HeadroomLevel::Insufficient);
         assert!(reason.contains("RAM"), "reason: {}", reason);
@@ -468,7 +469,13 @@ mod tests {
 
     #[test]
     fn test_headroom_insufficient_disk_critical() {
-        let hw = make_hw(RamPressure::Normal, DiskPressure::Critical, false, 50.0, None);
+        let hw = make_hw(
+            RamPressure::Normal,
+            DiskPressure::Critical,
+            false,
+            50.0,
+            None,
+        );
         let (level, reason) = compute_headroom(&hw);
         assert_eq!(level, HeadroomLevel::Insufficient);
         assert!(reason.contains("Disk"), "reason: {}", reason);
