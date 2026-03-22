@@ -43,6 +43,11 @@ impl EwmaTracker {
     }
 }
 
+/// Consecutive ticks below baseline before flagging as potentially stalled.
+const STALL_TICKS_THRESHOLD: u32 = 5;
+/// Fraction below baseline to count as "significantly below" (50%).
+const STALL_DROP_FRACTION: f64 = 0.5;
+
 /// Per-process multi-timescale EWMA baseline tracker.
 /// Tracks fast (spike detection), medium (blame scoring), and slow (drift detection) baselines.
 #[derive(Debug, Clone)]
@@ -51,6 +56,8 @@ pub struct ProcessBaseline {
     medium: EwmaTracker,
     slow: EwmaTracker,
     pub samples: u32,
+    /// Consecutive ticks where CPU is significantly below medium baseline.
+    below_baseline_ticks: u32,
 
     // Public accessors for backward compatibility
     pub cpu_ewma: f64,
@@ -64,6 +71,7 @@ impl ProcessBaseline {
             medium: EwmaTracker::new(ALPHA_MEDIUM),
             slow: EwmaTracker::new(ALPHA_SLOW),
             samples: 0,
+            below_baseline_ticks: 0,
             cpu_ewma: 0.0,
             ram_ewma: 0.0,
         }
@@ -71,6 +79,7 @@ impl ProcessBaseline {
 
     /// Update all three timescale baselines with a new observation.
     /// Returns (cpu_delta, ram_delta) using the medium-timescale EWMA (backward compatible).
+    /// Positive deltas only (negative clamped to 0 for blame scoring).
     pub fn update(&mut self, cpu: f64, ram: f64) -> (f64, f64) {
         self.fast.update(cpu, ram);
         self.medium.update(cpu, ram);
@@ -81,13 +90,38 @@ impl ProcessBaseline {
         self.cpu_ewma = self.medium.cpu;
         self.ram_ewma = self.medium.ram;
 
-        // Only report delta after medium warmup (3 samples)
+        // Track below-baseline ticks for stall detection
+        if self.samples >= WARMUP_MEDIUM && self.medium.cpu > 0.0 {
+            let drop = self.medium.cpu - cpu;
+            if drop > self.medium.cpu * STALL_DROP_FRACTION {
+                self.below_baseline_ticks = self.below_baseline_ticks.saturating_add(1);
+            } else {
+                self.below_baseline_ticks = 0;
+            }
+        }
+
+        // Only report positive delta after medium warmup (3 samples)
         if self.samples < WARMUP_MEDIUM {
             return (0.0, 0.0);
         }
         let cpu_delta = (cpu - self.medium.cpu).max(0.0);
         let ram_delta = (ram - self.medium.ram).max(0.0);
         (cpu_delta, ram_delta)
+    }
+
+    /// Returns signed deltas from the medium EWMA. Negative means below baseline.
+    /// Available after WARMUP_MEDIUM samples.
+    pub fn signed_delta(&self, cpu: f64, ram: f64) -> (f64, f64) {
+        if self.samples < WARMUP_MEDIUM {
+            return (0.0, 0.0);
+        }
+        (cpu - self.medium.cpu, ram - self.medium.ram)
+    }
+
+    /// True if the process has been significantly below its CPU baseline for
+    /// STALL_TICKS_THRESHOLD consecutive ticks, suggesting it may be hung or stalled.
+    pub fn is_stalled(&self) -> bool {
+        self.below_baseline_ticks >= STALL_TICKS_THRESHOLD
     }
 
     /// Returns fast-timescale deltas (spike detection). Positive only.
@@ -313,6 +347,57 @@ mod tests {
             !baseline.drift_detected(),
             "stable process should not trigger drift detection"
         );
+    }
+
+    #[test]
+    fn test_signed_delta_negative() {
+        let mut store = EwmaStore::default();
+        // Build baseline at high CPU
+        for _ in 0..5 {
+            store.update(1, 80.0, 4.0);
+        }
+        let baseline = store.get(1).unwrap();
+        let (cpu_d, ram_d) = baseline.signed_delta(20.0, 1.0);
+        assert!(cpu_d < -30.0, "signed CPU delta should be negative: {}", cpu_d);
+        assert!(ram_d < -2.0, "signed RAM delta should be negative: {}", ram_d);
+    }
+
+    #[test]
+    fn test_stall_detection() {
+        let mut store = EwmaStore::default();
+        // Build baseline at 80% CPU
+        for _ in 0..5 {
+            store.update(1, 80.0, 4.0);
+        }
+        let baseline = store.get(1).unwrap();
+        assert!(!baseline.is_stalled(), "not stalled yet");
+
+        // Drop to very low CPU for 5+ ticks
+        for _ in 0..6 {
+            store.update(1, 5.0, 4.0);
+        }
+        let baseline = store.get(1).unwrap();
+        assert!(baseline.is_stalled(), "should be flagged as stalled after 5+ below-baseline ticks");
+    }
+
+    #[test]
+    fn test_stall_resets_on_activity() {
+        let mut store = EwmaStore::default();
+        // Build baseline
+        for _ in 0..5 {
+            store.update(1, 80.0, 4.0);
+        }
+        // Drop for 3 ticks (not enough for stall)
+        for _ in 0..3 {
+            store.update(1, 5.0, 4.0);
+        }
+        let baseline = store.get(1).unwrap();
+        assert!(!baseline.is_stalled());
+
+        // Resume activity — stall counter resets
+        store.update(1, 70.0, 4.0);
+        let baseline = store.get(1).unwrap();
+        assert!(!baseline.is_stalled());
     }
 
     #[test]
