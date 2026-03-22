@@ -141,8 +141,8 @@ pub fn compute_score(ram_pct: f64, cpu_pct: f64, swap_gb: f64) -> f64 {
         // CPU-dominant: boost CPU weight
         (0.15, 0.65, 0.20)
     } else if ram_norm > 0.7 && cpu_norm < 0.5 {
-        // RAM-dominant: keep original (already favours RAM)
-        (0.50, 0.20, 0.30)
+        // RAM-dominant: boost RAM weight so critical RAM (88%+) reaches Critical band
+        (0.65, 0.15, 0.20)
     } else {
         // Balanced / default
         (0.40, 0.30, 0.30)
@@ -258,7 +258,7 @@ pub fn suggest_fix(
             n if n.contains("cursor") => {
                 Some("Restart Cursor or close unused editor tabs (Cmd+W).".to_string())
             }
-            n if n.contains("cargo") => match anomaly {
+            n if n.contains("cargo") || n.contains("rustc") => match anomaly {
                 AnomalyType::ThermalThrottle | AnomalyType::CpuSaturation => {
                     Some("Reduce build parallelism: cargo build -j 2".to_string())
                 }
@@ -314,18 +314,52 @@ pub fn suggest_fix(
         }
     }
 
-    // Fallback by anomaly type
+    // Fallback by anomaly type — always include the culprit name when available
+    let name_hint = group
+        .map(|g| {
+            if g.process_count > 1 {
+                format!("{} ({} processes, {:.1}GB, {:.0}% CPU)", g.name, g.process_count, g.total_ram_gb, g.total_cpu_pct)
+            } else {
+                g.name.clone()
+            }
+        })
+        .or_else(|| culprit.map(|p| format!("{} (PID {})", p.cmd, p.pid)));
+
     match anomaly {
-        AnomalyType::MemoryPressure => "Close or restart the heaviest application.".to_string(),
-        AnomalyType::CpuSaturation => "Stop or pause the heavy process.".to_string(),
+        AnomalyType::MemoryPressure => {
+            if let Some(n) = &name_hint {
+                format!("Close or restart {} to free memory.", n)
+            } else {
+                "Close or restart the heaviest application.".to_string()
+            }
+        }
+        AnomalyType::CpuSaturation => {
+            if let Some(n) = &name_hint {
+                format!("Stop or pause {} to reduce CPU load.", n)
+            } else {
+                "Stop or pause the heavy process.".to_string()
+            }
+        }
         AnomalyType::ThermalThrottle => {
-            "Allow the system to cool for 30 seconds before continuing.".to_string()
+            if let Some(n) = &name_hint {
+                format!("Pause {} and allow the system to cool.", n)
+            } else {
+                "Allow the system to cool for 30 seconds before continuing.".to_string()
+            }
         }
         AnomalyType::GeneralSlowdown => {
-            "Reduce system load by closing unused applications.".to_string()
+            if let Some(n) = &name_hint {
+                format!("Reduce load from {} or close unused applications.", n)
+            } else {
+                "Reduce system load by closing unused applications.".to_string()
+            }
         }
         AnomalyType::AgentAccumulation => {
-            "Close unused AI agent sessions to free memory.".to_string()
+            if let Some(n) = &name_hint {
+                format!("Close unused sessions of {} to free memory.", n)
+            } else {
+                "Close unused AI agent sessions to free memory.".to_string()
+            }
         }
         AnomalyType::None => "No action needed.".to_string(),
     }
@@ -388,6 +422,30 @@ mod tests {
         assert!(
             score >= thresholds::IMPACT_LEVEL_DEGRADING_BELOW,
             "CPU-only saturation score {:.3} should reach strained band (>= {:.2})",
+            score,
+            thresholds::IMPACT_LEVEL_DEGRADING_BELOW
+        );
+    }
+
+    #[test]
+    fn test_compute_score_ram_dominant_reaches_critical() {
+        // RAM at 88% (Critical pressure), low CPU, no swap — should reach critical band (>= 0.55)
+        let score = compute_score(88.0, 1.0, 0.0);
+        assert!(
+            score >= thresholds::IMPACT_LEVEL_STRAINED_BELOW,
+            "RAM-only saturation at 88% score {:.3} should reach critical band (>= {:.2})",
+            score,
+            thresholds::IMPACT_LEVEL_STRAINED_BELOW
+        );
+    }
+
+    #[test]
+    fn test_compute_score_ram_72pct_reaches_strained() {
+        // RAM at 72% (memory_pressure threshold), low CPU — should reach strained band (>= 0.38)
+        let score = compute_score(72.0, 1.0, 0.0);
+        assert!(
+            score >= thresholds::IMPACT_LEVEL_DEGRADING_BELOW,
+            "RAM at 72% score {:.3} should reach strained band (>= {:.2})",
             score,
             thresholds::IMPACT_LEVEL_DEGRADING_BELOW
         );
@@ -467,7 +525,28 @@ mod tests {
             blame_score: 0.5,
         };
         let fix = suggest_fix(Some(&unknown), None, &AnomalyType::MemoryPressure);
-        assert_eq!(fix, "Close or restart the heaviest application.");
+        assert!(
+            fix.contains("unknown_app_xyz") && fix.contains("Close or restart"),
+            "expected process-specific fallback, got: {}",
+            fix
+        );
+    }
+
+    #[test]
+    fn test_suggest_fix_rustc_maps_to_cargo() {
+        let rustc = ProcessInfo {
+            pid: 42,
+            cmd: "rustc".to_string(),
+            cpu_pct: 95.0,
+            ram_gb: 1.5,
+            blame_score: 0.6,
+        };
+        let fix = suggest_fix(Some(&rustc), None, &AnomalyType::CpuSaturation);
+        assert!(
+            fix.contains("cargo build -j 2"),
+            "rustc should get cargo build fix, got: {}",
+            fix
+        );
     }
 
     // ── Headroom Tests ──────────────────────────────────────────────────
