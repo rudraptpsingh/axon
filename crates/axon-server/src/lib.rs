@@ -350,6 +350,11 @@ fn trend_narrative(trend: &TrendData, range: &str) -> String {
 }
 
 fn gpu_narrative(gpu: &GpuSnapshot) -> String {
+    if !gpu.detected {
+        return "No GPU detected on this system. \
+                nvidia-smi not found and no DRM sysfs device present."
+            .to_string();
+    }
     let util = gpu
         .utilization_pct
         .map(|v| format!("{:.0}%", v))
@@ -363,10 +368,7 @@ fn gpu_narrative(gpu: &GpuSnapshot) -> String {
         (Some(used), None) => format!("{:.0}MB VRAM used", used as f64 / 1_048_576.0),
         _ => "VRAM N/A".to_string(),
     };
-    let model_str = gpu
-        .model
-        .as_deref()
-        .unwrap_or("unknown GPU");
+    let model_str = gpu.model.as_deref().unwrap_or("unknown GPU");
     let cores_str = gpu
         .core_count
         .map(|c| format!(" ({} cores)", c))
