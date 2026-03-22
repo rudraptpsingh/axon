@@ -93,6 +93,7 @@ def main() -> int:
             "battery_status",
             "system_profile",
             "hardware_trend",
+            "session_health",
         }
         missing = expected - names
         if missing:
@@ -105,6 +106,7 @@ def main() -> int:
             (4, "battery_status", {}),
             (5, "system_profile", {}),
             (6, "hardware_trend", {"time_range": "last_1h", "interval": "15m"}),
+            (7, "session_health", {}),
         ]
 
         for mid, name, args in calls:
