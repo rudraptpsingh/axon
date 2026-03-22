@@ -311,11 +311,21 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle) {
                 let agents_are_top = top_group
                     .map(|g| g.name == agent_group.name)
                     .unwrap_or(false);
-                if agents_are_top {
+                // Also check raw CPU: if any non-agent group uses 3x+ more CPU
+                // than agents, they're the real hog (EWMA may have stabilized
+                // on the hog, flattening its blame_score).
+                let non_agent_cpu_hog = groups.iter().find(|g| {
+                    g.name != agent_group.name
+                        && g.total_cpu_pct > agent_group.total_cpu_pct * 3.0
+                });
+                if agents_are_top && non_agent_cpu_hog.is_none() {
                     (AnomalyType::AgentAccumulation, Some(agent_group.clone()))
-                } else {
-                    // Agents exist but aren't the primary resource consumer
+                } else if let Some(hog) = non_agent_cpu_hog {
+                    (anomaly_type, Some(hog.clone()))
+                } else if !agents_are_top {
                     (anomaly_type, top_group.cloned())
+                } else {
+                    (AnomalyType::AgentAccumulation, Some(agent_group.clone()))
                 }
             } else {
                 (anomaly_type, groups.first().cloned())

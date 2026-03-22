@@ -311,7 +311,13 @@ fn blame_narrative(blame: &ProcessBlame) -> String {
             "{} (PID {}, {:.0}% CPU, {:.1}GB RAM) — {} {}",
             p.cmd, p.pid, p.cpu_pct, p.ram_gb, blame.impact, blame.fix
         ),
-        _ => format!("{} {}", blame.impact, blame.fix),
+        _ => {
+            if blame.fix == blame.impact || blame.fix == "No action needed." {
+                blame.impact.clone()
+            } else {
+                format!("{} {}", blame.impact, blame.fix)
+            }
+        }
     }
 }
 

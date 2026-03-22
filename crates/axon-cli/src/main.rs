@@ -160,6 +160,9 @@ async fn run_diagnose() -> Result<()> {
     let db_path = persistence::default_db_path()?;
     let db = persistence::open(db_path)?;
 
+    // Check for recent alerts (last 60s) from persistent DB before collecting
+    let recent_alerts = persistence::query_alerts(&db, 60, None, None, 5).unwrap_or_default();
+
     let state_bg = state.clone();
     tokio::spawn(async move {
         start_collector(state_bg, db).await;
@@ -221,6 +224,25 @@ async fn run_diagnose() -> Result<()> {
 
     if let Some(b) = &guard.battery {
         println!("      Battery: {}", b.narrative);
+    }
+
+    // Show recent-recovery notice so agents don't pile on work immediately
+    if !recent_alerts.is_empty() && !showed_warning {
+        let critical_count = recent_alerts
+            .iter()
+            .filter(|a| a.severity == axon_core::types::AlertSeverity::Critical)
+            .count();
+        if critical_count > 0 {
+            println!(
+                "[info] Recently recovered: {} critical alert(s) in last 60s. Consider a brief cooldown.",
+                critical_count
+            );
+        } else {
+            println!(
+                "[info] Recently recovered: {} alert(s) in last 60s.",
+                recent_alerts.len()
+            );
+        }
     }
 
     println!();
