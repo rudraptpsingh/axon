@@ -1,0 +1,255 @@
+{
+  "timestamp": "2026-03-22T10:09:54",
+  "scenario_a": {
+    "metrics_analysis": {
+      "total_samples": 61,
+      "cpu_pct": {
+        "baseline": {
+          "avg": 88.86,
+          "max": 100.0,
+          "min": 0.0,
+          "stdev": 33.32
+        },
+        "stress": {
+          "avg": 99.97,
+          "max": 100.0,
+          "min": 99.75,
+          "stdev": 0.06
+        },
+        "recovery": {
+          "avg": 97.47,
+          "max": 100.0,
+          "min": 79.12,
+          "stdev": 6.89
+        }
+      },
+      "ram_pct": {
+        "baseline": {
+          "avg": 11.49,
+          "max": 16.4,
+          "min": 5.34,
+          "stdev": 3.77
+        },
+        "stress": {
+          "avg": 34.97,
+          "max": 51.66,
+          "min": 17.8,
+          "stdev": 9.85
+        },
+        "recovery": {
+          "avg": 53.39,
+          "max": 58.85,
+          "min": 44.48,
+          "stdev": 4.22
+        }
+      },
+      "disk_pct": {
+        "baseline": {
+          "avg": 4.46,
+          "max": 4.64,
+          "min": 3.06,
+          "stdev": 0.52
+        },
+        "stress": {
+          "avg": 4.82,
+          "max": 5.04,
+          "min": 4.65,
+          "stdev": 0.11
+        },
+        "recovery": {
+          "avg": 5.24,
+          "max": 5.3,
+          "min": 5.1,
+          "stdev": 0.08
+        }
+      }
+    },
+    "responsiveness": {
+      "ls_root": {
+        "avg_ms": 15.15,
+        "max_ms": 48.07,
+        "p99_ms": 28.22,
+        "samples": 24
+      },
+      "ps_aux": {
+        "avg_ms": 86.41,
+        "max_ms": 155.51,
+        "p99_ms": 149.51,
+        "samples": 24
+      },
+      "uptime": {
+        "avg_ms": 18.04,
+        "max_ms": 51.56,
+        "p99_ms": 43.27,
+        "samples": 24
+      }
+    },
+    "agent_results": [
+      {
+        "name": "Build Agent",
+        "task": "Compile project (CPU-heavy)",
+        "duration_s": 120.1,
+        "exit_code": 0,
+        "mode": "blind"
+      },
+      {
+        "name": "Test Agent",
+        "task": "Run test suite (CPU + RAM)",
+        "duration_s": 120.1,
+        "exit_code": 0,
+        "mode": "blind"
+      },
+      {
+        "name": "Analysis Agent",
+        "task": "Codebase analysis (I/O + CPU)",
+        "duration_s": 120.1,
+        "exit_code": 0,
+        "mode": "blind"
+      },
+      {
+        "name": "Data Agent",
+        "task": "Process large dataset (RAM-heavy)",
+        "duration_s": 120.0,
+        "exit_code": 0,
+        "mode": "blind"
+      }
+    ],
+    "failures": 0
+  },
+  "scenario_b": {
+    "metrics_analysis": {
+      "total_samples": 253,
+      "cpu_pct": {
+        "baseline": {
+          "avg": 97.3,
+          "max": 100.0,
+          "min": 0.0,
+          "stdev": 16.44
+        },
+        "stress": {
+          "avg": 48.05,
+          "max": 100.0,
+          "min": 0.13,
+          "stdev": 48.74
+        },
+        "recovery": {
+          "avg": 1.99,
+          "max": 24.03,
+          "min": 0.13,
+          "stdev": 4.52
+        }
+      },
+      "ram_pct": {
+        "baseline": {
+          "avg": 4.84,
+          "max": 4.94,
+          "min": 4.83,
+          "stdev": 0.03
+        },
+        "stress": {
+          "avg": 10.73,
+          "max": 79.75,
+          "min": 4.72,
+          "stdev": 16.26
+        },
+        "recovery": {
+          "avg": 73.85,
+          "max": 81.38,
+          "min": 4.79,
+          "stdev": 22.2
+        }
+      },
+      "disk_pct": {
+        "baseline": {
+          "avg": 3.72,
+          "max": 3.72,
+          "min": 3.72,
+          "stdev": 0.0
+        },
+        "stress": {
+          "avg": 4.25,
+          "max": 5.3,
+          "min": 3.72,
+          "stdev": 0.75
+        },
+        "recovery": {
+          "avg": 3.72,
+          "max": 3.72,
+          "min": 3.72,
+          "stdev": 0.0
+        }
+      }
+    },
+    "responsiveness": {
+      "ls_root": {
+        "avg_ms": 5.13,
+        "max_ms": 16.01,
+        "p99_ms": 14.82,
+        "samples": 101
+      },
+      "ps_aux": {
+        "avg_ms": 14.47,
+        "max_ms": 45.2,
+        "p99_ms": 33.22,
+        "samples": 101
+      },
+      "uptime": {
+        "avg_ms": 4.77,
+        "max_ms": 14.07,
+        "p99_ms": 13.81,
+        "samples": 101
+      }
+    },
+    "agent_results": [
+      {
+        "name": "Build Agent",
+        "task": "Compile project (CPU-heavy)",
+        "duration_s": 120.3,
+        "exit_code": 0,
+        "mode": "axon_informed",
+        "decision": "proceed",
+        "mcp_queries": 5
+      },
+      {
+        "name": "Test Agent",
+        "task": "Run test suite (CPU + RAM)",
+        "duration_s": 120.1,
+        "exit_code": 0,
+        "mode": "axon_informed",
+        "decision": "proceed",
+        "mcp_queries": 5
+      },
+      {
+        "name": "Analysis Agent",
+        "task": "Codebase analysis (I/O + CPU)",
+        "duration_s": 120.0,
+        "exit_code": 0,
+        "mode": "axon_informed",
+        "decision": "proceed",
+        "mcp_queries": 2
+      },
+      {
+        "name": "Data Agent",
+        "task": "Process large dataset (RAM-heavy)",
+        "duration_s": 123.0,
+        "exit_code": 0,
+        "mode": "axon_informed",
+        "decision": "proceed",
+        "mcp_queries": 5
+      }
+    ],
+    "failures": 0,
+    "alert_summary": {
+      "total": 4,
+      "by_type": {
+        "disk_pressure": 2,
+        "memory_pressure": 2
+      },
+      "by_severity": {
+        "warning": 2,
+        "critical": 2
+      }
+    },
+    "decisions_count": 17
+  }
+}
