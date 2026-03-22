@@ -278,6 +278,158 @@ pub fn query_alerts(
     Ok(alerts)
 }
 
+// ── Session Health ───────────────────────────────────────────────────────────
+
+pub fn query_session_health(db: &DbHandle, since: DateTime<Utc>) -> Result<SessionHealth> {
+    let conn = db.lock().map_err(|e| anyhow::anyhow!("db lock: {}", e))?;
+    let since_str = since.to_rfc3339();
+
+    // Query snapshots
+    let mut stmt = conn.prepare(
+        "SELECT cpu_pct, ram_used_gb, die_temp_c, throttling, anomaly_type, impact_level, anomaly_score
+         FROM snapshots WHERE ts >= ?1",
+    )?;
+
+    struct SnapRow {
+        cpu_pct: f64,
+        ram_used_gb: f64,
+        die_temp_c: Option<f64>,
+        throttling: bool,
+        anomaly_type: String,
+        impact_level: String,
+        anomaly_score: f64,
+    }
+
+    let rows: Vec<SnapRow> = stmt
+        .query_map(params![since_str], |row| {
+            Ok(SnapRow {
+                cpu_pct: row.get(0)?,
+                ram_used_gb: row.get(1)?,
+                die_temp_c: row.get(2)?,
+                throttling: row.get::<_, i32>(3)? != 0,
+                anomaly_type: row.get::<_, String>(4).unwrap_or_default(),
+                impact_level: row.get::<_, String>(5).unwrap_or_default(),
+                anomaly_score: row.get::<_, f64>(6).unwrap_or(0.0),
+            })
+        })?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    // Query alert count
+    let alert_count: u32 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM alerts WHERE ts >= ?1",
+            params![since_str],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+
+    if rows.is_empty() {
+        return Ok(SessionHealth {
+            since,
+            snapshot_count: 0,
+            alert_count,
+            worst_impact_level: ImpactLevel::Healthy,
+            worst_anomaly_type: AnomalyType::None,
+            avg_anomaly_score: 0.0,
+            avg_cpu_pct: 0.0,
+            avg_ram_gb: 0.0,
+            peak_cpu_pct: 0.0,
+            peak_ram_gb: 0.0,
+            peak_temp_celsius: None,
+            throttle_event_count: 0,
+        });
+    }
+
+    let n = rows.len() as f64;
+    let mut peak_cpu = 0.0_f64;
+    let mut peak_ram = 0.0_f64;
+    let mut peak_temp: Option<f64> = None;
+    let mut sum_cpu = 0.0_f64;
+    let mut sum_ram = 0.0_f64;
+    let mut sum_score = 0.0_f64;
+    let mut throttle_count = 0_u32;
+    let mut worst_impact = 0_u8; // 0=Healthy, 1=Degrading, 2=Strained, 3=Critical
+    let mut worst_anomaly = AnomalyType::None;
+
+    for row in &rows {
+        sum_cpu += row.cpu_pct;
+        sum_ram += row.ram_used_gb;
+        sum_score += row.anomaly_score;
+        if row.cpu_pct > peak_cpu {
+            peak_cpu = row.cpu_pct;
+        }
+        if row.ram_used_gb > peak_ram {
+            peak_ram = row.ram_used_gb;
+        }
+        if let Some(t) = row.die_temp_c {
+            peak_temp = Some(peak_temp.map_or(t, |prev: f64| prev.max(t)));
+        }
+        if row.throttling {
+            throttle_count += 1;
+        }
+
+        let level_ord = match row.impact_level.as_str() {
+            "degrading" => 1,
+            "strained" => 2,
+            "critical" => 3,
+            _ => 0,
+        };
+        if level_ord > worst_impact {
+            worst_impact = level_ord;
+        }
+
+        let anomaly_ord = match row.anomaly_type.as_str() {
+            "general_slowdown" | "generalslowdown" => 1,
+            "memory_pressure" | "memorypressure" => 2,
+            "cpu_saturation" | "cpusaturation" => 3,
+            "thermal_throttle" | "thermalthrottle" => 4,
+            "agent_accumulation" | "agentaccumulation" => 5,
+            _ => 0,
+        };
+        let current_worst_ord = match worst_anomaly {
+            AnomalyType::None => 0,
+            AnomalyType::GeneralSlowdown => 1,
+            AnomalyType::MemoryPressure => 2,
+            AnomalyType::CpuSaturation => 3,
+            AnomalyType::ThermalThrottle => 4,
+            AnomalyType::AgentAccumulation => 5,
+        };
+        if anomaly_ord > current_worst_ord {
+            worst_anomaly = match row.anomaly_type.as_str() {
+                "general_slowdown" | "generalslowdown" => AnomalyType::GeneralSlowdown,
+                "memory_pressure" | "memorypressure" => AnomalyType::MemoryPressure,
+                "cpu_saturation" | "cpusaturation" => AnomalyType::CpuSaturation,
+                "thermal_throttle" | "thermalthrottle" => AnomalyType::ThermalThrottle,
+                "agent_accumulation" | "agentaccumulation" => AnomalyType::AgentAccumulation,
+                _ => AnomalyType::None,
+            };
+        }
+    }
+
+    let worst_impact_level = match worst_impact {
+        1 => ImpactLevel::Degrading,
+        2 => ImpactLevel::Strained,
+        3 => ImpactLevel::Critical,
+        _ => ImpactLevel::Healthy,
+    };
+
+    Ok(SessionHealth {
+        since,
+        snapshot_count: rows.len() as u32,
+        alert_count,
+        worst_impact_level,
+        worst_anomaly_type: worst_anomaly,
+        avg_anomaly_score: sum_score / n,
+        avg_cpu_pct: sum_cpu / n,
+        avg_ram_gb: sum_ram / n,
+        peak_cpu_pct: peak_cpu,
+        peak_ram_gb: peak_ram,
+        peak_temp_celsius: peak_temp,
+        throttle_event_count: throttle_count,
+    })
+}
+
 // ── Query ────────────────────────────────────────────────────────────────────
 
 pub fn parse_time_range(s: &str) -> Option<i64> {
@@ -444,6 +596,8 @@ mod tests {
             disk_used_gb: 250.0,
             disk_total_gb: 500.0,
             disk_pressure: DiskPressure::Normal,
+            headroom: HeadroomLevel::Adequate,
+            headroom_reason: "System has headroom".to_string(),
             ts: Utc::now(),
         }
     }

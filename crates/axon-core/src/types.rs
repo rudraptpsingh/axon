@@ -29,6 +29,7 @@ pub enum AnomalyType {
     CpuSaturation,
     ThermalThrottle,
     GeneralSlowdown,
+    AgentAccumulation,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -38,6 +39,16 @@ pub enum ImpactLevel {
     Degrading,
     Strained,
     Critical,
+}
+
+// ── Headroom ─────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum HeadroomLevel {
+    Adequate,
+    Limited,
+    Insufficient,
 }
 
 // ── Core Data Types ───────────────────────────────────────────────────────────
@@ -53,6 +64,8 @@ pub struct HwSnapshot {
     pub disk_used_gb: f64,
     pub disk_total_gb: f64,
     pub disk_pressure: DiskPressure,
+    pub headroom: HeadroomLevel,
+    pub headroom_reason: String,
     pub ts: DateTime<Utc>,
 }
 
@@ -184,6 +197,24 @@ pub struct TrendData {
     pub buckets: Vec<TrendBucket>,
     pub trend_direction: String,
     pub total_snapshots: u32,
+}
+
+// ── Session Health ───────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionHealth {
+    pub since: DateTime<Utc>,
+    pub snapshot_count: u32,
+    pub alert_count: u32,
+    pub worst_impact_level: ImpactLevel,
+    pub worst_anomaly_type: AnomalyType,
+    pub avg_anomaly_score: f64,
+    pub avg_cpu_pct: f64,
+    pub avg_ram_gb: f64,
+    pub peak_cpu_pct: f64,
+    pub peak_ram_gb: f64,
+    pub peak_temp_celsius: Option<f64>,
+    pub throttle_event_count: u32,
 }
 
 // ── MCP Response Envelope ─────────────────────────────────────────────────────

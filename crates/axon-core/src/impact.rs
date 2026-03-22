@@ -1,5 +1,108 @@
 use crate::thresholds;
-use crate::types::{AnomalyType, ImpactLevel, ProcessGroup, ProcessInfo};
+use crate::types::{
+    AnomalyType, DiskPressure, HeadroomLevel, HwSnapshot, ImpactLevel, ProcessGroup, ProcessInfo,
+    RamPressure,
+};
+
+// ── Headroom Computation ──────────────────────────────────────────────────────
+
+/// Compute headroom level for pre-task checks. Agents call hw_snapshot before
+/// starting heavy tasks; headroom tells them whether it is safe to proceed.
+pub fn compute_headroom(snap: &HwSnapshot) -> (HeadroomLevel, String) {
+    // Priority order: most severe conditions first
+    if snap.ram_pressure == RamPressure::Critical {
+        let ram_pct = if snap.ram_total_gb > 0.0 {
+            snap.ram_used_gb / snap.ram_total_gb * 100.0
+        } else {
+            0.0
+        };
+        return (
+            HeadroomLevel::Insufficient,
+            format!("RAM at {:.0}% (Critical)", ram_pct),
+        );
+    }
+    if snap.disk_pressure == DiskPressure::Critical {
+        let disk_pct = if snap.disk_total_gb > 0.0 {
+            snap.disk_used_gb / snap.disk_total_gb * 100.0
+        } else {
+            0.0
+        };
+        return (
+            HeadroomLevel::Insufficient,
+            format!("Disk at {:.0}% (Critical)", disk_pct),
+        );
+    }
+    if snap.throttling {
+        let temp_str = snap
+            .die_temp_celsius
+            .map(|t| format!(" at {:.0}C", t))
+            .unwrap_or_default();
+        return (
+            HeadroomLevel::Insufficient,
+            format!("CPU thermal throttling{}", temp_str),
+        );
+    }
+    if snap.ram_pressure == RamPressure::Warn && snap.cpu_usage_pct >= 70.0 {
+        return (
+            HeadroomLevel::Insufficient,
+            format!("RAM warn + CPU at {:.0}%", snap.cpu_usage_pct),
+        );
+    }
+    if snap.ram_pressure == RamPressure::Warn {
+        let ram_pct = if snap.ram_total_gb > 0.0 {
+            snap.ram_used_gb / snap.ram_total_gb * 100.0
+        } else {
+            0.0
+        };
+        return (
+            HeadroomLevel::Limited,
+            format!("RAM at {:.0}% (Warn)", ram_pct),
+        );
+    }
+    if snap.disk_pressure == DiskPressure::Warn {
+        let disk_pct = if snap.disk_total_gb > 0.0 {
+            snap.disk_used_gb / snap.disk_total_gb * 100.0
+        } else {
+            0.0
+        };
+        return (
+            HeadroomLevel::Limited,
+            format!("Disk at {:.0}% (Warn)", disk_pct),
+        );
+    }
+    if snap.cpu_usage_pct >= 70.0 {
+        return (
+            HeadroomLevel::Limited,
+            format!("CPU at {:.0}%", snap.cpu_usage_pct),
+        );
+    }
+    (HeadroomLevel::Adequate, "System has headroom".to_string())
+}
+
+// ── Agent Accumulation Detection ─────────────────────────────────────────────
+
+/// Known AI agent process names (after normalize_process_name).
+const KNOWN_AGENT_NAMES: &[&str] = &[
+    "claude",
+    "claude code",
+    "cursor",
+    "windsurf",
+    "code",
+    "zed",
+];
+
+/// Check if a normalized group name matches a known AI agent.
+pub fn is_known_agent(name: &str) -> bool {
+    let lower = name.to_lowercase();
+    KNOWN_AGENT_NAMES.iter().any(|&a| lower == a || lower.contains(a))
+}
+
+/// Find the first agent group with more than one instance.
+pub fn detect_agent_accumulation(groups: &[ProcessGroup]) -> Option<&ProcessGroup> {
+    groups
+        .iter()
+        .find(|g| g.process_count > 1 && is_known_agent(&g.name))
+}
 
 // ── Anomaly Detection ─────────────────────────────────────────────────────────
 
@@ -53,7 +156,15 @@ pub fn score_to_level(score: f64, above_threshold_count: u32) -> ImpactLevel {
 
 pub fn impact_message(level: &ImpactLevel, anomaly: &AnomalyType) -> String {
     match (level, anomaly) {
+        (ImpactLevel::Healthy, AnomalyType::AgentAccumulation) => {
+            "Multiple AI agent instances detected. Combined resource usage is growing.".to_string()
+        }
         (ImpactLevel::Healthy, _) => "System is healthy. No action needed.".to_string(),
+
+        (_, AnomalyType::AgentAccumulation) => {
+            "Multiple AI agent instances detected. Combined resource usage is significant."
+                .to_string()
+        }
 
         (ImpactLevel::Degrading, AnomalyType::MemoryPressure) => {
             "Memory is under load. Minor slowdowns possible.".to_string()
@@ -167,6 +278,16 @@ pub fn suggest_fix(
         }
     }
 
+    // Agent accumulation: provide specific fix with count and name
+    if *anomaly == AnomalyType::AgentAccumulation {
+        if let Some(g) = group {
+            return format!(
+                "{} {} instances are running. Close unused sessions to free ~{:.1}GB and reduce background CPU.",
+                g.process_count, g.name, g.total_ram_gb
+            );
+        }
+    }
+
     // Fallback by anomaly type
     match anomaly {
         AnomalyType::MemoryPressure => "Close or restart the heaviest application.".to_string(),
@@ -176,6 +297,9 @@ pub fn suggest_fix(
         }
         AnomalyType::GeneralSlowdown => {
             "Reduce system load by closing unused applications.".to_string()
+        }
+        AnomalyType::AgentAccumulation => {
+            "Close unused AI agent sessions to free memory.".to_string()
         }
         AnomalyType::None => "No action needed.".to_string(),
     }
@@ -306,5 +430,194 @@ mod tests {
         };
         let fix = suggest_fix(Some(&unknown), None, &AnomalyType::MemoryPressure);
         assert_eq!(fix, "Close or restart the heaviest application.");
+    }
+
+    // ── Headroom Tests ──────────────────────────────────────────────────
+
+    fn make_hw(
+        ram_pressure: RamPressure,
+        disk_pressure: DiskPressure,
+        throttling: bool,
+        cpu: f64,
+        temp: Option<f64>,
+    ) -> HwSnapshot {
+        HwSnapshot {
+            die_temp_celsius: temp,
+            throttling,
+            ram_used_gb: 6.0,
+            ram_total_gb: 8.0,
+            ram_pressure,
+            cpu_usage_pct: cpu,
+            disk_used_gb: 400.0,
+            disk_total_gb: 500.0,
+            disk_pressure,
+            headroom: HeadroomLevel::Adequate,
+            headroom_reason: String::new(),
+            ts: chrono::Utc::now(),
+        }
+    }
+
+    #[test]
+    fn test_headroom_insufficient_ram_critical() {
+        let hw = make_hw(RamPressure::Critical, DiskPressure::Normal, false, 50.0, None);
+        let (level, reason) = compute_headroom(&hw);
+        assert_eq!(level, HeadroomLevel::Insufficient);
+        assert!(reason.contains("RAM"), "reason: {}", reason);
+        assert!(reason.contains("Critical"), "reason: {}", reason);
+    }
+
+    #[test]
+    fn test_headroom_insufficient_disk_critical() {
+        let hw = make_hw(RamPressure::Normal, DiskPressure::Critical, false, 50.0, None);
+        let (level, reason) = compute_headroom(&hw);
+        assert_eq!(level, HeadroomLevel::Insufficient);
+        assert!(reason.contains("Disk"), "reason: {}", reason);
+    }
+
+    #[test]
+    fn test_headroom_insufficient_throttling() {
+        let hw = make_hw(
+            RamPressure::Normal,
+            DiskPressure::Normal,
+            true,
+            50.0,
+            Some(92.0),
+        );
+        let (level, reason) = compute_headroom(&hw);
+        assert_eq!(level, HeadroomLevel::Insufficient);
+        assert!(reason.contains("throttling"), "reason: {}", reason);
+    }
+
+    #[test]
+    fn test_headroom_insufficient_warn_plus_high_cpu() {
+        let hw = make_hw(RamPressure::Warn, DiskPressure::Normal, false, 75.0, None);
+        let (level, _) = compute_headroom(&hw);
+        assert_eq!(level, HeadroomLevel::Insufficient);
+    }
+
+    #[test]
+    fn test_headroom_limited_ram_warn() {
+        let hw = make_hw(RamPressure::Warn, DiskPressure::Normal, false, 40.0, None);
+        let (level, _) = compute_headroom(&hw);
+        assert_eq!(level, HeadroomLevel::Limited);
+    }
+
+    #[test]
+    fn test_headroom_limited_high_cpu() {
+        let hw = make_hw(RamPressure::Normal, DiskPressure::Normal, false, 72.0, None);
+        let (level, _) = compute_headroom(&hw);
+        assert_eq!(level, HeadroomLevel::Limited);
+    }
+
+    #[test]
+    fn test_headroom_adequate() {
+        let hw = make_hw(RamPressure::Normal, DiskPressure::Normal, false, 30.0, None);
+        let (level, reason) = compute_headroom(&hw);
+        assert_eq!(level, HeadroomLevel::Adequate);
+        assert!(reason.contains("headroom"), "reason: {}", reason);
+    }
+
+    #[test]
+    fn test_headroom_cpu_boundary() {
+        let hw_below = make_hw(RamPressure::Normal, DiskPressure::Normal, false, 69.9, None);
+        assert_eq!(compute_headroom(&hw_below).0, HeadroomLevel::Adequate);
+
+        let hw_at = make_hw(RamPressure::Normal, DiskPressure::Normal, false, 70.0, None);
+        assert_eq!(compute_headroom(&hw_at).0, HeadroomLevel::Limited);
+    }
+
+    #[test]
+    fn test_headroom_ram_warn_cpu_boundary() {
+        let hw_below = make_hw(RamPressure::Warn, DiskPressure::Normal, false, 69.9, None);
+        assert_eq!(compute_headroom(&hw_below).0, HeadroomLevel::Limited);
+
+        let hw_at = make_hw(RamPressure::Warn, DiskPressure::Normal, false, 70.0, None);
+        assert_eq!(compute_headroom(&hw_at).0, HeadroomLevel::Insufficient);
+    }
+
+    // ── Agent Accumulation Tests ─────────────────────────────────────────
+
+    #[test]
+    fn test_agent_accumulation_claude() {
+        let groups = vec![ProcessGroup {
+            name: "claude".to_string(),
+            process_count: 3,
+            total_cpu_pct: 30.0,
+            total_ram_gb: 1.1,
+            blame_score: 0.2,
+            top_pid: 100,
+            pids: vec![100, 101, 102],
+        }];
+        let result = detect_agent_accumulation(&groups);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().process_count, 3);
+    }
+
+    #[test]
+    fn test_agent_accumulation_cursor() {
+        let groups = vec![ProcessGroup {
+            name: "Cursor".to_string(),
+            process_count: 5,
+            total_cpu_pct: 50.0,
+            total_ram_gb: 2.0,
+            blame_score: 0.3,
+            top_pid: 200,
+            pids: vec![200, 201, 202, 203, 204],
+        }];
+        let result = detect_agent_accumulation(&groups);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().process_count, 5);
+    }
+
+    #[test]
+    fn test_agent_accumulation_single_is_normal() {
+        let groups = vec![ProcessGroup {
+            name: "claude".to_string(),
+            process_count: 1,
+            total_cpu_pct: 10.0,
+            total_ram_gb: 0.3,
+            blame_score: 0.1,
+            top_pid: 100,
+            pids: vec![100],
+        }];
+        assert!(detect_agent_accumulation(&groups).is_none());
+    }
+
+    #[test]
+    fn test_agent_accumulation_ignores_non_agents() {
+        let groups = vec![ProcessGroup {
+            name: "node".to_string(),
+            process_count: 10,
+            total_cpu_pct: 80.0,
+            total_ram_gb: 3.0,
+            blame_score: 0.7,
+            top_pid: 300,
+            pids: vec![300],
+        }];
+        assert!(detect_agent_accumulation(&groups).is_none());
+    }
+
+    #[test]
+    fn test_suggest_fix_agent_accumulation() {
+        let group = ProcessGroup {
+            name: "claude".to_string(),
+            process_count: 3,
+            total_cpu_pct: 30.0,
+            total_ram_gb: 1.1,
+            blame_score: 0.2,
+            top_pid: 100,
+            pids: vec![100, 101, 102],
+        };
+        let fix = suggest_fix(None, Some(&group), &AnomalyType::AgentAccumulation);
+        assert!(fix.contains("3"), "fix: {}", fix);
+        assert!(fix.contains("claude"), "fix: {}", fix);
+        assert!(fix.contains("1.1GB"), "fix: {}", fix);
+    }
+
+    #[test]
+    fn test_impact_message_agent_accumulation() {
+        let msg = impact_message(&ImpactLevel::Healthy, &AnomalyType::AgentAccumulation);
+        assert!(!msg.contains("No action needed"), "msg: {}", msg);
+        assert!(msg.contains("agent"), "msg: {}", msg);
     }
 }

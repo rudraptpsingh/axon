@@ -30,6 +30,14 @@ pub struct TrendParams {
     pub interval: Option<String>,
 }
 
+#[derive(Debug, ::serde::Deserialize, schemars::JsonSchema)]
+pub struct SessionHealthParams {
+    #[schemars(
+        description = "ISO 8601 timestamp to start from (e.g. 2026-03-22T10:00:00Z). Defaults to 1 hour ago if omitted."
+    )]
+    pub since: Option<String>,
+}
+
 // ── MCP Server ────────────────────────────────────────────────────────────────
 
 #[derive(Clone)]
@@ -52,7 +60,7 @@ impl AxonServer {
 #[tool_router(router = tool_router)]
 impl AxonServer {
     #[tool(
-        description = "Real-time hardware snapshot: CPU usage %, die temperature, RAM used/total, RAM pressure level (normal/warn/critical), disk used/total, disk pressure level (normal/warn/critical), and whether the CPU is thermally throttling."
+        description = "Real-time hardware snapshot with headroom assessment. Returns CPU %, die temperature, RAM/disk pressure levels, thermal throttling status, and a headroom field (adequate/limited/insufficient) that tells you whether it is safe to start a heavy task like compilation, test runs, or code generation. Call BEFORE starting resource-intensive work."
     )]
     async fn hw_snapshot(&self, _p: Parameters<EmptyParams>) -> String {
         let hw = {
@@ -66,7 +74,7 @@ impl AxonServer {
     }
 
     #[tool(
-        description = "Identify what is slowing your Mac right now. Returns the top culprit process, impact severity (healthy/degrading/strained/critical), and a concrete fix. Call this when your AI session lags or crashes."
+        description = "Identify what is slowing this machine right now. Returns the top culprit process (or process group), impact severity (healthy/degrading/strained/critical), anomaly type, and a concrete fix suggestion. Also detects when multiple AI agent instances (Claude, Cursor, Windsurf) are accumulating silently. Call when sessions lag, builds fail with OOM, or system feels slow."
     )]
     async fn process_blame(&self, _p: Parameters<EmptyParams>) -> String {
         let blame = {
@@ -99,7 +107,7 @@ impl AxonServer {
     }
 
     #[tool(
-        description = "Static machine info: model ID, chip, core count, total RAM, macOS version. Read once at session start to understand host capabilities."
+        description = "Static machine info: model ID, chip/CPU, core count, total RAM, OS version. Read once at session start to understand host capabilities and tailor task parallelism (e.g. cargo build -j based on core count, batch sizes based on available RAM)."
     )]
     async fn system_profile(&self, _p: Parameters<EmptyParams>) -> String {
         let profile = {
@@ -120,7 +128,7 @@ impl AxonServer {
     }
 
     #[tool(
-        description = "Hardware trends over time: CPU, RAM, temperature averages and peaks per interval. Use to detect degradation patterns, justify hardware upgrades, or check if your Mac is getting slower. Accepts optional time_range (default: last_24h) and interval (default: 15m)."
+        description = "Hardware trends over time: CPU, RAM, temperature averages and peaks per interval. Use to detect degradation patterns, justify hardware upgrades, or check if the machine is getting slower. Accepts optional time_range (default: last_24h) and interval (default: 15m)."
     )]
     async fn hardware_trend(&self, params: Parameters<TrendParams>) -> String {
         let range_str = params.0.time_range.as_deref().unwrap_or("last_24h");
@@ -157,18 +165,47 @@ impl AxonServer {
             }
         }
     }
+
+    #[tool(
+        description = "Session health summary since a given timestamp. Returns worst impact level, worst anomaly type, alert count, throttle events, average and peak CPU/RAM/temperature. Use at the end of long sessions or periodically to detect gradual degradation that edge-triggered alerts may miss."
+    )]
+    async fn session_health(&self, params: Parameters<SessionHealthParams>) -> String {
+        let since = params
+            .0
+            .since
+            .as_deref()
+            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+            .map(|dt| dt.with_timezone(&chrono::Utc))
+            .unwrap_or_else(|| chrono::Utc::now() - chrono::Duration::hours(1));
+
+        match persistence::query_session_health(&self.db, since) {
+            Ok(health) => {
+                let narrative = session_health_narrative(&health);
+                let response = McpResponse::success(health, narrative);
+                serde_json::to_string(&response)
+                    .unwrap_or_else(|e| format!("{{\"ok\":false,\"error\":\"{}\"}}", e))
+            }
+            Err(e) => {
+                format!("{{\"ok\":false,\"error\":\"{}\"}}", e)
+            }
+        }
+    }
 }
 
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for AxonServer {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(
-            "axon: local hardware intelligence for AI agents. \
-                Call process_blame when your session lags. \
-                Call hw_snapshot for current system state. \
-                Call battery_status before long tasks. \
-                Call system_profile once for machine specs. \
-                Call hardware_trend for historical CPU/RAM/temp trends.",
+            "axon: zero-cloud local hardware intelligence for AI coding agents. \
+                Recommended workflow: \
+                1. Call system_profile once at session start for machine specs (core count, RAM). \
+                2. Call hw_snapshot before heavy tasks (builds, test runs, large edits) -- check the headroom field. \
+                   If headroom=insufficient, warn the user or defer the task. \
+                3. Call process_blame when sessions lag, builds OOM, or the system feels slow. \
+                   It detects agent accumulation (multiple Claude/Cursor instances). \
+                4. Call battery_status before long agentic tasks on laptops. \
+                5. Call hardware_trend for degradation patterns over time. \
+                6. Call session_health at end of long sessions for a retrospective summary.",
         )
     }
 }
@@ -208,9 +245,15 @@ fn hw_narrative(hw: &HwSnapshot) -> String {
     } else {
         String::new()
     };
+    let headroom_str = match hw.headroom {
+        HeadroomLevel::Adequate => "Headroom: adequate.",
+        HeadroomLevel::Limited => "Headroom: limited.",
+        HeadroomLevel::Insufficient => "Headroom: INSUFFICIENT -- defer heavy tasks.",
+    };
     format!(
-        "CPU {:.0}%, die {}{} RAM {:.1}/{:.0}GB ({} pressure).{}",
-        hw.cpu_usage_pct, temp_str, throttle, hw.ram_used_gb, hw.ram_total_gb, pressure, disk_str
+        "CPU {:.0}%, die {}{} RAM {:.1}/{:.0}GB ({} pressure).{} {}",
+        hw.cpu_usage_pct, temp_str, throttle, hw.ram_used_gb, hw.ram_total_gb, pressure, disk_str,
+        headroom_str
     )
 }
 
@@ -274,6 +317,50 @@ fn trend_narrative(trend: &TrendData, range: &str) -> String {
         range,
         trend.total_snapshots
     )
+}
+
+fn session_health_narrative(health: &SessionHealth) -> String {
+    if health.snapshot_count == 0 {
+        return format!(
+            "No data since {}. Start axon and wait for snapshots.",
+            health.since.format("%H:%M")
+        );
+    }
+
+    let impact_str = match health.worst_impact_level {
+        ImpactLevel::Healthy => "healthy",
+        ImpactLevel::Degrading => "degrading",
+        ImpactLevel::Strained => "strained",
+        ImpactLevel::Critical => "CRITICAL",
+    };
+
+    let mut parts = vec![
+        format!(
+            "Since {}: {} snapshots, worst impact: {}",
+            health.since.format("%H:%M"),
+            health.snapshot_count,
+            impact_str
+        ),
+        format!(
+            "CPU avg {:.0}% (peak {:.0}%), RAM avg {:.1}GB (peak {:.1}GB)",
+            health.avg_cpu_pct, health.peak_cpu_pct, health.avg_ram_gb, health.peak_ram_gb
+        ),
+    ];
+
+    if health.alert_count > 0 {
+        parts.push(format!("{} alerts fired", health.alert_count));
+    }
+    if health.throttle_event_count > 0 {
+        parts.push(format!(
+            "{} throttle events",
+            health.throttle_event_count
+        ));
+    }
+    if let Some(t) = health.peak_temp_celsius {
+        parts.push(format!("peak temp {:.0}C", t));
+    }
+
+    parts.join(". ") + "."
 }
 
 // ── Alert Notification Sender ─────────────────────────────────────────────────
