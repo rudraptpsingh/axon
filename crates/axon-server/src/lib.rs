@@ -242,6 +242,10 @@ pub fn blame_narrative_pub(blame: &ProcessBlame) -> String {
     blame_narrative(blame)
 }
 
+pub fn session_health_narrative_pub(health: &SessionHealth) -> String {
+    session_health_narrative(health)
+}
+
 fn hw_narrative(hw: &HwSnapshot) -> String {
     let temp_str = hw
         .die_temp_celsius
@@ -268,9 +272,16 @@ fn hw_narrative(hw: &HwSnapshot) -> String {
         String::new()
     };
     let headroom_str = match hw.headroom {
-        HeadroomLevel::Adequate => "Headroom: adequate.",
-        HeadroomLevel::Limited => "Headroom: limited.",
-        HeadroomLevel::Insufficient => "Headroom: INSUFFICIENT -- defer heavy tasks.",
+        HeadroomLevel::Adequate => "Headroom: adequate.".to_string(),
+        HeadroomLevel::Limited => {
+            format!("Headroom: limited ({}).", hw.headroom_reason)
+        }
+        HeadroomLevel::Insufficient => {
+            format!(
+                "Headroom: INSUFFICIENT ({}) -- defer heavy tasks.",
+                hw.headroom_reason
+            )
+        }
     };
     format!(
         "CPU {:.0}%, die {}{} RAM {:.1}/{:.0}GB ({} pressure).{} {}",
@@ -300,7 +311,13 @@ fn blame_narrative(blame: &ProcessBlame) -> String {
             "{} (PID {}, {:.0}% CPU, {:.1}GB RAM) — {} {}",
             p.cmd, p.pid, p.cpu_pct, p.ram_gb, blame.impact, blame.fix
         ),
-        _ => format!("{} {}", blame.impact, blame.fix),
+        _ => {
+            if blame.fix == blame.impact || blame.fix == "No action needed." {
+                blame.impact.clone()
+            } else {
+                format!("{} {}", blame.impact, blame.fix)
+            }
+        }
     }
 }
 

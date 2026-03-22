@@ -46,6 +46,8 @@ fn test_alert_detection_produces_rich_metadata() {
         ram_used_gb: 7.8,
         ram_total_gb: 8.0,
         cpu_pct: 92.0,
+        prev_cpu_saturated: false,
+        cpu_saturated: true,
         prev_disk_pressure: &DiskPressure::Normal,
         disk_pressure: &DiskPressure::Normal,
         disk_used_gb: 250.0,
@@ -60,8 +62,8 @@ fn test_alert_detection_produces_rich_metadata() {
     let alerts = detect_alerts(&ctx);
     assert_eq!(
         alerts.len(),
-        3,
-        "should produce 3 alerts: RAM + throttle + impact"
+        4,
+        "should produce 4 alerts: RAM + throttle + CPU saturation + impact"
     );
 
     // Check RAM pressure alert
@@ -846,6 +848,8 @@ async fn test_full_pipeline_detect_dispatch_webhook_persist() {
         ram_used_gb: 7.5,
         ram_total_gb: 8.0,
         cpu_pct: 95.0,
+        prev_cpu_saturated: false,
+        cpu_saturated: true,
         prev_disk_pressure: &DiskPressure::Normal,
         disk_pressure: &DiskPressure::Normal,
         disk_used_gb: 250.0,
@@ -858,7 +862,7 @@ async fn test_full_pipeline_detect_dispatch_webhook_persist() {
     };
 
     let alerts = detect_alerts(&ctx);
-    assert_eq!(alerts.len(), 3, "should detect 3 alerts");
+    assert_eq!(alerts.len(), 4, "should detect 4 alerts (RAM + throttle + CPU saturation + impact)");
 
     // Dispatch all alerts
     let mut mcp_count = 0;
@@ -868,14 +872,15 @@ async fn test_full_pipeline_detect_dispatch_webhook_persist() {
         }
     }
     assert_eq!(
-        mcp_count, 3,
-        "MCP channel has default wildcard, all 3 should pass"
+        mcp_count, 4,
+        "MCP channel has default wildcard, all 4 should pass"
     );
 
     // The webhook filter is: critical + (memory_pressure OR thermal_throttle)
     // Alert 1: Critical MemoryPressure → PASS
     // Alert 2: Critical ThermalThrottle → PASS
-    // Alert 3: Critical ImpactEscalation → BLOCKED (type not in filter)
+    // Alert 3: Warning CpuSaturation → BLOCKED (severity not critical)
+    // Alert 4: Critical ImpactEscalation → BLOCKED (type not in filter)
     // So webhook should receive exactly 2
 
     let mut webhook_payloads = Vec::new();
@@ -917,9 +922,9 @@ async fn test_full_pipeline_detect_dispatch_webhook_persist() {
         assert_eq!(p.culprit.as_ref().unwrap().pid, 9999);
     }
 
-    // All 3 alerts should be persisted to DB (persistence is unfiltered)
+    // All 4 alerts should be persisted to DB (persistence is unfiltered)
     let stored = persistence::query_alerts(&db, 3600, None, None, 100).unwrap();
-    assert_eq!(stored.len(), 3, "all 3 alerts should be in the database");
+    assert_eq!(stored.len(), 4, "all 4 alerts should be in the database");
 }
 
 // ── Stronger integration: HTTP shape, MCP flag, CLI merge ─────────────────────
@@ -1193,6 +1198,8 @@ fn base_ctx<'a>(
         ram_used_gb: 6.0,
         ram_total_gb: 8.0,
         cpu_pct: 50.0,
+        prev_cpu_saturated: false,
+        cpu_saturated: false,
         prev_disk_pressure: &DiskPressure::Normal,
         disk_pressure: &DiskPressure::Normal,
         disk_used_gb: 250.0,

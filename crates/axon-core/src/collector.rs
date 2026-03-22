@@ -147,6 +147,7 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle) {
     let mut prev_throttling = test_prev.throttling.unwrap_or(false);
     let mut prev_impact_level = test_prev.impact_level.unwrap_or(ImpactLevel::Healthy);
     let mut prev_disk_pressure = test_prev.disk_pressure.unwrap_or(DiskPressure::Normal);
+    let mut prev_cpu_saturated = false;
 
     let mut ticker = interval(Duration::from_secs(2));
 
@@ -237,19 +238,28 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle) {
 
             let (cpu_delta, ram_delta) = ewma.update(pid_u32, cpu_normalised, ram_gb);
 
-            // Compute blame score weighted by anomaly type
+            // Compute blame score weighted by anomaly type.
+            // When EWMA hasn't warmed up (delta = 0,0), fall back to raw
+            // values so that a process at 100% CPU always outranks one at 1%.
+            let using_raw = cpu_delta == 0.0 && ram_delta == 0.0;
+            let (eff_cpu, eff_ram) = if using_raw {
+                (cpu_normalised, ram_gb)
+            } else {
+                (cpu_delta, ram_delta)
+            };
+
             let blame_score = match anomaly_type {
                 AnomalyType::ThermalThrottle | AnomalyType::CpuSaturation => {
-                    0.6 * (cpu_delta / 100.0).min(1.0)
-                        + 0.4 * (ram_delta / ram_total_gb.max(1.0)).min(1.0)
+                    0.6 * (eff_cpu / 100.0).min(1.0)
+                        + 0.4 * (eff_ram / ram_total_gb.max(1.0)).min(1.0)
                 }
                 AnomalyType::MemoryPressure => {
-                    0.25 * (cpu_delta / 100.0).min(1.0)
-                        + 0.75 * (ram_delta / ram_total_gb.max(1.0)).min(1.0)
+                    0.25 * (eff_cpu / 100.0).min(1.0)
+                        + 0.75 * (eff_ram / ram_total_gb.max(1.0)).min(1.0)
                 }
                 _ => {
-                    0.5 * (cpu_delta / 100.0).min(1.0)
-                        + 0.5 * (ram_delta / ram_total_gb.max(1.0)).min(1.0)
+                    0.5 * (eff_cpu / 100.0).min(1.0)
+                        + 0.5 * (eff_ram / ram_total_gb.max(1.0)).min(1.0)
                 }
             };
 
@@ -291,10 +301,32 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle) {
         let culprit = process_infos.first().cloned();
         let groups = grouping::build_groups(&process_infos);
 
-        // Check for agent accumulation (overrides anomaly_type when detected)
+        // Check for agent accumulation — only override anomaly_type when the
+        // agent group is actually the top blame group (highest blame_score).
+        // Otherwise a 2-process claude sitting idle would mask a `yes` process
+        // burning 400% CPU.
         let (anomaly_type, culprit_group) =
             if let Some(agent_group) = impact::detect_agent_accumulation(&groups) {
-                (AnomalyType::AgentAccumulation, Some(agent_group.clone()))
+                let top_group = groups.first();
+                let agents_are_top = top_group
+                    .map(|g| g.name == agent_group.name)
+                    .unwrap_or(false);
+                // Also check raw CPU: if any non-agent group uses 3x+ more CPU
+                // than agents, they're the real hog (EWMA may have stabilized
+                // on the hog, flattening its blame_score).
+                let non_agent_cpu_hog = groups.iter().find(|g| {
+                    g.name != agent_group.name
+                        && g.total_cpu_pct > agent_group.total_cpu_pct * 3.0
+                });
+                if agents_are_top && non_agent_cpu_hog.is_none() {
+                    (AnomalyType::AgentAccumulation, Some(agent_group.clone()))
+                } else if let Some(hog) = non_agent_cpu_hog {
+                    (anomaly_type, Some(hog.clone()))
+                } else if !agents_are_top {
+                    (anomaly_type, top_group.cloned())
+                } else {
+                    (AnomalyType::AgentAccumulation, Some(agent_group.clone()))
+                }
             } else {
                 (anomaly_type, groups.first().cloned())
             };
@@ -341,6 +373,7 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle) {
 
         // Skip alerts during warm-up (first 3 ticks)
         let mut new_alerts = if tick_count > 3 {
+            let cpu_saturated = cpu_pct > crate::thresholds::ANOMALY_CPU_PCT;
             let ctx = AlertContext {
                 prev_ram_pressure: &prev_ram_pressure,
                 ram_pressure: &ram_pressure,
@@ -350,6 +383,8 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle) {
                 ram_used_gb,
                 ram_total_gb,
                 cpu_pct,
+                prev_cpu_saturated,
+                cpu_saturated,
                 prev_disk_pressure: &prev_disk_pressure,
                 disk_pressure: &disk_pressure,
                 disk_used_gb,
@@ -365,6 +400,7 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle) {
             prev_throttling = throttling;
             prev_impact_level = impact_level;
             prev_disk_pressure = disk_pressure;
+            prev_cpu_saturated = cpu_saturated;
             a
         } else {
             // Optional test hook: preserve injected previous-state values through warm-up so
@@ -374,6 +410,7 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle) {
                 prev_throttling = throttling;
                 prev_impact_level = impact_level;
                 prev_disk_pressure = disk_pressure;
+                prev_cpu_saturated = cpu_pct > crate::thresholds::ANOMALY_CPU_PCT;
             }
             Vec::new()
         };

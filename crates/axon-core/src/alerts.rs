@@ -10,6 +10,8 @@ pub struct AlertContext<'a> {
     pub ram_used_gb: f64,
     pub ram_total_gb: f64,
     pub cpu_pct: f64,
+    pub prev_cpu_saturated: bool,
+    pub cpu_saturated: bool,
     pub prev_disk_pressure: &'a DiskPressure,
     pub disk_pressure: &'a DiskPressure,
     pub disk_used_gb: f64,
@@ -130,6 +132,20 @@ pub fn detect_alerts(ctx: &AlertContext) -> Vec<Alert> {
         }
     }
 
+    // CPU saturation onset
+    if ctx.cpu_saturated && !ctx.prev_cpu_saturated {
+        alerts.push(Alert {
+            severity: AlertSeverity::Warning,
+            alert_type: AlertType::CpuSaturation,
+            message: format!(
+                "CPU saturated at {:.0}%. Builds and compilation will be slow.",
+                ctx.cpu_pct
+            ),
+            ts: now,
+            metadata: metadata.clone(),
+        });
+    }
+
     // Impact level escalation
     if ctx.impact_level != ctx.prev_impact_level {
         match (ctx.prev_impact_level, ctx.impact_level) {
@@ -183,6 +199,8 @@ mod tests {
             ram_used_gb: ram_used,
             ram_total_gb: ram_total,
             cpu_pct: 50.0,
+            prev_cpu_saturated: false,
+            cpu_saturated: false,
             prev_disk_pressure: &DiskPressure::Normal,
             disk_pressure: &DiskPressure::Normal,
             disk_used_gb: 250.0,
@@ -210,6 +228,8 @@ mod tests {
             ram_used_gb: 4.0,
             ram_total_gb: 8.0,
             cpu_pct: 30.0,
+            prev_cpu_saturated: false,
+            cpu_saturated: false,
             prev_disk_pressure: prev_disk,
             disk_pressure: disk,
             disk_used_gb: disk_used,
@@ -437,6 +457,8 @@ mod tests {
             ram_used_gb: 7.5,
             ram_total_gb: 8.0,
             cpu_pct: 85.0,
+            prev_cpu_saturated: false,
+            cpu_saturated: false,
             prev_disk_pressure: &DiskPressure::Normal,
             disk_pressure: &DiskPressure::Normal,
             disk_used_gb: 250.0,
@@ -457,6 +479,51 @@ mod tests {
     }
 
     #[test]
+    fn test_cpu_saturation_onset() {
+        let mut ctx = make_ctx(
+            &RamPressure::Normal,
+            &RamPressure::Normal,
+            false,
+            false,
+            None,
+            4.0,
+            8.0,
+            &ImpactLevel::Healthy,
+            &ImpactLevel::Healthy,
+            "",
+        );
+        ctx.cpu_pct = 95.0;
+        ctx.prev_cpu_saturated = false;
+        ctx.cpu_saturated = true;
+        let alerts = detect_alerts(&ctx);
+        assert_eq!(alerts.len(), 1);
+        assert_eq!(alerts[0].alert_type, AlertType::CpuSaturation);
+        assert_eq!(alerts[0].severity, AlertSeverity::Warning);
+        assert!(alerts[0].message.contains("95"));
+    }
+
+    #[test]
+    fn test_cpu_saturation_already_on_no_alert() {
+        let mut ctx = make_ctx(
+            &RamPressure::Normal,
+            &RamPressure::Normal,
+            false,
+            false,
+            None,
+            4.0,
+            8.0,
+            &ImpactLevel::Healthy,
+            &ImpactLevel::Healthy,
+            "",
+        );
+        ctx.cpu_pct = 95.0;
+        ctx.prev_cpu_saturated = true;
+        ctx.cpu_saturated = true;
+        let alerts = detect_alerts(&ctx);
+        assert!(alerts.is_empty());
+    }
+
+    #[test]
     fn test_alert_type_classification() {
         assert_eq!(format!("{}", AlertType::MemoryPressure), "memory_pressure");
         assert_eq!(
@@ -467,6 +534,7 @@ mod tests {
             format!("{}", AlertType::ImpactEscalation),
             "impact_escalation"
         );
+        assert_eq!(format!("{}", AlertType::CpuSaturation), "cpu_saturation");
         assert_eq!(format!("{}", AlertSeverity::Warning), "warning");
         assert_eq!(format!("{}", AlertSeverity::Critical), "critical");
     }
@@ -489,6 +557,8 @@ mod tests {
             ram_used_gb: 5.6,
             ram_total_gb: 8.0,
             cpu_pct: 44.0,
+            prev_cpu_saturated: false,
+            cpu_saturated: false,
             prev_disk_pressure: &DiskPressure::Normal,
             disk_pressure: &DiskPressure::Normal,
             disk_used_gb: 250.0,
