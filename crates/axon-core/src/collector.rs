@@ -133,6 +133,47 @@ pub type SharedState = Arc<Mutex<AppState>>;
 
 // ── Collector Loop ────────────────────────────────────────────────────────────
 
+/// Tracks per-metric debounce and flap detection state.
+struct DebounceState {
+    /// Consecutive ticks that RAM pressure has been at a different level from confirmed.
+    ram_ticks: u32,
+    /// Consecutive ticks that disk pressure has been at a different level from confirmed.
+    disk_ticks: u32,
+    /// Consecutive ticks that CPU saturation has been at a different boolean from confirmed.
+    cpu_sat_ticks: u32,
+    /// Consecutive ticks that throttling has been at a different boolean from confirmed.
+    throttle_ticks: u32,
+    /// Ring of recent RAM-pressure boundary crossings for flap detection (tick numbers).
+    ram_crossings: Vec<u32>,
+    /// Ring of recent disk-pressure boundary crossings for flap detection (tick numbers).
+    disk_crossings: Vec<u32>,
+}
+
+impl DebounceState {
+    fn new() -> Self {
+        Self {
+            ram_ticks: 0,
+            disk_ticks: 0,
+            cpu_sat_ticks: 0,
+            throttle_ticks: 0,
+            ram_crossings: Vec::new(),
+            disk_crossings: Vec::new(),
+        }
+    }
+
+    /// Record a boundary crossing at the given tick and prune old entries.
+    fn record_crossing(crossings: &mut Vec<u32>, tick: u32) {
+        crossings.push(tick);
+        let cutoff = tick.saturating_sub(crate::thresholds::FLAP_WINDOW_TICKS);
+        crossings.retain(|&t| t >= cutoff);
+    }
+
+    /// True if the number of crossings in the flap window exceeds the threshold.
+    fn is_flapping(crossings: &[u32]) -> bool {
+        crossings.len() as u32 > crate::thresholds::FLAP_THRESHOLD
+    }
+}
+
 /// Spawns a background Tokio task that refreshes hardware state every 2 seconds.
 /// Updates the SharedState in place for the MCP server to read.
 pub async fn start_collector(state: SharedState, db: persistence::DbHandle) {
@@ -142,12 +183,15 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle) {
     let mut above_threshold_count: u32 = 0;
     let test_prev = TestPrevStateConfig::from_env();
 
-    // Previous state for transition detection
+    // Confirmed (debounced) state for transition detection
     let mut prev_ram_pressure = test_prev.ram_pressure.unwrap_or(RamPressure::Normal);
     let mut prev_throttling = test_prev.throttling.unwrap_or(false);
     let mut prev_impact_level = test_prev.impact_level.unwrap_or(ImpactLevel::Healthy);
     let mut prev_disk_pressure = test_prev.disk_pressure.unwrap_or(DiskPressure::Normal);
     let mut prev_cpu_saturated = false;
+
+    // Debounce / flap detection
+    let mut debounce = DebounceState::new();
 
     let mut ticker = interval(Duration::from_secs(2));
 
@@ -171,10 +215,12 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle) {
             0.0
         };
 
-        let ram_pressure = crate::thresholds::ram_pressure_from_pct(ram_pct);
+        let ram_pressure =
+            crate::thresholds::ram_pressure_with_hysteresis(ram_pct, &prev_ram_pressure);
 
         let die_temp = temperature::read_cpu_temp();
-        let throttling = crate::thresholds::thermal_throttling_from_temp_c(die_temp);
+        let throttling =
+            crate::thresholds::thermal_throttling_with_hysteresis(die_temp, prev_throttling);
 
         // ── Disk space (root volume) ──────────────────────────────────────
         let disks = Disks::new_with_refreshed_list();
@@ -196,7 +242,8 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle) {
         } else {
             0.0
         };
-        let disk_pressure = crate::thresholds::disk_pressure_from_pct(disk_pct);
+        let disk_pressure =
+            crate::thresholds::disk_pressure_with_hysteresis(disk_pct, &prev_disk_pressure);
 
         let mut hw = HwSnapshot {
             die_temp_celsius: die_temp,
@@ -369,23 +416,106 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle) {
             guard.battery.clone()
         };
 
-        // ── Alert generation (state transitions) ─────────────────────────
+        // ── Alert generation (state transitions with debounce + flap detection) ─
 
         // Skip alerts during warm-up (first 3 ticks)
         let mut new_alerts = if tick_count > 3 {
             let cpu_saturated = cpu_pct > crate::thresholds::ANOMALY_CPU_PCT;
+            let debounce_n = crate::thresholds::ALERT_DEBOUNCE_TICKS;
+
+            // ── Debounce RAM pressure ───────────────────────────────
+            let debounced_ram = if ram_pressure != prev_ram_pressure {
+                debounce.ram_ticks += 1;
+                if debounce.ram_ticks >= debounce_n {
+                    DebounceState::record_crossing(&mut debounce.ram_crossings, tick_count);
+                    debounce.ram_ticks = 0;
+                    true // transition confirmed
+                } else {
+                    false
+                }
+            } else {
+                debounce.ram_ticks = 0;
+                false
+            };
+
+            // ── Debounce disk pressure ──────────────────────────────
+            let debounced_disk = if disk_pressure != prev_disk_pressure {
+                debounce.disk_ticks += 1;
+                if debounce.disk_ticks >= debounce_n {
+                    DebounceState::record_crossing(&mut debounce.disk_crossings, tick_count);
+                    debounce.disk_ticks = 0;
+                    true
+                } else {
+                    false
+                }
+            } else {
+                debounce.disk_ticks = 0;
+                false
+            };
+
+            // ── Debounce CPU saturation ─────────────────────────────
+            let debounced_cpu = if cpu_saturated != prev_cpu_saturated {
+                debounce.cpu_sat_ticks += 1;
+                debounce.cpu_sat_ticks >= debounce_n
+            } else {
+                debounce.cpu_sat_ticks = 0;
+                false
+            };
+            if debounced_cpu {
+                debounce.cpu_sat_ticks = 0;
+            }
+
+            // ── Debounce thermal throttling ─────────────────────────
+            let debounced_throttle = if throttling != prev_throttling {
+                debounce.throttle_ticks += 1;
+                debounce.throttle_ticks >= debounce_n
+            } else {
+                debounce.throttle_ticks = 0;
+                false
+            };
+            if debounced_throttle {
+                debounce.throttle_ticks = 0;
+            }
+
+            // Suppress alerts if flapping is detected
+            let ram_flapping = DebounceState::is_flapping(&debounce.ram_crossings);
+            let disk_flapping = DebounceState::is_flapping(&debounce.disk_crossings);
+
+            if ram_flapping {
+                debug!(tick = tick_count, "RAM pressure flapping detected, suppressing alerts");
+            }
+            if disk_flapping {
+                debug!(tick = tick_count, "Disk pressure flapping detected, suppressing alerts");
+            }
+
+            // Build alert context with debounced transitions.
+            // For debounced metrics: use prev as "before" and current as "after" only if
+            // the debounce confirmed. Otherwise, present them as unchanged to prevent alerts.
+            let alert_ram_prev = if debounced_ram && !ram_flapping {
+                &prev_ram_pressure
+            } else {
+                &ram_pressure // same as current → no transition detected
+            };
+            let alert_disk_prev = if debounced_disk && !disk_flapping {
+                &prev_disk_pressure
+            } else {
+                &disk_pressure
+            };
+            let alert_cpu_prev = if debounced_cpu { prev_cpu_saturated } else { cpu_saturated };
+            let alert_throttle_prev = if debounced_throttle { prev_throttling } else { throttling };
+
             let ctx = AlertContext {
-                prev_ram_pressure: &prev_ram_pressure,
+                prev_ram_pressure: alert_ram_prev,
                 ram_pressure: &ram_pressure,
-                prev_throttling,
+                prev_throttling: alert_throttle_prev,
                 throttling,
                 die_temp,
                 ram_used_gb,
                 ram_total_gb,
                 cpu_pct,
-                prev_cpu_saturated,
+                prev_cpu_saturated: alert_cpu_prev,
                 cpu_saturated,
-                prev_disk_pressure: &prev_disk_pressure,
+                prev_disk_pressure: alert_disk_prev,
                 disk_pressure: &disk_pressure,
                 disk_used_gb,
                 disk_total_gb,
@@ -396,11 +526,22 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle) {
                 culprit_group: blame.culprit_group.as_ref(),
             };
             let a = alerts::detect_alerts(&ctx);
-            prev_ram_pressure = ram_pressure;
-            prev_throttling = throttling;
+
+            // Update confirmed state only when debounce confirms the transition
+            if debounced_ram {
+                prev_ram_pressure = ram_pressure;
+            }
+            if debounced_throttle {
+                prev_throttling = throttling;
+            }
+            // Impact level is not debounced (already has its own persistence mechanism)
             prev_impact_level = impact_level;
-            prev_disk_pressure = disk_pressure;
-            prev_cpu_saturated = cpu_saturated;
+            if debounced_disk {
+                prev_disk_pressure = disk_pressure;
+            }
+            if debounced_cpu {
+                prev_cpu_saturated = cpu_saturated;
+            }
             a
         } else {
             // Optional test hook: preserve injected previous-state values through warm-up so
