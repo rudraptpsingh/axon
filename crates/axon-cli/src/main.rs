@@ -54,7 +54,7 @@ enum Commands {
 
     /// Call an MCP tool directly and print the JSON response (e.g. process_blame, hw_snapshot)
     Query {
-        /// Tool name: process_blame | hw_snapshot | battery_status | system_profile
+        /// Tool name: process_blame | hw_snapshot | battery_status | system_profile | session_health | gpu_snapshot | hardware_trend
         #[arg(value_name = "TOOL")]
         tool: String,
     },
@@ -334,8 +334,33 @@ async fn run_query(tool: &str) -> Result<()> {
                 let response = axon_core::types::McpResponse::success(health, narrative);
                 serde_json::to_string_pretty(&response)?
             }
+            "gpu_snapshot" => {
+                let gpu = guard.gpu.clone();
+                drop(guard);
+                match gpu {
+                    Some(g) => {
+                        let narrative = axon_server::gpu_narrative_pub(&g);
+                        let response = axon_core::types::McpResponse::success(g, narrative);
+                        serde_json::to_string_pretty(&response)?
+                    }
+                    None => r#"{"ok":false,"narrative":"GPU metrics unavailable."}"#.to_string(),
+                }
+            }
+            "hardware_trend" => {
+                drop(guard); // release lock before DB query
+                let db_path = axon_core::persistence::default_db_path()?;
+                let db = axon_core::persistence::open(db_path)?;
+                let range_secs = axon_core::persistence::parse_time_range("last_24h")
+                    .expect("default range is valid");
+                let bucket_secs = axon_core::persistence::parse_interval("15m")
+                    .expect("default interval is valid");
+                let trend = axon_core::persistence::query_trend(&db, range_secs, bucket_secs)?;
+                let narrative = axon_server::trend_narrative_pub(&trend, "last_24h");
+                let response = axon_core::types::McpResponse::success(trend, narrative);
+                serde_json::to_string_pretty(&response)?
+            }
             other => anyhow::bail!(
-                "Unknown tool '{}'. Supported: process_blame, hw_snapshot, battery_status, system_profile, session_health",
+                "Unknown tool '{}'. Supported: process_blame, hw_snapshot, battery_status, system_profile, session_health, gpu_snapshot, hardware_trend",
                 other
             ),
         }

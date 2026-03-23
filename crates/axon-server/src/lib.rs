@@ -246,6 +246,14 @@ pub fn session_health_narrative_pub(health: &SessionHealth) -> String {
     session_health_narrative(health)
 }
 
+pub fn gpu_narrative_pub(gpu: &GpuSnapshot) -> String {
+    gpu_narrative(gpu)
+}
+
+pub fn trend_narrative_pub(trend: &TrendData, range: &str) -> String {
+    trend_narrative(trend, range)
+}
+
 fn hw_narrative(hw: &HwSnapshot) -> String {
     let temp_str = hw
         .die_temp_celsius

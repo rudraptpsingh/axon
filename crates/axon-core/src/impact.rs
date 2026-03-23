@@ -189,6 +189,9 @@ pub fn read_io_wait_pct() -> f64 {
 }
 
 #[cfg(target_os = "linux")]
+static PREV_IO_STAT: std::sync::Mutex<Option<(u64, u64)>> = std::sync::Mutex::new(None);
+
+#[cfg(target_os = "linux")]
 fn read_io_wait_linux() -> f64 {
     // Parse first "cpu " line from /proc/stat:
     // cpu  user nice system idle iowait irq softirq steal guest guest_nice
@@ -210,10 +213,23 @@ fn read_io_wait_linux() -> f64 {
     }
     let total: u64 = fields.iter().sum();
     let iowait = fields[4]; // 5th field (0-indexed: 4)
-    if total == 0 {
-        return 0.0;
-    }
-    (iowait as f64 / total as f64) * 100.0
+
+    // Delta-based: compare against previous reading to get instantaneous rate
+    let mut prev = PREV_IO_STAT.lock().unwrap();
+    let result = match *prev {
+        Some((prev_iowait, prev_total)) => {
+            let d_total = total.saturating_sub(prev_total);
+            let d_iowait = iowait.saturating_sub(prev_iowait);
+            if d_total == 0 {
+                0.0
+            } else {
+                (d_iowait as f64 / d_total as f64) * 100.0
+            }
+        }
+        None => 0.0, // first call, no delta available
+    };
+    *prev = Some((iowait, total));
+    result
 }
 
 /// Map anomaly score → ImpactLevel with persistence check.

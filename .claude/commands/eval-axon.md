@@ -24,6 +24,9 @@ For each iteration:
 - Gradual leak: `python3 -c "import time; x=[]; [x.append(bytearray(50_000_000)) or time.sleep(2) for _ in range(20)]"` — watch for slow drift detection over ~40s
 - Flap test: rapidly alternate stress and idle (5s on, 5s off, repeat 6 times) — verify no alert storm, hysteresis prevents flapping
 - Recovery test: start stress, wait 10s, kill stress, verify recovery/resolved alert fires within 10s
+- Alert verification: after stress, run `axon query session_health` -- check alert_count > 0; if 0, alerts are not firing when they should
+- Serve lifecycle: start `axon serve` via MCP stdio, run all 7 tools, verify serve process stays alive throughout, verify clean exit on stdin close
+- GPU snapshot: run `axon query gpu_snapshot` -- verify ok=true and detected field is present
 
 ### Step 3: Evaluate every signal axon gives you
 For each axon response, ask:
@@ -39,6 +42,11 @@ For each axon response, ask:
 - Is **I/O saturation** reflected in impact scoring during builds or dd stress?
 - Are **hysteresis bands** preventing flap alerts near thresholds?
 - Does the **slow EWMA** catch gradual memory leaks that fast EWMA misses?
+- Does **gpu_snapshot** return valid JSON? (ok=true, detected field present)
+- Does **hardware_trend** show stress period in buckets? (CPU spike visible)
+- Is the **serve process** still alive after all queries? (no crash mid-session)
+- Do all **7 MCP tools** respond to tools/list? (hw_snapshot, process_blame, battery_status, system_profile, hardware_trend, session_health, gpu_snapshot)
+- Are **alerts firing** during stress? (session_health.alert_count > 0 after CPU saturation)
 - Does the **ring buffer** provide faster trend queries than SQLite?
 
 ### Step 4: Fix what's broken
@@ -73,6 +81,9 @@ After each fix, note:
 14. I/O-blind impact scoring (cargo build saturating disk but impact=Healthy)
 15. Threshold rigidity (55% RAM warn on a 128GB machine is too aggressive)
 16. Spike false alarms (momentary 1-tick spike triggers full alert chain)
+17. Missing CLI query tools (gpu_snapshot/hardware_trend not dispatched by `axon query`)
+18. Cumulative iowait (lifetime average instead of instantaneous delta between ticks)
+19. Serve lifecycle issues (process dies mid-session, no clean exit on stdin close)
 
 ## Constraints
 - Do NOT increase `axon diagnose` duration — it must stay at 4 seconds
