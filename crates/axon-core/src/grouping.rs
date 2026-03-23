@@ -123,9 +123,7 @@ mod tests {
             "Cursor"
         );
         assert_eq!(
-            normalize_process_name(
-                "/Applications/Cursor.app/Contents/MacOS/Cursor"
-            ),
+            normalize_process_name("/Applications/Cursor.app/Contents/MacOS/Cursor"),
             "Cursor"
         );
         assert_eq!(
@@ -164,28 +162,90 @@ mod tests {
     #[test]
     fn test_build_groups_cursor_all_helpers_merge() {
         let processes = vec![
-            ProcessInfo { pid: 100, cmd: "Cursor".into(), cpu_pct: 5.0, ram_gb: 0.5, blame_score: 0.1 },
-            ProcessInfo { pid: 101, cmd: "Cursor Helper (Renderer)".into(), cpu_pct: 10.0, ram_gb: 0.3, blame_score: 0.2 },
-            ProcessInfo { pid: 102, cmd: "Cursor Helper (Renderer)".into(), cpu_pct: 8.0, ram_gb: 0.2, blame_score: 0.15 },
-            ProcessInfo { pid: 103, cmd: "Cursor Helper (GPU)".into(), cpu_pct: 3.0, ram_gb: 0.1, blame_score: 0.05 },
-            ProcessInfo { pid: 104, cmd: "Cursor Helper (Plugin)".into(), cpu_pct: 2.0, ram_gb: 0.1, blame_score: 0.03 },
-            ProcessInfo { pid: 105, cmd: "Cursor Helper (Plugin)".into(), cpu_pct: 1.0, ram_gb: 0.05, blame_score: 0.02 },
-            ProcessInfo { pid: 106, cmd: "Cursor Helper".into(), cpu_pct: 1.0, ram_gb: 0.05, blame_score: 0.01 },
+            ProcessInfo {
+                pid: 100,
+                cmd: "Cursor".into(),
+                cpu_pct: 5.0,
+                ram_gb: 0.5,
+                blame_score: 0.1,
+            },
+            ProcessInfo {
+                pid: 101,
+                cmd: "Cursor Helper (Renderer)".into(),
+                cpu_pct: 10.0,
+                ram_gb: 0.3,
+                blame_score: 0.2,
+            },
+            ProcessInfo {
+                pid: 102,
+                cmd: "Cursor Helper (Renderer)".into(),
+                cpu_pct: 8.0,
+                ram_gb: 0.2,
+                blame_score: 0.15,
+            },
+            ProcessInfo {
+                pid: 103,
+                cmd: "Cursor Helper (GPU)".into(),
+                cpu_pct: 3.0,
+                ram_gb: 0.1,
+                blame_score: 0.05,
+            },
+            ProcessInfo {
+                pid: 104,
+                cmd: "Cursor Helper (Plugin)".into(),
+                cpu_pct: 2.0,
+                ram_gb: 0.1,
+                blame_score: 0.03,
+            },
+            ProcessInfo {
+                pid: 105,
+                cmd: "Cursor Helper (Plugin)".into(),
+                cpu_pct: 1.0,
+                ram_gb: 0.05,
+                blame_score: 0.02,
+            },
+            ProcessInfo {
+                pid: 106,
+                cmd: "Cursor Helper".into(),
+                cpu_pct: 1.0,
+                ram_gb: 0.05,
+                blame_score: 0.01,
+            },
             // Node spawned by Cursor -- should be separate group
-            ProcessInfo { pid: 200, cmd: "node".into(), cpu_pct: 5.0, ram_gb: 0.2, blame_score: 0.1 },
+            ProcessInfo {
+                pid: 200,
+                cmd: "node".into(),
+                cpu_pct: 5.0,
+                ram_gb: 0.2,
+                blame_score: 0.1,
+            },
         ];
         let groups = build_groups(&processes);
 
         // Should have exactly 2 groups: "Cursor" and "node"
-        assert_eq!(groups.len(), 2, "groups: {:?}", groups.iter().map(|g| &g.name).collect::<Vec<_>>());
+        assert_eq!(
+            groups.len(),
+            2,
+            "groups: {:?}",
+            groups.iter().map(|g| &g.name).collect::<Vec<_>>()
+        );
 
-        let cursor_group = groups.iter().find(|g| g.name == "Cursor").expect("Cursor group missing");
-        assert_eq!(cursor_group.process_count, 7, "Cursor should have 7 processes");
+        let cursor_group = groups
+            .iter()
+            .find(|g| g.name == "Cursor")
+            .expect("Cursor group missing");
+        assert_eq!(
+            cursor_group.process_count, 7,
+            "Cursor should have 7 processes"
+        );
         assert_eq!(cursor_group.pids.len(), 7);
         assert!((cursor_group.total_cpu_pct - 30.0).abs() < 0.01);
         assert!((cursor_group.total_ram_gb - 1.3).abs() < 0.01);
 
-        let node_group = groups.iter().find(|g| g.name == "node").expect("node group missing");
+        let node_group = groups
+            .iter()
+            .find(|g| g.name == "node")
+            .expect("node group missing");
         assert_eq!(node_group.process_count, 1);
     }
 

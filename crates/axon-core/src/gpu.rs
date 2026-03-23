@@ -182,7 +182,7 @@ fn extract_int(text: &str, key: &str) -> Option<i64> {
     // Try quoted key: `"key"=VALUE` or `"key" = VALUE`
     let quoted_pattern = format!("\"{}\"", key);
     if let Some(pos) = text.find(&quoted_pattern) {
-        let after = text[pos + quoted_pattern.len()..].trim_start_matches(|c: char| c == ' ');
+        let after = text[pos + quoted_pattern.len()..].trim_start_matches(' ');
         if let Some(rest) = after.strip_prefix('=') {
             let rest = rest.trim_start();
             return parse_leading_int(rest);
@@ -218,9 +218,8 @@ fn parse_leading_int(s: &str) -> Option<i64> {
 fn extract_quoted_string(text: &str, key: &str) -> Option<String> {
     let pattern = format!("\"{}\"", key);
     let pos = text.find(&pattern)?;
-    let after = text[pos + pattern.len()..].trim_start_matches(|c: char| c == ' ' || c == '=');
-    if after.starts_with('"') {
-        let inner = &after[1..];
+    let after = text[pos + pattern.len()..].trim_start_matches([' ', '=']);
+    if let Some(inner) = after.strip_prefix('"') {
         let end = inner.find('"')?;
         Some(inner[..end].to_string())
     } else {

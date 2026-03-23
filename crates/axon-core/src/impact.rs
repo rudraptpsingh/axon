@@ -425,7 +425,10 @@ pub fn suggest_fix(
     let name_hint = group
         .map(|g| {
             if g.process_count > 1 {
-                format!("{} ({} processes, {:.1}GB, {:.0}% CPU)", g.name, g.process_count, g.total_ram_gb, g.total_cpu_pct)
+                format!(
+                    "{} ({} processes, {:.1}GB, {:.0}% CPU)",
+                    g.name, g.process_count, g.total_ram_gb, g.total_cpu_pct
+                )
             } else {
                 g.name.clone()
             }
@@ -980,7 +983,11 @@ mod tests {
         assert!(fix.contains("9999"), "fix: {}", fix);
         assert!(fix.contains("8888"), "fix: {}", fix);
         // Should NOT include self PID
-        assert!(!fix.contains(&self_pid.to_string()), "fix should not contain self PID: {}", fix);
+        assert!(
+            !fix.contains(&self_pid.to_string()),
+            "fix should not contain self PID: {}",
+            fix
+        );
     }
 
     #[test]

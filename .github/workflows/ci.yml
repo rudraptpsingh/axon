@@ -35,7 +35,7 @@ jobs:
       - name: Unit + fast integration tests
         run: cargo test --workspace
       - name: Hardware integration tests (ignored, excluding live stress tests)
-        run: cargo test --workspace -- --ignored --skip live_serve --skip agent_ --skip perf_scenario
+        run: cargo test --workspace -- --ignored --skip live_serve --skip agent_ --skip perf_scenario --skip live_gpu_snapshot
 
   clippy:
     name: Clippy

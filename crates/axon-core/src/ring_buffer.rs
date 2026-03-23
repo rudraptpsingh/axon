@@ -62,10 +62,7 @@ impl SnapshotRing {
         }
         let latest_ts = buf.back().unwrap().ts;
         let cutoff = latest_ts - chrono::Duration::seconds(seconds as i64);
-        buf.iter()
-            .filter(|s| s.ts >= cutoff)
-            .cloned()
-            .collect()
+        buf.iter().filter(|s| s.ts >= cutoff).cloned().collect()
     }
 
     /// Compute summary statistics over the last N seconds.
@@ -211,10 +208,26 @@ mod tests {
         let ring = SnapshotRing::new();
         let now = Utc::now();
         // Push snapshots at -60s, -30s, -10s, -2s
-        ring.push(make_snapshot_at(10.0, 1.0, now - chrono::Duration::seconds(60)));
-        ring.push(make_snapshot_at(20.0, 2.0, now - chrono::Duration::seconds(30)));
-        ring.push(make_snapshot_at(30.0, 3.0, now - chrono::Duration::seconds(10)));
-        ring.push(make_snapshot_at(40.0, 4.0, now - chrono::Duration::seconds(2)));
+        ring.push(make_snapshot_at(
+            10.0,
+            1.0,
+            now - chrono::Duration::seconds(60),
+        ));
+        ring.push(make_snapshot_at(
+            20.0,
+            2.0,
+            now - chrono::Duration::seconds(30),
+        ));
+        ring.push(make_snapshot_at(
+            30.0,
+            3.0,
+            now - chrono::Duration::seconds(10),
+        ));
+        ring.push(make_snapshot_at(
+            40.0,
+            4.0,
+            now - chrono::Duration::seconds(2),
+        ));
 
         let recent = ring.recent(15); // last 15 seconds
         assert_eq!(recent.len(), 2); // -10s and -2s

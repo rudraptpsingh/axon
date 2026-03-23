@@ -130,7 +130,10 @@ impl ProcessBaseline {
         if self.samples < WARMUP_FAST {
             return (0.0, 0.0);
         }
-        ((cpu - self.fast.cpu).max(0.0), (ram - self.fast.ram).max(0.0))
+        (
+            (cpu - self.fast.cpu).max(0.0),
+            (ram - self.fast.ram).max(0.0),
+        )
     }
 
     /// Returns slow-timescale deltas (drift detection). Positive only.
@@ -139,7 +142,10 @@ impl ProcessBaseline {
         if self.samples < WARMUP_SLOW {
             return (0.0, 0.0);
         }
-        ((cpu - self.slow.cpu).max(0.0), (ram - self.slow.ram).max(0.0))
+        (
+            (cpu - self.slow.cpu).max(0.0),
+            (ram - self.slow.ram).max(0.0),
+        )
     }
 
     /// True when the slow baseline diverges significantly from the fast baseline,
@@ -294,7 +300,10 @@ mod tests {
         store.update(1, 10.0, 1.0);
         let baseline = store.get(1).unwrap();
         let (cpu_d, ram_d) = baseline.fast_delta(90.0, 5.0);
-        assert!(cpu_d > 50.0, "fast delta should detect spike after 2 samples");
+        assert!(
+            cpu_d > 50.0,
+            "fast delta should detect spike after 2 samples"
+        );
         assert!(ram_d > 3.0, "fast RAM delta should detect spike");
     }
 
@@ -314,7 +323,10 @@ mod tests {
         }
         let baseline = store.get(1).unwrap();
         let (cpu_d, _) = baseline.slow_delta(90.0, 5.0);
-        assert!(cpu_d > 50.0, "slow delta should detect spike after 8 samples");
+        assert!(
+            cpu_d > 50.0,
+            "slow delta should detect spike after 8 samples"
+        );
     }
 
     #[test]
@@ -358,8 +370,16 @@ mod tests {
         }
         let baseline = store.get(1).unwrap();
         let (cpu_d, ram_d) = baseline.signed_delta(20.0, 1.0);
-        assert!(cpu_d < -30.0, "signed CPU delta should be negative: {}", cpu_d);
-        assert!(ram_d < -2.0, "signed RAM delta should be negative: {}", ram_d);
+        assert!(
+            cpu_d < -30.0,
+            "signed CPU delta should be negative: {}",
+            cpu_d
+        );
+        assert!(
+            ram_d < -2.0,
+            "signed RAM delta should be negative: {}",
+            ram_d
+        );
     }
 
     #[test]
@@ -377,7 +397,10 @@ mod tests {
             store.update(1, 5.0, 4.0);
         }
         let baseline = store.get(1).unwrap();
-        assert!(baseline.is_stalled(), "should be flagged as stalled after 5+ below-baseline ticks");
+        assert!(
+            baseline.is_stalled(),
+            "should be flagged as stalled after 5+ below-baseline ticks"
+        );
     }
 
     #[test]

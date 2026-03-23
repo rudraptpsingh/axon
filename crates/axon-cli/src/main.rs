@@ -180,10 +180,8 @@ async fn run_diagnose() -> Result<()> {
     // the score, bypassing the persistence check. The persistence check exists
     // to avoid false positives in a long-running session, but diagnose only runs
     // for 4 seconds — if the score is high, the system IS under stress right now.
-    let instant_level =
-        axon_core::impact::score_to_level(blame.anomaly_score, u32::MAX);
-    let impact_msg =
-        axon_core::impact::impact_message(&instant_level, &blame.anomaly_type);
+    let instant_level = axon_core::impact::score_to_level(blame.anomaly_score, u32::MAX);
+    let impact_msg = axon_core::impact::impact_message(&instant_level, &blame.anomaly_type);
 
     println!();
     // Prefer group display when multiple processes are grouped

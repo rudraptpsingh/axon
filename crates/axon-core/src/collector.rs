@@ -387,8 +387,7 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
                 // than agents, they're the real hog (EWMA may have stabilized
                 // on the hog, flattening its blame_score).
                 let non_agent_cpu_hog = groups.iter().find(|g| {
-                    g.name != agent_group.name
-                        && g.total_cpu_pct > agent_group.total_cpu_pct * 3.0
+                    g.name != agent_group.name && g.total_cpu_pct > agent_group.total_cpu_pct * 3.0
                 });
                 if agents_are_top && non_agent_cpu_hog.is_none() {
                     (AnomalyType::AgentAccumulation, Some(agent_group.clone()))
@@ -508,10 +507,16 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
             let disk_flapping = DebounceState::is_flapping(&debounce.disk_crossings);
 
             if ram_flapping {
-                debug!(tick = tick_count, "RAM pressure flapping detected, suppressing alerts");
+                debug!(
+                    tick = tick_count,
+                    "RAM pressure flapping detected, suppressing alerts"
+                );
             }
             if disk_flapping {
-                debug!(tick = tick_count, "Disk pressure flapping detected, suppressing alerts");
+                debug!(
+                    tick = tick_count,
+                    "Disk pressure flapping detected, suppressing alerts"
+                );
             }
 
             // Build alert context with debounced transitions.
@@ -527,8 +532,16 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
             } else {
                 &disk_pressure
             };
-            let alert_cpu_prev = if debounced_cpu { prev_cpu_saturated } else { cpu_saturated };
-            let alert_throttle_prev = if debounced_throttle { prev_throttling } else { throttling };
+            let alert_cpu_prev = if debounced_cpu {
+                prev_cpu_saturated
+            } else {
+                cpu_saturated
+            };
+            let alert_throttle_prev = if debounced_throttle {
+                prev_throttling
+            } else {
+                throttling
+            };
 
             let ctx = AlertContext {
                 prev_ram_pressure: alert_ram_prev,
@@ -790,7 +803,9 @@ pub fn build_system_profile() -> SystemProfile {
             let pid_u32 = usize::from(**pid) as u32;
             pid_u32 != self_pid
                 && p.name().to_string_lossy().to_lowercase().contains("axon")
-                && p.cmd().iter().any(|arg| arg.to_string_lossy().contains("serve"))
+                && p.cmd()
+                    .iter()
+                    .any(|arg| arg.to_string_lossy().contains("serve"))
         })
         .map(|(pid, _)| usize::from(*pid) as u32)
         .collect();

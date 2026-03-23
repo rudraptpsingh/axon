@@ -871,7 +871,11 @@ async fn test_full_pipeline_detect_dispatch_webhook_persist() {
     };
 
     let alerts = detect_alerts(&ctx);
-    assert_eq!(alerts.len(), 4, "should detect 4 alerts (RAM + throttle + CPU saturation + impact)");
+    assert_eq!(
+        alerts.len(),
+        4,
+        "should detect 4 alerts (RAM + throttle + CPU saturation + impact)"
+    );
 
     // Dispatch all alerts
     let mut mcp_count = 0;
@@ -1279,7 +1283,11 @@ fn test_alert_state_transitions_ram_tiers() {
         &ImpactLevel::Healthy,
     );
     let alerts = detect_alerts(&ctx);
-    assert_eq!(alerts.len(), 1, "recovery to Normal produces resolved alert");
+    assert_eq!(
+        alerts.len(),
+        1,
+        "recovery to Normal produces resolved alert"
+    );
     assert_eq!(alerts[0].severity, AlertSeverity::Resolved);
     assert_eq!(alerts[0].alert_type, AlertType::MemoryPressure);
 
@@ -1370,7 +1378,11 @@ fn test_alert_state_transitions_impact_escalation() {
         &ImpactLevel::Healthy,
     );
     let alerts = detect_alerts(&ctx);
-    assert_eq!(alerts.len(), 1, "recovery to Healthy produces resolved alert");
+    assert_eq!(
+        alerts.len(),
+        1,
+        "recovery to Healthy produces resolved alert"
+    );
     assert_eq!(alerts[0].severity, AlertSeverity::Resolved);
     assert_eq!(alerts[0].alert_type, AlertType::ImpactEscalation);
 }
@@ -1471,7 +1483,8 @@ fn test_alert_full_collector_cycle_mock() {
     // RAM: Critical→Warn = resolved, Impact: Strained→Degrading = resolved
     assert_eq!(a.len(), 2, "tick 9: recovery produces resolved alerts");
     assert!(
-        a.iter().all(|alert| alert.severity == AlertSeverity::Resolved),
+        a.iter()
+            .all(|alert| alert.severity == AlertSeverity::Resolved),
         "tick 9: all recovery alerts must be Resolved"
     );
     total_alerts += a.len();
@@ -1487,7 +1500,11 @@ fn test_alert_full_collector_cycle_mock() {
     );
     let a = detect_alerts(&ctx);
     // RAM: Warn→Normal = resolved (no impact alert: Degrading→Healthy is not an escalation recovery)
-    assert_eq!(a.len(), 1, "tick 10: final recovery produces resolved alert");
+    assert_eq!(
+        a.len(),
+        1,
+        "tick 10: final recovery produces resolved alert"
+    );
     assert_eq!(a[0].severity, AlertSeverity::Resolved);
     total_alerts += a.len();
 
