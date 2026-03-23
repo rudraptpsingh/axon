@@ -904,6 +904,63 @@ mod tests {
         assert!(msg.contains("agent"), "msg: {}", msg);
     }
 
+    /// Cursor-specific fix across all anomaly types: always suggests Cmd+W.
+    #[test]
+    fn test_suggest_fix_cursor_all_anomaly_types() {
+        let culprit = ProcessInfo {
+            pid: 55600,
+            cmd: "Cursor Helper (Renderer)".to_string(),
+            cpu_pct: 80.0,
+            ram_gb: 0.5,
+            blame_score: 0.4,
+        };
+        let group = ProcessGroup {
+            name: "Cursor".to_string(),
+            process_count: 1,
+            total_cpu_pct: 80.0,
+            total_ram_gb: 0.5,
+            blame_score: 0.4,
+            top_pid: 55600,
+            pids: vec![55600],
+        };
+
+        for anomaly in &[
+            AnomalyType::CpuSaturation,
+            AnomalyType::MemoryPressure,
+            AnomalyType::ThermalThrottle,
+            AnomalyType::GeneralSlowdown,
+            AnomalyType::None,
+        ] {
+            let fix = suggest_fix(Some(&culprit), Some(&group), anomaly);
+            assert!(
+                fix.contains("Cursor") && fix.contains("Cmd+W"),
+                "anomaly {:?}: fix should mention Cursor and Cmd+W, got: {}",
+                anomaly,
+                fix
+            );
+        }
+    }
+
+    /// Cursor with many helpers should still get the Cursor-specific fix, not generic.
+    #[test]
+    fn test_suggest_fix_cursor_multi_process_group() {
+        let group = ProcessGroup {
+            name: "Cursor".to_string(),
+            process_count: 20,
+            total_cpu_pct: 50.0,
+            total_ram_gb: 2.0,
+            blame_score: 0.3,
+            top_pid: 55600,
+            pids: (100..120).collect(),
+        };
+        let fix = suggest_fix(None, Some(&group), &AnomalyType::MemoryPressure);
+        assert!(
+            fix.contains("Cursor") && fix.contains("Cmd+W"),
+            "20-process Cursor group should get Cursor-specific fix, got: {}",
+            fix
+        );
+    }
+
     #[test]
     fn test_suggest_fix_axon_multiple_instances() {
         let self_pid = std::process::id();

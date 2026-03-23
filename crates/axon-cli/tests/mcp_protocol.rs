@@ -86,7 +86,7 @@ fn test_tools_list() {
     let tools = resp["result"]["tools"]
         .as_array()
         .expect("tools should be an array");
-    assert_eq!(tools.len(), 6, "expected 6 tools, got {}", tools.len());
+    assert_eq!(tools.len(), 7, "expected 7 tools, got {}", tools.len());
 
     let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
     assert!(names.contains(&"hw_snapshot"));
