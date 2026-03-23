@@ -121,6 +121,7 @@ impl AppState {
                 impact: "System is healthy. No action needed.".to_string(),
                 fix: "No action needed.".to_string(),
                 ts: now,
+                stale_axon_pids: Vec::new(),
             },
             battery: None,
             profile,
@@ -198,6 +199,8 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
 
     // Rate limiting: last tick each alert type fired
     let mut last_alert_tick: HashMap<AlertType, u32> = HashMap::new();
+
+    let self_pid = std::process::id();
 
     let mut ticker = interval(Duration::from_secs(2));
 
@@ -329,6 +332,21 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
             }
         }
 
+        // Detect sibling axon serve instances (not self) before excluding self
+        let stale_axon_pids: Vec<u32> = process_infos
+            .iter()
+            .filter(|p| {
+                p.pid != self_pid
+                    && grouping::normalize_process_name(&p.cmd)
+                        .to_lowercase()
+                        .contains("axon")
+            })
+            .map(|p| p.pid)
+            .collect();
+
+        // Exclude self from blame — we don't want axon blaming itself
+        process_infos.retain(|p| p.pid != self_pid);
+
         // Sort by blame score descending — top culprit is first
         process_infos.sort_by(|a, b| {
             b.blame_score
@@ -397,6 +415,7 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
             impact: impact_msg,
             fix,
             ts: chrono::Utc::now(),
+            stale_axon_pids,
         };
 
         debug!(
@@ -762,6 +781,35 @@ pub fn build_system_profile() -> SystemProfile {
 
     let (model_id, chip) = detect_platform_info(&sys);
 
+    // Detect sibling axon serve instances at startup
+    let self_pid = std::process::id();
+    let axon_siblings: Vec<u32> = sys
+        .processes()
+        .iter()
+        .filter(|(pid, p)| {
+            let pid_u32 = usize::from(**pid) as u32;
+            pid_u32 != self_pid
+                && p.name().to_string_lossy().to_lowercase().contains("axon")
+                && p.cmd().iter().any(|arg| arg.to_string_lossy().contains("serve"))
+        })
+        .map(|(pid, _)| usize::from(*pid) as u32)
+        .collect();
+
+    let mut startup_warnings = Vec::new();
+    if !axon_siblings.is_empty() {
+        let pid_list = axon_siblings
+            .iter()
+            .map(|p| p.to_string())
+            .collect::<Vec<_>>()
+            .join(" ");
+        startup_warnings.push(format!(
+            "{} stale axon serve instance(s) detected (PIDs: {}). Kill them: kill {}",
+            axon_siblings.len(),
+            pid_list,
+            pid_list,
+        ));
+    }
+
     SystemProfile {
         model_id,
         chip,
@@ -769,6 +817,7 @@ pub fn build_system_profile() -> SystemProfile {
         ram_total_gb,
         os_version,
         axon_version: VERSION.to_string(),
+        startup_warnings,
     }
 }
 

@@ -114,7 +114,7 @@ impl AxonServer {
             let guard = self.state.lock().unwrap();
             guard.profile.clone()
         };
-        let narrative = format!(
+        let mut narrative = format!(
             "{} ({}) — {} cores, {:.0}GB RAM, {}.",
             profile.model_id,
             profile.chip,
@@ -122,6 +122,9 @@ impl AxonServer {
             profile.ram_total_gb,
             profile.os_version
         );
+        for w in &profile.startup_warnings {
+            narrative.push_str(&format!(" [WARN] {}", w));
+        }
         let response = McpResponse::success(profile, narrative);
         serde_json::to_string(&response)
             .unwrap_or_else(|e| format!("{{\"ok\":false,\"error\":\"{}\"}}", e))
@@ -306,14 +309,39 @@ fn hw_narrative(hw: &HwSnapshot) -> String {
 
 fn blame_narrative(blame: &ProcessBlame) -> String {
     // Prefer group narrative when multiple processes are grouped
-    if let Some(g) = &blame.culprit_group {
+    let mut base = if let Some(g) = &blame.culprit_group {
         if blame.anomaly_score > 0.1 && g.process_count > 1 {
-            return format!(
+            format!(
                 "{} ({:.1}GB across {} processes, {:.0}% CPU) — {} {}",
                 g.name, g.total_ram_gb, g.process_count, g.total_cpu_pct, blame.impact, blame.fix
-            );
+            )
+        } else {
+            blame_narrative_fallback(blame)
         }
+    } else {
+        blame_narrative_fallback(blame)
+    };
+
+    // Append stale-instance warning if siblings detected
+    if !blame.stale_axon_pids.is_empty() {
+        let pids = blame
+            .stale_axon_pids
+            .iter()
+            .map(|p| p.to_string())
+            .collect::<Vec<_>>()
+            .join(" ");
+        base.push_str(&format!(
+            " [WARN] {} stale axon instance(s) running (PIDs: {}). Kill: kill {}",
+            blame.stale_axon_pids.len(),
+            pids,
+            pids
+        ));
     }
+
+    base
+}
+
+fn blame_narrative_fallback(blame: &ProcessBlame) -> String {
     match &blame.culprit {
         Some(p) if blame.anomaly_score > 0.1 => format!(
             "{} (PID {}, {:.0}% CPU, {:.1}GB RAM) — {} {}",

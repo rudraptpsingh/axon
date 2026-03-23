@@ -236,6 +236,27 @@ async fn run_diagnose() -> Result<()> {
         println!("      Battery: {}", b.narrative);
     }
 
+    // Show stale axon instance warnings
+    if !blame.stale_axon_pids.is_empty() {
+        let pids = blame
+            .stale_axon_pids
+            .iter()
+            .map(|p| p.to_string())
+            .collect::<Vec<_>>()
+            .join(" ");
+        println!(
+            "[warn] {} stale axon instance(s) detected (PIDs: {}). Kill: kill {}",
+            blame.stale_axon_pids.len(),
+            pids,
+            pids
+        );
+    }
+
+    // Show startup warnings (e.g. stale siblings detected at profile build time)
+    for w in &guard.profile.startup_warnings {
+        println!("[warn] {}", w);
+    }
+
     // Show recent-recovery notice so agents don't pile on work immediately
     if !recent_alerts.is_empty() && !showed_warning {
         let critical_count = recent_alerts
@@ -316,10 +337,13 @@ async fn run_query(tool: &str) -> Result<()> {
             },
             "system_profile" => {
                 let p = &guard.profile;
-                let narrative = format!(
+                let mut narrative = format!(
                     "{} ({}) — {} cores, {:.0}GB RAM, {}.",
                     p.model_id, p.chip, p.core_count, p.ram_total_gb, p.os_version
                 );
+                for w in &p.startup_warnings {
+                    narrative.push_str(&format!(" [WARN] {}", w));
+                }
                 let response = axon_core::types::McpResponse::success(p.clone(), narrative);
                 serde_json::to_string_pretty(&response)?
             }

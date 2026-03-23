@@ -612,6 +612,7 @@ mod tests {
             impact: String::new(),
             fix: String::new(),
             ts: Utc::now(),
+            stale_axon_pids: Vec::new(),
         }
     }
 

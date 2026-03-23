@@ -10,7 +10,8 @@ Phases:
   5. Session Health – query session_health for the entire window
   6. Hardware Trend – query hardware_trend for last_1h
   7. GPU Snapshot   – query gpu_snapshot
-  8. Serve + Alert  – verify serve lifecycle and alert triggers
+  8. Webhook Alerts – validate real webhook payloads delivered during eval
+  9. Serve lifecycle – verify process stayed alive, exits cleanly
 
 Usage: python3 scripts/eval_cpu_stress.py ./target/release/axon
 """
@@ -21,13 +22,71 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 import time
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any
 
 AXON = sys.argv[1] if len(sys.argv) > 1 else "./target/release/axon"
-NUM_STRESS_WORKERS = 4  # Match core count
+# Scale workers to push system CPU above the 72% saturation alert threshold.
+# Each `yes` process saturates one core; we need ~75% of cores busy to
+# reliably cross the threshold even with background load fluctuation.
+_cpu_count = os.cpu_count() or 4
+NUM_STRESS_WORKERS = max(4, int(_cpu_count * 0.80))
 MSG_ID = 0
 
+
+# ── Embedded webhook receiver ──────────────────────────────────────
+
+class WebhookCollector:
+    """Thread-safe collector that runs an HTTP server to receive alert webhooks."""
+
+    def __init__(self) -> None:
+        self._alerts: list[dict[str, Any]] = []
+        self._lock = threading.Lock()
+        self._server: HTTPServer | None = None
+        self._thread: threading.Thread | None = None
+        self.port: int = 0
+        self.url: str = ""
+
+    def start(self) -> str:
+        """Start the receiver on a random port. Returns the webhook URL."""
+        collector = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self) -> None:
+                length = int(self.headers.get("Content-Length", 0))
+                raw = self.rfile.read(length)
+                try:
+                    obj = json.loads(raw)
+                    with collector._lock:
+                        collector._alerts.append(obj)
+                except json.JSONDecodeError:
+                    pass
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"ok\n")
+
+            def log_message(self, *args: object) -> None:
+                pass  # suppress HTTP logs
+
+        self._server = HTTPServer(("127.0.0.1", 0), Handler)
+        self.port = self._server.server_address[1]
+        self.url = f"http://127.0.0.1:{self.port}/alerts"
+        self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
+        self._thread.start()
+        return self.url
+
+    def stop(self) -> None:
+        if self._server:
+            self._server.shutdown()
+
+    def get_alerts(self) -> list[dict[str, Any]]:
+        with self._lock:
+            return list(self._alerts)
+
+
+# ── MCP JSON-RPC helpers ───────────────────────────────────────────
 
 def next_id() -> int:
     global MSG_ID
@@ -93,11 +152,21 @@ def initialize_mcp(proc: subprocess.Popen) -> None:
         "params": {
             "protocolVersion": "2025-06-18",
             "capabilities": {},
-            "clientInfo": {"name": "cpu-stress-eval", "version": "0.1.0"},
+            "clientInfo": {"name": "cpu-stress-eval", "version": "0.2.0"},
         },
     })
     send(proc, {"jsonrpc": "2.0", "method": "notifications/initialized"})
     read_responses(proc, mid)
+
+
+# ── Display helpers ────────────────────────────────────────────────
+
+HEADROOM_ORDER = {"adequate": 2, "limited": 1, "insufficient": 0}
+
+
+def headroom_ge(a: str, b: str) -> bool:
+    """Return True if headroom level `a` is at least as good as `b`."""
+    return HEADROOM_ORDER.get(a, -1) >= HEADROOM_ORDER.get(b, -1)
 
 
 def print_snapshot(label: str, data: dict) -> None:
@@ -108,6 +177,10 @@ def print_snapshot(label: str, data: dict) -> None:
     print(f"  CPU:       {d.get('cpu_usage_pct', 'N/A'):.1f}%")
     print(f"  RAM:       {d.get('ram_used_gb', 0):.2f} / {d.get('ram_total_gb', 0):.1f} GB")
     print(f"  RAM press: {d.get('ram_pressure', 'N/A')}")
+    disk_used = d.get('disk_used_gb', 0)
+    disk_total = d.get('disk_total_gb', 0)
+    disk_press = d.get('disk_pressure', 'N/A')
+    print(f"  Disk:      {disk_used:.1f} / {disk_total:.1f} GB ({disk_press})")
     temp = d.get('die_temp_celsius')
     print(f"  Die temp:  {f'{temp:.1f}C' if temp else 'N/A'}")
     print(f"  Throttle:  {d.get('throttling', False)}")
@@ -150,17 +223,27 @@ def print_session_health(label: str, data: dict) -> None:
     print(f"  Narrative:     {data.get('narrative', '')}")
 
 
+# ── Main ───────────────────────────────────────────────────────────
+
 def main() -> int:
     print("[info] CPU Stress Evaluation for Axon")
     print(f"[info] Binary: {AXON}")
     print(f"[info] Stress workers: {NUM_STRESS_WORKERS}")
 
+    # ── Start webhook receiver ──
+    webhook = WebhookCollector()
+    webhook_url = webhook.start()
+    print(f"[ok] Webhook receiver listening on {webhook_url}")
+
     # Record session start for session_health query
     session_start = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
-    # Start axon serve
+    # Start axon serve with webhook pointed at our receiver (accept all alerts)
     proc = subprocess.Popen(
-        [AXON, "serve"],
+        [
+            AXON, "serve",
+            "--alert-webhook", f"eval={webhook_url}",
+        ],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -186,14 +269,40 @@ def main() -> int:
             return 1
         print(f"[ok] All 7 MCP tools registered")
 
-        # ── Phase 1: Baseline (let collector warm up 3+ ticks = 6s, wait 12s) ──
-        print("\n[phase 1] Baseline -- waiting 12s for EWMA warmup...")
-        time.sleep(12)
+        # ── Phase 0: Stale Instance Detection ──
+        print("\n[phase 0] Stale instance detection...")
+        profile = call_tool(proc, "system_profile")
+        profile_d = profile.get("data", {})
+        startup_warnings = profile_d.get("startup_warnings", [])
+        print(f"  Startup warnings: {len(startup_warnings)}")
+        for w in startup_warnings:
+            print(f"    [WARN] {w}")
+        print(f"  Narrative: {profile.get('narrative', '')}")
+
+        # Wait for collector warm-up before checking blame
+        print("[info] Waiting 8s for collector warm-up before blame check...")
+        time.sleep(8)
+
+        initial_blame = call_tool(proc, "process_blame")
+        initial_blame_d = initial_blame.get("data", {})
+        stale_axon_pids = initial_blame_d.get("stale_axon_pids", [])
+        print(f"  Stale axon PIDs: {stale_axon_pids}")
+        if stale_axon_pids:
+            print(f"  Fix: {initial_blame_d.get('fix', '')}")
+            print(f"  Narrative: {initial_blame.get('narrative', '')}")
+
+        # ── Phase 1: Baseline (collector already warmed 8s from phase 0) ──
+        print("\n[phase 1] Baseline -- waiting 4s for remaining EWMA warmup...")
+        time.sleep(4)
 
         baseline_hw = call_tool(proc, "hw_snapshot")
         baseline_blame = call_tool(proc, "process_blame")
         print_snapshot("BASELINE hw_snapshot", baseline_hw)
         print_blame("BASELINE process_blame", baseline_blame)
+
+        # Snapshot webhook count after baseline (before stress)
+        pre_stress_webhook_count = len(webhook.get_alerts())
+        print(f"[info] Webhooks received during baseline: {pre_stress_webhook_count}")
 
         # ── Phase 2: CPU Stress ──
         print(f"\n[phase 2] Starting {NUM_STRESS_WORKERS} CPU stress workers (yes > /dev/null)...")
@@ -266,8 +375,84 @@ def main() -> int:
         print(f"  Utilization:  {gpu_d.get('utilization_pct', 'N/A')}")
         print(f"  Narrative:    {gpu.get('narrative', '')}")
 
-        # ── Phase 7: Serve Lifecycle Check ──
-        print(f"\n[phase 7] Checking serve process lifecycle...")
+        # ── Phase 7: Webhook Alert Validation ──
+        print(f"\n[phase 7] Validating webhook alert payloads...")
+        all_webhooks = webhook.get_alerts()
+        print(f"  Total webhooks received: {len(all_webhooks)}")
+
+        # Print each webhook payload summary
+        VALID_SEVERITIES = {"warning", "critical", "resolved"}
+        VALID_TYPES = {"memory_pressure", "thermal_throttle", "disk_pressure",
+                       "cpu_saturation", "impact_escalation"}
+        REQUIRED_PAYLOAD_KEYS = {"alert_type", "severity", "resolved", "timestamp",
+                                 "message", "metrics"}
+
+        malformed_webhooks: list[str] = []
+        severity_set: set[str] = set()
+        type_set: set[str] = set()
+        has_metrics = True
+        has_culprit_in_any = False
+
+        for i, wh in enumerate(all_webhooks):
+            # Structural validation
+            missing_keys = REQUIRED_PAYLOAD_KEYS - set(wh.keys())
+            if missing_keys:
+                malformed_webhooks.append(f"webhook[{i}]: missing keys {missing_keys}")
+                continue
+
+            sev = wh.get("severity", "")
+            atype = wh.get("alert_type", "")
+            severity_set.add(sev)
+            type_set.add(atype)
+
+            if sev not in VALID_SEVERITIES:
+                malformed_webhooks.append(f"webhook[{i}]: invalid severity '{sev}'")
+            if atype not in VALID_TYPES:
+                malformed_webhooks.append(f"webhook[{i}]: invalid alert_type '{atype}'")
+
+            # resolved field must match severity
+            resolved_flag = wh.get("resolved", None)
+            if resolved_flag != (sev == "resolved"):
+                malformed_webhooks.append(
+                    f"webhook[{i}]: resolved={resolved_flag} but severity='{sev}'")
+
+            # metrics must have numeric fields
+            metrics = wh.get("metrics", {})
+            if not isinstance(metrics, dict):
+                has_metrics = False
+            else:
+                # At least one metric should be non-null
+                metric_vals = [metrics.get(k) for k in ("ram_pct", "cpu_pct", "temp_c", "disk_pct")]
+                if all(v is None for v in metric_vals):
+                    has_metrics = False
+
+            if wh.get("culprit") is not None:
+                has_culprit_in_any = True
+
+            # Print compact summary for first 10 and last 2
+            if i < 10 or i >= len(all_webhooks) - 2:
+                ts_short = wh.get("timestamp", "?")[-12:]
+                culprit_name = wh.get("culprit", {}).get("name", "-") if wh.get("culprit") else "-"
+                cpu = metrics.get("cpu_pct")
+                ram = metrics.get("ram_pct")
+                print(f"    [{i:2d}] {sev:<9s} {atype:<20s} cpu={cpu or '-':>5} ram={ram or '-':>5} culprit={culprit_name} @{ts_short}")
+            elif i == 10:
+                print(f"    ... ({len(all_webhooks) - 12} more) ...")
+
+        if malformed_webhooks:
+            print(f"\n  MALFORMED WEBHOOKS:")
+            for m in malformed_webhooks[:10]:
+                print(f"    [warn] {m}")
+
+        print(f"\n  Webhook summary:")
+        print(f"    Severities seen:   {sorted(severity_set) if severity_set else 'none'}")
+        print(f"    Alert types seen:  {sorted(type_set) if type_set else 'none'}")
+        print(f"    Has metrics:       {has_metrics}")
+        print(f"    Has culprit:       {has_culprit_in_any}")
+        print(f"    Malformed count:   {len(malformed_webhooks)}")
+
+        # ── Phase 8: Serve Lifecycle Check ──
+        print(f"\n[phase 8] Checking serve process lifecycle...")
         serve_alive = proc.poll() is None
         print(f"  Serve alive:  {serve_alive} (pid={proc.pid})")
 
@@ -276,16 +461,20 @@ def main() -> int:
         print("  EVALUATION SUMMARY")
         print(f"{'=' * 60}")
 
-        b_cpu = baseline_hw.get("data", {}).get("cpu_usage_pct", 0)
-        s_cpu = stress_hw_2.get("data", {}).get("cpu_usage_pct", 0)
-        r_cpu = recovery_hw.get("data", {}).get("cpu_usage_pct", 0)
+        b_data = baseline_hw.get("data", {})
+        s_data = stress_hw_2.get("data", {})
+        r_data = recovery_hw.get("data", {})
+
+        b_cpu = b_data.get("cpu_usage_pct", 0)
+        s_cpu = s_data.get("cpu_usage_pct", 0)
+        r_cpu = r_data.get("cpu_usage_pct", 0)
         print(f"  CPU baseline:  {b_cpu:.1f}%")
         print(f"  CPU peak:      {s_cpu:.1f}%")
         print(f"  CPU recovery:  {r_cpu:.1f}%")
 
-        b_headroom = baseline_hw.get("data", {}).get("headroom", "?")
-        s_headroom = stress_hw_2.get("data", {}).get("headroom", "?")
-        r_headroom = recovery_hw.get("data", {}).get("headroom", "?")
+        b_headroom = b_data.get("headroom", "?")
+        s_headroom = s_data.get("headroom", "?")
+        r_headroom = r_data.get("headroom", "?")
         print(f"  Headroom:      {b_headroom} -> {s_headroom} -> {r_headroom}")
 
         b_anomaly = baseline_blame.get("data", {}).get("anomaly_type", "?")
@@ -299,42 +488,116 @@ def main() -> int:
         print(f"  Impact:        {b_impact} -> {s_impact} -> {r_impact}")
 
         s_alert_count = session.get("data", {}).get("alert_count", 0)
-        print(f"  Alerts fired:  {s_alert_count}")
+        print(f"  Alerts (DB):   {s_alert_count}")
+        print(f"  Webhooks:      {len(all_webhooks)}")
 
-        # Validate expectations
-        checks = []
+        # ── Pre-existing pressure ──
+        b_ram_press = b_data.get("ram_pressure", "normal")
+        b_disk_press = b_data.get("disk_pressure", "normal")
+        b_throttle = b_data.get("throttling", False)
+        pre_existing: list[str] = []
+        if b_ram_press != "normal":
+            ram_pct = b_data.get("ram_used_gb", 0) / max(b_data.get("ram_total_gb", 1), 0.01) * 100
+            pre_existing.append(f"RAM {b_ram_press} ({ram_pct:.0f}%)")
+        if b_disk_press != "normal":
+            disk_pct = b_data.get("disk_used_gb", 0) / max(b_data.get("disk_total_gb", 1), 0.01) * 100
+            pre_existing.append(f"Disk {b_disk_press} ({disk_pct:.0f}%)")
+        if b_throttle:
+            pre_existing.append(f"Throttling ({b_data.get('die_temp_celsius', '?')}C)")
+
+        if pre_existing:
+            print(f"\n  PRE-EXISTING PRESSURE:")
+            for p in pre_existing:
+                print(f"    [info] {p}")
+            print(f"    [info] Baseline headroom already {b_headroom} before CPU stress")
+        else:
+            print(f"\n  PRE-EXISTING PRESSURE: none")
+
+        # ── Checks ──
+        checks: list[tuple[str, bool, str]] = []
+
+        # -- CPU signal checks --
         detected_stress = s_cpu > b_cpu + 20
-        checks.append(("CPU spike detected", detected_stress, f"{b_cpu:.0f}% -> {s_cpu:.0f}%"))
+        checks.append(("CPU spike detected", detected_stress,
+                        f"{b_cpu:.0f}% -> {s_cpu:.0f}%"))
 
         recovered = r_cpu < s_cpu - 10
-        checks.append(("CPU recovered after kill", recovered, f"{s_cpu:.0f}% -> {r_cpu:.0f}%"))
+        checks.append(("CPU recovered after kill", recovered,
+                        f"{s_cpu:.0f}% -> {r_cpu:.0f}%"))
 
+        # -- Headroom checks --
         headroom_degraded = s_headroom == "insufficient"
-        checks.append(("Headroom insufficient during stress", headroom_degraded, f"{s_headroom}"))
+        checks.append(("Headroom insufficient during stress", headroom_degraded,
+                        f"{s_headroom}"))
 
-        # Headroom may stay "limited" after recovery if disk pressure persists — that's correct
-        headroom_improved = r_headroom in ("adequate", "limited")
-        checks.append(("Headroom improved after recovery", headroom_improved, f"{r_headroom}"))
+        headroom_recovered = headroom_ge(r_headroom, b_headroom)
+        checks.append(("Headroom recovered to baseline level", headroom_recovered,
+                        f"{s_headroom} -> {r_headroom} (baseline was {b_headroom})"))
 
+        # -- Anomaly checks --
         anomaly_detected = s_anomaly != "none"
-        checks.append(("Anomaly detected during stress", anomaly_detected, f"{s_anomaly}"))
+        checks.append(("Anomaly detected during stress", anomaly_detected,
+                        f"{s_anomaly}"))
 
-        # After recovery, anomaly may be "none" or "agent_accumulation" (if agents
-        # are the top group at idle). Both are acceptable — the key is that
-        # cpu_saturation is no longer reported.
         anomaly_cleared = r_anomaly != "cpu_saturation"
-        checks.append(("CPU saturation cleared after recovery", anomaly_cleared, f"{r_anomaly}"))
+        checks.append(("CPU saturation cleared after recovery", anomaly_cleared,
+                        f"{r_anomaly}"))
 
-        # Alert verification: alerts should fire during stress
+        # -- Alert DB checks --
         alerts_fired = s_alert_count > 0
-        checks.append(("Alerts fired during stress", alerts_fired, f"alert_count={s_alert_count}"))
+        checks.append(("Alerts persisted to DB", alerts_fired,
+                        f"alert_count={s_alert_count}"))
 
-        # GPU snapshot returns valid JSON (ok=true even if no GPU detected)
+        # -- Webhook delivery checks --
+        webhook_received = len(all_webhooks) > 0
+        checks.append(("Webhook alerts delivered", webhook_received,
+                        f"received={len(all_webhooks)}"))
+
+        webhook_well_formed = len(malformed_webhooks) == 0
+        checks.append(("Webhook payloads well-formed", webhook_well_formed,
+                        f"malformed={len(malformed_webhooks)}"))
+
+        webhook_has_metrics = has_metrics
+        checks.append(("Webhook payloads include metrics", webhook_has_metrics,
+                        f"has_metrics={has_metrics}"))
+
+        # Webhook severities should be valid edge-trigger values
+        webhook_valid_severities = severity_set <= VALID_SEVERITIES
+        checks.append(("Webhook severities are valid", webhook_valid_severities,
+                        f"seen={sorted(severity_set)}"))
+
+        # Webhook alert_types should be valid
+        webhook_valid_types = type_set <= VALID_TYPES
+        checks.append(("Webhook alert_types are valid", webhook_valid_types,
+                        f"seen={sorted(type_set)}"))
+
+        # -- Stale instance detection checks --
+        profile_has_warnings_field = isinstance(startup_warnings, list)
+        checks.append(("system_profile has startup_warnings field",
+                        profile_has_warnings_field,
+                        f"type={type(startup_warnings).__name__}"))
+
+        blame_has_stale_field = isinstance(stale_axon_pids, list)
+        checks.append(("process_blame has stale_axon_pids field",
+                        blame_has_stale_field,
+                        f"type={type(stale_axon_pids).__name__}"))
+
+        # Self-PID exclusion: the eval's own axon serve should NOT appear
+        # in the blame culprit (since we exclude self_pid)
+        blame_culprit_pid = initial_blame_d.get("culprit", {}).get("pid") if initial_blame_d.get("culprit") else None
+        self_not_in_blame = blame_culprit_pid != proc.pid
+        checks.append(("Self PID excluded from blame",
+                        self_not_in_blame,
+                        f"culprit_pid={blame_culprit_pid}, serve_pid={proc.pid}"))
+
+        # -- GPU check --
         gpu_valid = gpu.get("ok") is True
-        checks.append(("GPU snapshot returns valid JSON", gpu_valid, f"ok={gpu.get('ok')}"))
+        checks.append(("GPU snapshot returns valid JSON", gpu_valid,
+                        f"ok={gpu.get('ok')}"))
 
-        # Serve process stayed alive throughout entire evaluation
-        checks.append(("Serve process alive throughout eval", serve_alive, f"pid={proc.pid}"))
+        # -- Serve lifecycle --
+        checks.append(("Serve process alive throughout eval", serve_alive,
+                        f"pid={proc.pid}"))
 
         print(f"\n  CHECKS:")
         all_pass = True
@@ -355,6 +618,8 @@ def main() -> int:
                 p.wait()
             except Exception:
                 pass
+        # Stop webhook receiver
+        webhook.stop()
         # Test clean exit: close stdin and wait for graceful shutdown
         if proc.stdin and not proc.stdin.closed:
             proc.stdin.close()
@@ -368,3 +633,7 @@ def main() -> int:
                 proc.wait(timeout=3)
             except subprocess.TimeoutExpired:
                 proc.kill()
+
+
+if __name__ == "__main__":
+    sys.exit(main())

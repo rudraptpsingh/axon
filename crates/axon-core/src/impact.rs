@@ -360,6 +360,32 @@ pub fn suggest_fix(
             n if n.contains("ollama") || n.contains("llama") || n.contains("mlx") => {
                 Some("Pause local inference before running heavy tasks: ollama stop".to_string())
             }
+            n if n.contains("axon") => {
+                if let Some(g) = group {
+                    if g.process_count > 1 {
+                        let self_pid = std::process::id();
+                        let stale_pids: Vec<String> = g
+                            .pids
+                            .iter()
+                            .filter(|&&pid| pid != self_pid)
+                            .map(|p| p.to_string())
+                            .collect();
+                        if !stale_pids.is_empty() {
+                            Some(format!(
+                                "{} stale axon instance(s) from old sessions. Kill them: kill {}",
+                                stale_pids.len(),
+                                stale_pids.join(" ")
+                            ))
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            }
             n if n.contains("windsurf") => {
                 Some("Restart Windsurf or close unused editor tabs.".to_string())
             }
@@ -876,5 +902,43 @@ mod tests {
         let msg = impact_message(&ImpactLevel::Healthy, &AnomalyType::AgentAccumulation);
         assert!(!msg.contains("No action needed"), "msg: {}", msg);
         assert!(msg.contains("agent"), "msg: {}", msg);
+    }
+
+    #[test]
+    fn test_suggest_fix_axon_multiple_instances() {
+        let self_pid = std::process::id();
+        let group = ProcessGroup {
+            name: "axon".to_string(),
+            process_count: 3,
+            total_cpu_pct: 250.0,
+            total_ram_gb: 0.1,
+            blame_score: 0.5,
+            top_pid: 9999,
+            pids: vec![self_pid, 9999, 8888],
+        };
+        let fix = suggest_fix(None, Some(&group), &AnomalyType::CpuSaturation);
+        // Should mention stale instances and include kill command with non-self PIDs
+        assert!(fix.contains("stale axon"), "fix: {}", fix);
+        assert!(fix.contains("kill"), "fix: {}", fix);
+        assert!(fix.contains("9999"), "fix: {}", fix);
+        assert!(fix.contains("8888"), "fix: {}", fix);
+        // Should NOT include self PID
+        assert!(!fix.contains(&self_pid.to_string()), "fix should not contain self PID: {}", fix);
+    }
+
+    #[test]
+    fn test_suggest_fix_axon_single_instance_falls_through() {
+        let group = ProcessGroup {
+            name: "axon".to_string(),
+            process_count: 1,
+            total_cpu_pct: 50.0,
+            total_ram_gb: 0.05,
+            blame_score: 0.3,
+            top_pid: std::process::id(),
+            pids: vec![std::process::id()],
+        };
+        let fix = suggest_fix(None, Some(&group), &AnomalyType::CpuSaturation);
+        // Single instance should fall through to generic fix, not mention stale
+        assert!(!fix.contains("stale axon"), "fix: {}", fix);
     }
 }

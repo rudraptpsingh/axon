@@ -99,6 +99,9 @@ pub struct ProcessBlame {
     pub impact: String,
     pub fix: String,
     pub ts: DateTime<Utc>,
+    /// PIDs of other `axon serve` instances (not self). Empty when no siblings.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stale_axon_pids: Vec<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -117,6 +120,9 @@ pub struct SystemProfile {
     pub ram_total_gb: f64,
     pub os_version: String,
     pub axon_version: String,
+    /// Warnings detected at startup (e.g. stale axon instances).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub startup_warnings: Vec<String>,
 }
 
 // ── Alerts ───────────────────────────────────────────────────────────────────
