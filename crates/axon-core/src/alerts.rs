@@ -44,7 +44,7 @@ fn build_metadata(ctx: &AlertContext) -> AlertMetadata {
     }
 }
 
-/// Detect alerts from state transitions.
+/// Detect alerts from state transitions (both escalation and recovery).
 /// Returns a list of alerts triggered by the transition from previous to current state.
 pub fn detect_alerts(ctx: &AlertContext) -> Vec<Alert> {
     let mut alerts = Vec::new();
@@ -78,17 +78,54 @@ pub fn detect_alerts(ctx: &AlertContext) -> Vec<Alert> {
                     metadata: metadata.clone(),
                 });
             }
+            // Recovery: downward transitions
+            (RamPressure::Critical, RamPressure::Warn) => {
+                alerts.push(Alert {
+                    severity: AlertSeverity::Resolved,
+                    alert_type: AlertType::MemoryPressure,
+                    message: format!(
+                        "RAM pressure eased from critical to warn ({:.1}/{:.0}GB used).",
+                        ctx.ram_used_gb, ctx.ram_total_gb
+                    ),
+                    ts: now,
+                    metadata: metadata.clone(),
+                });
+            }
+            (RamPressure::Warn, RamPressure::Normal)
+            | (RamPressure::Critical, RamPressure::Normal) => {
+                alerts.push(Alert {
+                    severity: AlertSeverity::Resolved,
+                    alert_type: AlertType::MemoryPressure,
+                    message: format!(
+                        "RAM pressure resolved ({:.1}/{:.0}GB used).",
+                        ctx.ram_used_gb, ctx.ram_total_gb
+                    ),
+                    ts: now,
+                    metadata: metadata.clone(),
+                });
+            }
             _ => {}
         }
     }
 
-    // Thermal throttling onset
+    // Thermal throttling onset and recovery
     if ctx.throttling && !ctx.prev_throttling {
         alerts.push(Alert {
             severity: AlertSeverity::Critical,
             alert_type: AlertType::ThermalThrottle,
             message: format!(
-                "CPU thermal throttling active ({:.0}°C). Performance is degraded.",
+                "CPU thermal throttling active ({:.0}C). Performance is degraded.",
+                ctx.die_temp.unwrap_or(0.0)
+            ),
+            ts: now,
+            metadata: metadata.clone(),
+        });
+    } else if !ctx.throttling && ctx.prev_throttling {
+        alerts.push(Alert {
+            severity: AlertSeverity::Resolved,
+            alert_type: AlertType::ThermalThrottle,
+            message: format!(
+                "Thermal throttling resolved ({:.0}C).",
                 ctx.die_temp.unwrap_or(0.0)
             ),
             ts: now,
@@ -96,7 +133,7 @@ pub fn detect_alerts(ctx: &AlertContext) -> Vec<Alert> {
         });
     }
 
-    // Disk pressure escalation
+    // Disk pressure escalation and recovery
     if ctx.disk_pressure != ctx.prev_disk_pressure {
         let disk_pct = if ctx.disk_total_gb > 0.0 {
             ctx.disk_used_gb / ctx.disk_total_gb * 100.0
@@ -128,11 +165,37 @@ pub fn detect_alerts(ctx: &AlertContext) -> Vec<Alert> {
                     metadata: metadata.clone(),
                 });
             }
+            // Recovery
+            (DiskPressure::Critical, DiskPressure::Warn) => {
+                alerts.push(Alert {
+                    severity: AlertSeverity::Resolved,
+                    alert_type: AlertType::DiskPressure,
+                    message: format!(
+                        "Disk pressure eased from critical to warn ({:.0}/{:.0}GB, {:.0}% used).",
+                        ctx.disk_used_gb, ctx.disk_total_gb, disk_pct
+                    ),
+                    ts: now,
+                    metadata: metadata.clone(),
+                });
+            }
+            (DiskPressure::Warn, DiskPressure::Normal)
+            | (DiskPressure::Critical, DiskPressure::Normal) => {
+                alerts.push(Alert {
+                    severity: AlertSeverity::Resolved,
+                    alert_type: AlertType::DiskPressure,
+                    message: format!(
+                        "Disk pressure resolved ({:.0}/{:.0}GB, {:.0}% used).",
+                        ctx.disk_used_gb, ctx.disk_total_gb, disk_pct
+                    ),
+                    ts: now,
+                    metadata: metadata.clone(),
+                });
+            }
             _ => {}
         }
     }
 
-    // CPU saturation onset
+    // CPU saturation onset and recovery
     if ctx.cpu_saturated && !ctx.prev_cpu_saturated {
         alerts.push(Alert {
             severity: AlertSeverity::Warning,
@@ -144,11 +207,38 @@ pub fn detect_alerts(ctx: &AlertContext) -> Vec<Alert> {
             ts: now,
             metadata: metadata.clone(),
         });
+    } else if !ctx.cpu_saturated && ctx.prev_cpu_saturated {
+        alerts.push(Alert {
+            severity: AlertSeverity::Resolved,
+            alert_type: AlertType::CpuSaturation,
+            message: format!("CPU saturation resolved ({:.0}%).", ctx.cpu_pct),
+            ts: now,
+            metadata: metadata.clone(),
+        });
     }
 
-    // Impact level escalation
+    // Impact level escalation and recovery
     if ctx.impact_level != ctx.prev_impact_level {
         match (ctx.prev_impact_level, ctx.impact_level) {
+            // Recovery: downward transitions from Strained/Critical (must be checked first)
+            (ImpactLevel::Critical, ImpactLevel::Strained)
+            | (ImpactLevel::Critical, ImpactLevel::Degrading)
+            | (ImpactLevel::Critical, ImpactLevel::Healthy)
+            | (ImpactLevel::Strained, ImpactLevel::Degrading)
+            | (ImpactLevel::Strained, ImpactLevel::Healthy) => {
+                alerts.push(Alert {
+                    severity: AlertSeverity::Resolved,
+                    alert_type: AlertType::ImpactEscalation,
+                    message: format!(
+                        "Impact level improved from {} to {}.",
+                        fmt_impact(ctx.prev_impact_level),
+                        fmt_impact(ctx.impact_level)
+                    ),
+                    ts: now,
+                    metadata,
+                });
+            }
+            // Escalation to Strained (from Healthy or Degrading)
             (_, ImpactLevel::Strained) => {
                 alerts.push(Alert {
                     severity: AlertSeverity::Warning,
@@ -158,13 +248,14 @@ pub fn detect_alerts(ctx: &AlertContext) -> Vec<Alert> {
                     metadata: metadata.clone(),
                 });
             }
+            // Escalation to Critical (from Healthy, Degrading, or Strained)
             (_, ImpactLevel::Critical) => {
                 alerts.push(Alert {
                     severity: AlertSeverity::Critical,
                     alert_type: AlertType::ImpactEscalation,
                     message: ctx.impact_message.to_string(),
                     ts: now,
-                    metadata,
+                    metadata: metadata.clone(),
                 });
             }
             _ => {}
@@ -172,6 +263,15 @@ pub fn detect_alerts(ctx: &AlertContext) -> Vec<Alert> {
     }
 
     alerts
+}
+
+fn fmt_impact(level: &ImpactLevel) -> &'static str {
+    match level {
+        ImpactLevel::Healthy => "healthy",
+        ImpactLevel::Degrading => "degrading",
+        ImpactLevel::Strained => "strained",
+        ImpactLevel::Critical => "critical",
+    }
 }
 
 #[cfg(test)]
@@ -304,7 +404,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ram_critical_to_normal_no_alert() {
+    fn test_ram_critical_to_normal_recovery_alert() {
         let ctx = make_ctx(
             &RamPressure::Critical,
             &RamPressure::Normal,
@@ -318,7 +418,10 @@ mod tests {
             "",
         );
         let alerts = detect_alerts(&ctx);
-        assert!(alerts.is_empty());
+        assert_eq!(alerts.len(), 1);
+        assert_eq!(alerts[0].severity, AlertSeverity::Resolved);
+        assert_eq!(alerts[0].alert_type, AlertType::MemoryPressure);
+        assert!(alerts[0].message.contains("resolved"));
     }
 
     #[test]
@@ -524,6 +627,72 @@ mod tests {
     }
 
     #[test]
+    fn test_throttle_recovery() {
+        let ctx = make_ctx(
+            &RamPressure::Normal,
+            &RamPressure::Normal,
+            true,
+            false,
+            Some(78.0),
+            4.0,
+            8.0,
+            &ImpactLevel::Healthy,
+            &ImpactLevel::Healthy,
+            "",
+        );
+        let alerts = detect_alerts(&ctx);
+        assert_eq!(alerts.len(), 1);
+        assert_eq!(alerts[0].severity, AlertSeverity::Resolved);
+        assert_eq!(alerts[0].alert_type, AlertType::ThermalThrottle);
+        assert!(alerts[0].message.contains("resolved"));
+    }
+
+    #[test]
+    fn test_cpu_saturation_recovery() {
+        let mut ctx = make_ctx(
+            &RamPressure::Normal,
+            &RamPressure::Normal,
+            false,
+            false,
+            None,
+            4.0,
+            8.0,
+            &ImpactLevel::Healthy,
+            &ImpactLevel::Healthy,
+            "",
+        );
+        ctx.cpu_pct = 30.0;
+        ctx.prev_cpu_saturated = true;
+        ctx.cpu_saturated = false;
+        let alerts = detect_alerts(&ctx);
+        assert_eq!(alerts.len(), 1);
+        assert_eq!(alerts[0].severity, AlertSeverity::Resolved);
+        assert_eq!(alerts[0].alert_type, AlertType::CpuSaturation);
+    }
+
+    #[test]
+    fn test_impact_recovery_critical_to_healthy() {
+        let ctx = make_ctx(
+            &RamPressure::Normal,
+            &RamPressure::Normal,
+            false,
+            false,
+            None,
+            4.0,
+            8.0,
+            &ImpactLevel::Critical,
+            &ImpactLevel::Healthy,
+            "",
+        );
+        let alerts = detect_alerts(&ctx);
+        assert_eq!(alerts.len(), 1);
+        assert_eq!(alerts[0].severity, AlertSeverity::Resolved);
+        assert_eq!(alerts[0].alert_type, AlertType::ImpactEscalation);
+        assert!(alerts[0].message.contains("critical"));
+        assert!(alerts[0].message.contains("healthy"));
+    }
+
+    #[test]
     fn test_alert_type_classification() {
         assert_eq!(format!("{}", AlertType::MemoryPressure), "memory_pressure");
         assert_eq!(
@@ -537,6 +706,7 @@ mod tests {
         assert_eq!(format!("{}", AlertType::CpuSaturation), "cpu_saturation");
         assert_eq!(format!("{}", AlertSeverity::Warning), "warning");
         assert_eq!(format!("{}", AlertSeverity::Critical), "critical");
+        assert_eq!(format!("{}", AlertSeverity::Resolved), "resolved");
     }
 
     #[test]
@@ -645,9 +815,12 @@ mod tests {
     }
 
     #[test]
-    fn test_disk_critical_to_normal_no_alert() {
+    fn test_disk_critical_to_normal_recovery_alert() {
         let ctx = make_disk_ctx(&DiskPressure::Critical, &DiskPressure::Normal, 200.0, 500.0);
         let alerts = detect_alerts(&ctx);
-        assert!(alerts.is_empty());
+        assert_eq!(alerts.len(), 1);
+        assert_eq!(alerts[0].severity, AlertSeverity::Resolved);
+        assert_eq!(alerts[0].alert_type, AlertType::DiskPressure);
+        assert!(alerts[0].message.contains("resolved"));
     }
 }

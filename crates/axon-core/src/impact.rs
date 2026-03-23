@@ -131,24 +131,105 @@ pub fn detect_anomaly_type(ram_pct: f64, cpu_pct: f64, temp: Option<f64>) -> Ano
 /// saturated signal (e.g. CPU at 100% with low RAM) can still reach the
 /// "strained" band instead of being capped at "degrading".
 pub fn compute_score(ram_pct: f64, cpu_pct: f64, swap_gb: f64) -> f64 {
+    compute_score_with_io(ram_pct, cpu_pct, swap_gb, 0.0)
+}
+
+/// Extended score computation that includes I/O wait percentage.
+/// `io_wait_pct` is 0-100%; 0.0 disables the I/O signal (backward compatible).
+pub fn compute_score_with_io(ram_pct: f64, cpu_pct: f64, swap_gb: f64, io_wait_pct: f64) -> f64 {
     let ram_norm = (ram_pct / 100.0).min(1.0);
     let cpu_norm = (cpu_pct / 100.0).min(1.0);
     let swap_norm = (swap_gb / 8.0).min(1.0); // 8GB swap = saturated
+    let io_norm = (io_wait_pct / 100.0).min(1.0);
 
     // Boost the dominant signal so single-resource saturation is not capped
-    // at a low band.  Default weights: RAM 0.40, CPU 0.30, swap 0.30.
-    let (w_ram, w_cpu, w_swap) = if cpu_norm > 0.9 && ram_norm < 0.5 {
+    // at a low band.
+    let has_io = io_wait_pct > 0.0;
+    let (w_ram, w_cpu, w_swap, w_io) = if cpu_norm > 0.9 && ram_norm < 0.5 {
         // CPU-dominant: boost CPU weight
-        (0.15, 0.65, 0.20)
+        if has_io {
+            (0.12, 0.58, 0.15, 0.15)
+        } else {
+            (0.15, 0.65, 0.20, 0.0)
+        }
     } else if ram_norm > 0.7 && cpu_norm < 0.5 {
         // RAM-dominant: boost RAM weight so critical RAM (88%+) reaches Critical band
-        (0.65, 0.15, 0.20)
+        if has_io {
+            (0.58, 0.12, 0.15, 0.15)
+        } else {
+            (0.65, 0.15, 0.20, 0.0)
+        }
+    } else if has_io && io_norm > 0.3 && cpu_norm < 0.5 && ram_norm < 0.5 {
+        // I/O-dominant: disk-bound workload (e.g. cargo build on slow disk)
+        (0.15, 0.15, 0.15, 0.55)
+    } else if has_io {
+        // I/O present but not dominant: balanced with I/O weight
+        (0.35, 0.25, 0.20, 0.20)
     } else {
-        // Balanced / default
-        (0.40, 0.30, 0.30)
+        // No I/O data: original balanced weights
+        (0.40, 0.30, 0.30, 0.0)
     };
 
-    (w_ram * ram_norm + w_cpu * cpu_norm + w_swap * swap_norm).min(1.0)
+    (w_ram * ram_norm + w_cpu * cpu_norm + w_swap * swap_norm + w_io * io_norm).min(1.0)
+}
+
+// ── I/O Wait Reader ─────────────────────────────────────────────────────────
+
+/// Read I/O wait percentage from the system.
+/// Linux: parses /proc/stat for iowait. macOS/Windows: returns 0.0 (no iowait concept).
+pub fn read_io_wait_pct() -> f64 {
+    #[cfg(target_os = "linux")]
+    {
+        read_io_wait_linux()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        0.0
+    }
+}
+
+#[cfg(target_os = "linux")]
+static PREV_IO_STAT: std::sync::Mutex<Option<(u64, u64)>> = std::sync::Mutex::new(None);
+
+#[cfg(target_os = "linux")]
+fn read_io_wait_linux() -> f64 {
+    // Parse first "cpu " line from /proc/stat:
+    // cpu  user nice system idle iowait irq softirq steal guest guest_nice
+    let content = match std::fs::read_to_string("/proc/stat") {
+        Ok(c) => c,
+        Err(_) => return 0.0,
+    };
+    let line = match content.lines().find(|l| l.starts_with("cpu ")) {
+        Some(l) => l,
+        None => return 0.0,
+    };
+    let fields: Vec<u64> = line
+        .split_whitespace()
+        .skip(1) // skip "cpu"
+        .filter_map(|s| s.parse().ok())
+        .collect();
+    if fields.len() < 5 {
+        return 0.0;
+    }
+    let total: u64 = fields.iter().sum();
+    let iowait = fields[4]; // 5th field (0-indexed: 4)
+
+    // Delta-based: compare against previous reading to get instantaneous rate
+    let mut prev = PREV_IO_STAT.lock().unwrap();
+    let result = match *prev {
+        Some((prev_iowait, prev_total)) => {
+            let d_total = total.saturating_sub(prev_total);
+            let d_iowait = iowait.saturating_sub(prev_iowait);
+            if d_total == 0 {
+                0.0
+            } else {
+                (d_iowait as f64 / d_total as f64) * 100.0
+            }
+        }
+        None => 0.0, // first call, no delta available
+    };
+    *prev = Some((iowait, total));
+    result
 }
 
 /// Map anomaly score → ImpactLevel with persistence check.
@@ -413,6 +494,38 @@ mod tests {
 
         let high = compute_score(100.0, 100.0, 100.0);
         assert!((high - 1.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_compute_score_with_io_zero_matches_original() {
+        // When io_wait_pct=0, compute_score_with_io should produce same result as compute_score
+        let s1 = compute_score(50.0, 50.0, 1.0);
+        let s2 = compute_score_with_io(50.0, 50.0, 1.0, 0.0);
+        assert!((s1 - s2).abs() < 0.001, "s1={}, s2={}", s1, s2);
+    }
+
+    #[test]
+    fn test_compute_score_io_dominant_boosts_score() {
+        // Low CPU + RAM but high iowait should still produce elevated score
+        let without_io = compute_score_with_io(20.0, 20.0, 0.0, 0.0);
+        let with_io = compute_score_with_io(20.0, 20.0, 0.0, 80.0);
+        assert!(
+            with_io > without_io + 0.2,
+            "I/O dominant should boost score significantly: {} vs {}",
+            with_io,
+            without_io
+        );
+    }
+
+    #[test]
+    fn test_compute_score_io_dominant_reaches_degrading() {
+        // High iowait alone should reach at least Degrading band (>= 0.20)
+        let score = compute_score_with_io(10.0, 10.0, 0.0, 90.0);
+        assert!(
+            score >= thresholds::IMPACT_LEVEL_HEALTHY_BELOW,
+            "I/O dominant score {:.3} should reach degrading band",
+            score
+        );
     }
 
     #[test]

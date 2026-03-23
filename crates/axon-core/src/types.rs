@@ -126,9 +126,10 @@ pub struct SystemProfile {
 pub enum AlertSeverity {
     Warning,
     Critical,
+    Resolved,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum AlertType {
     MemoryPressure,
@@ -155,6 +156,7 @@ impl std::fmt::Display for AlertSeverity {
         match self {
             AlertSeverity::Warning => write!(f, "warning"),
             AlertSeverity::Critical => write!(f, "critical"),
+            AlertSeverity::Resolved => write!(f, "resolved"),
         }
     }
 }

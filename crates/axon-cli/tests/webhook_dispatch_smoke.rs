@@ -102,6 +102,7 @@ async fn dispatcher_posts_webhook_json_without_hardware() {
             url: url.clone(),
             filters: AlertFilters::default(),
         }],
+        thresholds: None,
     };
     let dispatcher = AlertDispatcher::new(config);
 

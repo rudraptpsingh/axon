@@ -8,6 +8,9 @@ use crate::types::{AlertSeverity, AlertType};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AlertDispatchConfig {
     pub channels: Vec<ChannelConfig>,
+    /// Optional threshold overrides. Unset fields use compiled-in defaults.
+    #[serde(default)]
+    pub thresholds: Option<crate::thresholds::ThresholdOverrides>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -81,6 +84,7 @@ impl Default for AlertDispatchConfig {
                     alert_types: vec!["*".to_string()],
                 },
             }],
+            thresholds: None,
         }
     }
 }
@@ -110,7 +114,13 @@ pub fn load_config(config_dir: Option<&PathBuf>) -> AlertDispatchConfig {
     match std::fs::read_to_string(&path) {
         Ok(contents) => match serde_json::from_str::<AlertDispatchConfig>(&contents) {
             Ok(config) => match validate_dispatch_config(&config) {
-                Ok(()) => config,
+                Ok(()) => {
+                    // Initialize threshold overrides from config file
+                    if let Some(overrides) = &config.thresholds {
+                        crate::thresholds::init_overrides(overrides.clone());
+                    }
+                    config
+                }
                 Err(e) => {
                     tracing::warn!("invalid alert config {}: {}", path.display(), e);
                     AlertDispatchConfig::default()
@@ -283,6 +293,7 @@ mod tests {
                 url: "http://127.0.0.1:2/old".to_string(),
                 filters: AlertFilters::default(),
             }],
+            thresholds: None,
         };
         let config = apply_cli_overrides(
             config,
@@ -336,6 +347,7 @@ mod tests {
                     filters: AlertFilters::default(),
                 },
             ],
+            thresholds: None,
         };
         let path = tmp.path().join("alert-dispatch.json");
         std::fs::write(&path, serde_json::to_string(&cfg).unwrap()).unwrap();

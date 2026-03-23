@@ -26,6 +26,7 @@ mod tests {
         let json = serde_json::json!({
             "alert_type": "memory_pressure",
             "severity": "critical",
+            "resolved": false,
             "timestamp": "2026-01-01T00:00:00Z",
             "message": "test",
             "metrics": { "ram_pct": 85.0, "cpu_pct": 72.0, "temp_c": 65.0 },
@@ -34,12 +35,14 @@ mod tests {
         let p: WebhookPayload = serde_json::from_value(json.clone()).expect("parse");
         assert_eq!(p.alert_type, "memory_pressure");
         assert_eq!(p.severity, "critical");
+        assert!(!p.resolved);
         assert!(p.message.contains("test"));
         assert_eq!(p.metrics.ram_pct, Some(85.0));
         assert!(p.culprit.is_some());
         let out = serde_json::to_value(&p).unwrap();
         assert!(out.get("alert_type").is_some());
         assert!(out.get("metrics").is_some());
+        assert_eq!(out.get("resolved").and_then(|v| v.as_bool()), Some(false));
     }
 
     #[test]
@@ -47,6 +50,7 @@ mod tests {
         let json = serde_json::json!({
             "alert_type": "impact_escalation",
             "severity": "warning",
+            "resolved": false,
             "timestamp": "2026-01-01T00:00:00Z",
             "message": "msg",
             "metrics": { "ram_pct": null, "cpu_pct": null, "temp_c": null },
@@ -54,6 +58,23 @@ mod tests {
         });
         let p: WebhookPayload = serde_json::from_value(json).unwrap();
         assert!(p.culprit.is_none());
+        assert!(!p.resolved);
+    }
+
+    #[test]
+    fn test_webhook_payload_resolved() {
+        let json = serde_json::json!({
+            "alert_type": "memory_pressure",
+            "severity": "resolved",
+            "resolved": true,
+            "timestamp": "2026-01-01T00:00:00Z",
+            "message": "RAM pressure resolved",
+            "metrics": { "ram_pct": 45.0, "cpu_pct": 20.0, "temp_c": null },
+            "culprit": null
+        });
+        let p: WebhookPayload = serde_json::from_value(json).unwrap();
+        assert!(p.resolved);
+        assert_eq!(p.severity, "resolved");
     }
 
     #[test]

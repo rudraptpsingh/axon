@@ -9,6 +9,7 @@ use axon_core::alert_config;
 use axon_core::alert_dispatch::AlertDispatcher;
 use axon_core::collector::{build_system_profile, start_collector, AppState};
 use axon_core::persistence;
+use axon_core::ring_buffer::SnapshotRing;
 use axon_server::run_server;
 
 // ── CLI Definition ────────────────────────────────────────────────────────────
@@ -53,7 +54,7 @@ enum Commands {
 
     /// Call an MCP tool directly and print the JSON response (e.g. process_blame, hw_snapshot)
     Query {
-        /// Tool name: process_blame | hw_snapshot | battery_status | system_profile
+        /// Tool name: process_blame | hw_snapshot | battery_status | system_profile | session_health | gpu_snapshot | hardware_trend
         #[arg(value_name = "TOOL")]
         tool: String,
     },
@@ -142,7 +143,7 @@ async fn run_serve(args: ServeArgs) -> Result<()> {
     let state_bg = state.clone();
     let db_bg = db.clone();
     tokio::spawn(async move {
-        start_collector(state_bg, db_bg).await;
+        start_collector(state_bg, db_bg, SnapshotRing::new()).await;
     });
 
     // Brief warm-up so first tool call isn't stale
@@ -165,7 +166,7 @@ async fn run_diagnose() -> Result<()> {
 
     let state_bg = state.clone();
     tokio::spawn(async move {
-        start_collector(state_bg, db).await;
+        start_collector(state_bg, db, SnapshotRing::new()).await;
     });
 
     // Wait for at least 2 EWMA ticks (4s) so baselines stabilise
@@ -267,7 +268,7 @@ async fn run_status() -> Result<()> {
 
     let state_bg = state.clone();
     tokio::spawn(async move {
-        start_collector(state_bg, db).await;
+        start_collector(state_bg, db, SnapshotRing::new()).await;
     });
 
     tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
@@ -287,7 +288,7 @@ async fn run_query(tool: &str) -> Result<()> {
 
     let state_bg = state.clone();
     tokio::spawn(async move {
-        start_collector(state_bg, db).await;
+        start_collector(state_bg, db, SnapshotRing::new()).await;
     });
 
     tokio::time::sleep(tokio::time::Duration::from_secs(4)).await;
@@ -333,8 +334,33 @@ async fn run_query(tool: &str) -> Result<()> {
                 let response = axon_core::types::McpResponse::success(health, narrative);
                 serde_json::to_string_pretty(&response)?
             }
+            "gpu_snapshot" => {
+                let gpu = guard.gpu.clone();
+                drop(guard);
+                match gpu {
+                    Some(g) => {
+                        let narrative = axon_server::gpu_narrative_pub(&g);
+                        let response = axon_core::types::McpResponse::success(g, narrative);
+                        serde_json::to_string_pretty(&response)?
+                    }
+                    None => r#"{"ok":false,"narrative":"GPU metrics unavailable."}"#.to_string(),
+                }
+            }
+            "hardware_trend" => {
+                drop(guard); // release lock before DB query
+                let db_path = axon_core::persistence::default_db_path()?;
+                let db = axon_core::persistence::open(db_path)?;
+                let range_secs = axon_core::persistence::parse_time_range("last_24h")
+                    .expect("default range is valid");
+                let bucket_secs = axon_core::persistence::parse_interval("15m")
+                    .expect("default interval is valid");
+                let trend = axon_core::persistence::query_trend(&db, range_secs, bucket_secs)?;
+                let narrative = axon_server::trend_narrative_pub(&trend, "last_24h");
+                let response = axon_core::types::McpResponse::success(trend, narrative);
+                serde_json::to_string_pretty(&response)?
+            }
             other => anyhow::bail!(
-                "Unknown tool '{}'. Supported: process_blame, hw_snapshot, battery_status, system_profile, session_health",
+                "Unknown tool '{}'. Supported: process_blame, hw_snapshot, battery_status, system_profile, session_health, gpu_snapshot, hardware_trend",
                 other
             ),
         }

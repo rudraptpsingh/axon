@@ -8,7 +8,9 @@ Phases:
   3. Peak Capture  – take hw_snapshot + process_blame at peak load
   4. Cooldown      – kill stress, wait 12s, capture recovery state
   5. Session Health – query session_health for the entire window
-  6. Alerts        – check SQLite DB for any alerts fired
+  6. Hardware Trend – query hardware_trend for last_1h
+  7. GPU Snapshot   – query gpu_snapshot
+  8. Serve + Alert  – verify serve lifecycle and alert triggers
 
 Usage: python3 scripts/eval_cpu_stress.py ./target/release/axon
 """
@@ -72,6 +74,14 @@ def call_tool(proc: subprocess.Popen, name: str, args: dict | None = None) -> di
     content = res["result"]["content"]
     text = content[0]["text"]
     return json.loads(text)
+
+
+def list_tools(proc: subprocess.Popen) -> list[str]:
+    mid = next_id()
+    send(proc, {"jsonrpc": "2.0", "id": mid, "method": "tools/list", "params": {}})
+    res = read_responses(proc, mid)
+    tools = res.get("result", {}).get("tools", [])
+    return [t["name"] for t in tools]
 
 
 def initialize_mcp(proc: subprocess.Popen) -> None:
@@ -164,6 +174,18 @@ def main() -> int:
         initialize_mcp(proc)
         print("[ok] MCP initialized")
 
+        # ── Verify all 7 MCP tools are registered ──
+        tool_names = list_tools(proc)
+        print(f"[info] MCP tools ({len(tool_names)}): {tool_names}")
+        expected_tools = {"hw_snapshot", "process_blame", "battery_status",
+                          "system_profile", "hardware_trend", "session_health",
+                          "gpu_snapshot"}
+        missing = expected_tools - set(tool_names)
+        if missing:
+            print(f"[FAIL] Missing MCP tools: {missing}")
+            return 1
+        print(f"[ok] All 7 MCP tools registered")
+
         # ── Phase 1: Baseline (let collector warm up 3+ ticks = 6s, wait 12s) ──
         print("\n[phase 1] Baseline -- waiting 12s for EWMA warmup...")
         time.sleep(12)
@@ -234,6 +256,21 @@ def main() -> int:
             ts = b.get("bucket_start", "?")[-8:]  # just time part
             print(f"    {ts}: CPU avg={b['cpu_avg']:.1f}% max={b['cpu_max']:.1f}% | RAM avg={b['ram_avg']:.2f}GB max={b['ram_max']:.2f}GB | anomalies={b['anomaly_count']} throttles={b['throttle_count']}")
 
+        # ── Phase 6: GPU Snapshot ──
+        print(f"\n[phase 6] Querying gpu_snapshot...")
+        gpu = call_tool(proc, "gpu_snapshot")
+        gpu_d = gpu.get("data", {})
+        print(f"  OK:           {gpu.get('ok', False)}")
+        print(f"  Detected:     {gpu_d.get('detected', False)}")
+        print(f"  Model:        {gpu_d.get('model', 'N/A')}")
+        print(f"  Utilization:  {gpu_d.get('utilization_pct', 'N/A')}")
+        print(f"  Narrative:    {gpu.get('narrative', '')}")
+
+        # ── Phase 7: Serve Lifecycle Check ──
+        print(f"\n[phase 7] Checking serve process lifecycle...")
+        serve_alive = proc.poll() is None
+        print(f"  Serve alive:  {serve_alive} (pid={proc.pid})")
+
         # ── Summary Analysis ──
         print(f"\n{'=' * 60}")
         print("  EVALUATION SUMMARY")
@@ -288,6 +325,17 @@ def main() -> int:
         anomaly_cleared = r_anomaly != "cpu_saturation"
         checks.append(("CPU saturation cleared after recovery", anomaly_cleared, f"{r_anomaly}"))
 
+        # Alert verification: alerts should fire during stress
+        alerts_fired = s_alert_count > 0
+        checks.append(("Alerts fired during stress", alerts_fired, f"alert_count={s_alert_count}"))
+
+        # GPU snapshot returns valid JSON (ok=true even if no GPU detected)
+        gpu_valid = gpu.get("ok") is True
+        checks.append(("GPU snapshot returns valid JSON", gpu_valid, f"ok={gpu.get('ok')}"))
+
+        # Serve process stayed alive throughout entire evaluation
+        checks.append(("Serve process alive throughout eval", serve_alive, f"pid={proc.pid}"))
+
         print(f"\n  CHECKS:")
         all_pass = True
         for label, passed, detail in checks:
@@ -300,19 +348,23 @@ def main() -> int:
         return 0 if all_pass else 1
 
     finally:
-        # Cleanup
+        # Cleanup stress workers
         for p in stress_procs:
             try:
                 p.kill()
                 p.wait()
             except Exception:
                 pass
-        proc.terminate()
+        # Test clean exit: close stdin and wait for graceful shutdown
+        if proc.stdin and not proc.stdin.closed:
+            proc.stdin.close()
         try:
-            proc.wait(timeout=3)
+            proc.wait(timeout=5)
+            print(f"[ok] Serve exited cleanly on stdin close (rc={proc.returncode})")
         except subprocess.TimeoutExpired:
-            proc.kill()
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
+            print("[warn] Serve did not exit on stdin close, terminating")
+            proc.terminate()
+            try:
+                proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                proc.kill()
