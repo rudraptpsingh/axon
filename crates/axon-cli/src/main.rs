@@ -140,16 +140,18 @@ async fn run_serve(args: ServeArgs) -> Result<()> {
         tracing::info!("webhook alert channels configured");
     }
 
+    let ring = SnapshotRing::new();
+    let ring_bg = ring.clone();
     let state_bg = state.clone();
     let db_bg = db.clone();
     tokio::spawn(async move {
-        start_collector(state_bg, db_bg, SnapshotRing::new()).await;
+        start_collector(state_bg, db_bg, ring_bg).await;
     });
 
     // Brief warm-up so first tool call isn't stale
     tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
 
-    run_server(state, db, dispatcher).await
+    run_server(state, db, ring, dispatcher).await
 }
 
 async fn run_diagnose() -> Result<()> {

@@ -637,7 +637,12 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
         drop(guard);
 
         // ── Push to ring buffer every tick (full 2s resolution) ────────
-        ring.push(hw.clone());
+        ring.push(crate::ring_buffer::RingEntry {
+            hw: hw.clone(),
+            anomaly_type: blame.anomaly_type.clone(),
+            impact_level: blame.impact_level.clone(),
+            anomaly_score: blame.anomaly_score,
+        });
 
         // ── Persist snapshot every 5 ticks (~10s) ────────────────────────
 

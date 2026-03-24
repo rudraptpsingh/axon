@@ -278,6 +278,21 @@ pub fn query_alerts(
     Ok(alerts)
 }
 
+/// Lightweight alert count query — used by the ring-buffer fast path
+/// to supplement in-memory session_health with the DB alert count.
+pub fn query_alert_count(db: &DbHandle, since: DateTime<Utc>) -> Result<u32> {
+    let conn = db.lock().map_err(|e| anyhow::anyhow!("db lock: {}", e))?;
+    let since_str = since.to_rfc3339();
+    let count: u32 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM alerts WHERE ts >= ?1",
+            params![since_str],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+    Ok(count)
+}
+
 // ── Session Health ───────────────────────────────────────────────────────────
 
 pub fn query_session_health(db: &DbHandle, since: DateTime<Utc>) -> Result<SessionHealth> {

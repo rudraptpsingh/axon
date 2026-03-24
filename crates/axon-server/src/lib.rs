@@ -4,6 +4,7 @@ use axon_core::{
     alert_dispatch::AlertDispatcher,
     collector::SharedState,
     persistence::{self, DbHandle},
+    ring_buffer::SnapshotRing,
     types::*,
 };
 use rmcp::{
@@ -44,14 +45,16 @@ pub struct SessionHealthParams {
 pub struct AxonServer {
     state: SharedState,
     db: DbHandle,
+    ring: SnapshotRing,
     tool_router: ToolRouter<Self>,
 }
 
 impl AxonServer {
-    pub fn new(state: SharedState, db: DbHandle) -> Self {
+    pub fn new(state: SharedState, db: DbHandle, ring: SnapshotRing) -> Self {
         Self {
             state,
             db,
+            ring,
             tool_router: Self::tool_router(),
         }
     }
@@ -201,6 +204,20 @@ impl AxonServer {
             .map(|dt| dt.with_timezone(&chrono::Utc))
             .unwrap_or_else(|| chrono::Utc::now() - chrono::Duration::hours(1));
 
+        // Fast path: use the in-memory ring buffer when it covers the window.
+        // This avoids SQLite I/O for the common case (default 1h, ring holds ~30min).
+        if let Some(mut health) = self.ring.session_health(since) {
+            // The ring doesn't track alerts — get the count from DB (cheap single-row query).
+            if let Ok(count) = persistence::query_alert_count(&self.db, since) {
+                health.alert_count = count;
+            }
+            let narrative = session_health_narrative(&health);
+            let response = McpResponse::success(health, narrative);
+            return serde_json::to_string(&response)
+                .unwrap_or_else(|e| format!("{{\"ok\":false,\"error\":\"{}\"}}", e));
+        }
+
+        // Slow path: ring doesn't cover the window — fall back to SQLite.
         match persistence::query_session_health(&self.db, since) {
             Ok(health) => {
                 let narrative = session_health_narrative(&health);
@@ -522,9 +539,10 @@ async fn alert_sender(
 pub async fn run_server(
     state: SharedState,
     db: DbHandle,
+    ring: SnapshotRing,
     dispatcher: Arc<AlertDispatcher>,
 ) -> anyhow::Result<()> {
-    let server = AxonServer::new(state.clone(), db.clone());
+    let server = AxonServer::new(state.clone(), db.clone(), ring);
     let transport = (tokio::io::stdin(), tokio::io::stdout());
     let running = server.serve(transport).await?;
 
