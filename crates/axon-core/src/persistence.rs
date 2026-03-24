@@ -614,6 +614,15 @@ mod tests {
             headroom: HeadroomLevel::Adequate,
             headroom_reason: "System has headroom".to_string(),
             ts: Utc::now(),
+            cpu_trend: TrendDirection::Stable,
+            ram_trend: TrendDirection::Stable,
+            temp_trend: TrendDirection::Stable,
+            cpu_delta_pct: 0.0,
+            ram_delta_gb: 0.0,
+            top_culprit: String::new(),
+            impact_level: ImpactLevel::Healthy,
+            impact_duration_s: 0,
+            one_liner: String::new(),
         }
     }
 
@@ -628,6 +637,8 @@ mod tests {
             fix: String::new(),
             ts: Utc::now(),
             stale_axon_pids: Vec::new(),
+            urgency: Urgency::Monitor,
+            culprit_category: CulpritCategory::Unknown,
         }
     }
 

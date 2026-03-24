@@ -1,7 +1,7 @@
 use crate::thresholds;
 use crate::types::{
-    AnomalyType, DiskPressure, HeadroomLevel, HwSnapshot, ImpactLevel, ProcessGroup, ProcessInfo,
-    RamPressure,
+    AnomalyType, CulpritCategory, DiskPressure, HeadroomLevel, HwSnapshot, ImpactLevel,
+    ProcessGroup, ProcessInfo, RamPressure, TrendDirection, Urgency,
 };
 
 // ── Headroom Computation ──────────────────────────────────────────────────────
@@ -527,6 +527,136 @@ pub fn suggest_fix(
     }
 }
 
+// ── Culprit Category Classification ─────────────────────────────────────────
+
+/// Classify a process name into a category for agent context.
+/// Order matters: check more specific categories first to avoid false matches.
+pub fn classify_culprit(name: &str) -> CulpritCategory {
+    let lower = name.to_lowercase();
+    let base = lower
+        .rsplit(|c: char| c == '/' || c == '\\')
+        .next()
+        .unwrap_or(&lower)
+        .trim_end_matches(".exe");
+
+    // System processes (check early — these are never build tools or browsers)
+    if ["kernel", "systemd", "launchd", "svchost", "csrss", "dwm", "wininit",
+        "loginwindow", "windowserver", "kworker", "ksoftirqd", "init",
+        "system idle", "system", "memory compression", "registry", "smss",
+        "lsass", "services", "wudfhost", "taskhostw", "runtimebroker",
+        "searchhost", "explorer", "finder", "mds", "spotlight"]
+        .iter()
+        .any(|&s| base == s || lower.contains(s))
+    {
+        return CulpritCategory::System;
+    }
+
+    // Browsers (check before build tools — "chrome" must not match "go")
+    if ["chrome", "firefox", "safari", "edge", "brave", "opera", "vivaldi", "arc"]
+        .iter()
+        .any(|&b| base.contains(b))
+    {
+        return CulpritCategory::Browser;
+    }
+
+    // AI agents
+    if ["claude", "copilot", "ollama", "llama", "mlx", "llamafile", "gpt"]
+        .iter()
+        .any(|&a| base.contains(a))
+    {
+        return CulpritCategory::AiAgent;
+    }
+
+    // IDEs (check before build tools — "code" is an IDE, not a build tool)
+    if ["cursor", "windsurf", "zed", "idea", "webstorm", "pycharm",
+        "goland", "rider", "clion", "datagrip", "rubymine", "phpstorm",
+        "android studio", "xcode", "sublime", "atom", "emacs", "vim", "nvim", "neovim"]
+        .iter()
+        .any(|&i| base.contains(i))
+    {
+        return CulpritCategory::Ide;
+    }
+    // "code" exact match (VS Code) — separate to avoid matching "barcode" etc
+    if base == "code" || base == "code helper" || base.starts_with("code ") {
+        return CulpritCategory::Ide;
+    }
+
+    // Build tools (use exact base match for short names to avoid false positives)
+    let exact_build = ["cargo", "rustc", "gcc", "g++", "clang", "make", "cmake",
+        "ninja", "msbuild", "javac", "gradle", "maven", "tsc", "go", "dotnet", "swift"];
+    if exact_build.iter().any(|&t| base == t) {
+        return CulpritCategory::BuildTool;
+    }
+    // Contains-match for longer, unambiguous names
+    if ["webpack", "esbuild", "vite", "rollup", "swc", "turbopack"]
+        .iter()
+        .any(|&t| base.contains(t))
+    {
+        return CulpritCategory::BuildTool;
+    }
+
+    CulpritCategory::Unknown
+}
+
+/// Classify from a ProcessGroup or ProcessInfo (prefers group name).
+pub fn classify_culprit_from_blame(
+    group: Option<&ProcessGroup>,
+    culprit: Option<&ProcessInfo>,
+) -> CulpritCategory {
+    if let Some(g) = group {
+        return classify_culprit(&g.name);
+    }
+    if let Some(p) = culprit {
+        return classify_culprit(&p.cmd);
+    }
+    CulpritCategory::Unknown
+}
+
+// ── Urgency Computation ─────────────────────────────────────────────────────
+
+/// Compute urgency from impact level and trend direction.
+pub fn compute_urgency(
+    impact: &ImpactLevel,
+    cpu_trend: &TrendDirection,
+    ram_trend: &TrendDirection,
+) -> Urgency {
+    let rising = *cpu_trend == TrendDirection::Rising || *ram_trend == TrendDirection::Rising;
+    match impact {
+        ImpactLevel::Critical => Urgency::ActNow,
+        ImpactLevel::Strained => {
+            if rising {
+                Urgency::ActNow
+            } else {
+                Urgency::ActSoon
+            }
+        }
+        ImpactLevel::Degrading => {
+            if rising {
+                Urgency::ActSoon
+            } else {
+                Urgency::Monitor
+            }
+        }
+        ImpactLevel::Healthy => Urgency::Monitor,
+    }
+}
+
+// ── Trend Direction from EWMA ───────────────────────────────────────────────
+
+/// Compute trend direction by comparing current value to recent EWMA.
+/// `current` is the latest reading, `prev` is the value from the previous tick.
+/// Uses a threshold to filter noise.
+pub fn compute_trend_direction(current: f64, prev: f64, threshold: f64) -> TrendDirection {
+    let delta = current - prev;
+    if delta > threshold {
+        TrendDirection::Rising
+    } else if delta < -threshold {
+        TrendDirection::Falling
+    } else {
+        TrendDirection::Stable
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -765,6 +895,15 @@ mod tests {
             headroom: HeadroomLevel::Adequate,
             headroom_reason: String::new(),
             ts: chrono::Utc::now(),
+            cpu_trend: TrendDirection::Stable,
+            ram_trend: TrendDirection::Stable,
+            temp_trend: TrendDirection::Stable,
+            cpu_delta_pct: 0.0,
+            ram_delta_gb: 0.0,
+            top_culprit: String::new(),
+            impact_level: ImpactLevel::Healthy,
+            impact_duration_s: 0,
+            one_liner: String::new(),
         }
     }
 
@@ -957,6 +1096,116 @@ mod tests {
         let msg = impact_message(&ImpactLevel::Healthy, &AnomalyType::AgentAccumulation);
         assert!(!msg.contains("No action needed"), "msg: {}", msg);
         assert!(msg.contains("agent"), "msg: {}", msg);
+    }
+
+    // ── Culprit Category Tests ────────────────────────────────────────────
+
+    #[test]
+    fn test_classify_culprit_build_tools() {
+        assert_eq!(classify_culprit("cargo"), CulpritCategory::BuildTool);
+        assert_eq!(classify_culprit("rustc"), CulpritCategory::BuildTool);
+        assert_eq!(classify_culprit("gcc"), CulpritCategory::BuildTool);
+        assert_eq!(classify_culprit("webpack"), CulpritCategory::BuildTool);
+        assert_eq!(classify_culprit("tsc"), CulpritCategory::BuildTool);
+    }
+
+    #[test]
+    fn test_classify_culprit_browsers() {
+        assert_eq!(classify_culprit("Google Chrome"), CulpritCategory::Browser);
+        assert_eq!(classify_culprit("firefox"), CulpritCategory::Browser);
+        assert_eq!(classify_culprit("safari"), CulpritCategory::Browser);
+    }
+
+    #[test]
+    fn test_classify_culprit_ides() {
+        assert_eq!(classify_culprit("Cursor"), CulpritCategory::Ide);
+        assert_eq!(classify_culprit("code"), CulpritCategory::Ide);
+        assert_eq!(classify_culprit("zed"), CulpritCategory::Ide);
+    }
+
+    #[test]
+    fn test_classify_culprit_ai_agents() {
+        assert_eq!(classify_culprit("claude"), CulpritCategory::AiAgent);
+        assert_eq!(classify_culprit("ollama"), CulpritCategory::AiAgent);
+    }
+
+    #[test]
+    fn test_classify_culprit_system() {
+        assert_eq!(classify_culprit("Memory Compression"), CulpritCategory::System);
+        assert_eq!(classify_culprit("svchost"), CulpritCategory::System);
+        assert_eq!(classify_culprit("kernel"), CulpritCategory::System);
+    }
+
+    #[test]
+    fn test_classify_culprit_unknown() {
+        assert_eq!(classify_culprit("myapp"), CulpritCategory::Unknown);
+    }
+
+    // ── Urgency Tests ────────────────────────────────────────────────────
+
+    #[test]
+    fn test_urgency_critical_always_act_now() {
+        assert_eq!(
+            compute_urgency(&ImpactLevel::Critical, &TrendDirection::Stable, &TrendDirection::Stable),
+            Urgency::ActNow
+        );
+    }
+
+    #[test]
+    fn test_urgency_strained_rising_is_act_now() {
+        assert_eq!(
+            compute_urgency(&ImpactLevel::Strained, &TrendDirection::Rising, &TrendDirection::Stable),
+            Urgency::ActNow
+        );
+    }
+
+    #[test]
+    fn test_urgency_strained_stable_is_act_soon() {
+        assert_eq!(
+            compute_urgency(&ImpactLevel::Strained, &TrendDirection::Stable, &TrendDirection::Stable),
+            Urgency::ActSoon
+        );
+    }
+
+    #[test]
+    fn test_urgency_degrading_rising_is_act_soon() {
+        assert_eq!(
+            compute_urgency(&ImpactLevel::Degrading, &TrendDirection::Rising, &TrendDirection::Stable),
+            Urgency::ActSoon
+        );
+    }
+
+    #[test]
+    fn test_urgency_degrading_stable_is_monitor() {
+        assert_eq!(
+            compute_urgency(&ImpactLevel::Degrading, &TrendDirection::Stable, &TrendDirection::Stable),
+            Urgency::Monitor
+        );
+    }
+
+    #[test]
+    fn test_urgency_healthy_is_monitor() {
+        assert_eq!(
+            compute_urgency(&ImpactLevel::Healthy, &TrendDirection::Rising, &TrendDirection::Rising),
+            Urgency::Monitor
+        );
+    }
+
+    // ── Trend Direction Tests ────────────────────────────────────────────
+
+    #[test]
+    fn test_trend_direction_rising() {
+        assert_eq!(compute_trend_direction(50.0, 40.0, 3.0), TrendDirection::Rising);
+    }
+
+    #[test]
+    fn test_trend_direction_falling() {
+        assert_eq!(compute_trend_direction(30.0, 40.0, 3.0), TrendDirection::Falling);
+    }
+
+    #[test]
+    fn test_trend_direction_stable_within_threshold() {
+        assert_eq!(compute_trend_direction(41.0, 40.0, 3.0), TrendDirection::Stable);
     }
 
     /// Cursor-specific fix across all anomaly types: always suggests Cmd+W.

@@ -325,15 +325,18 @@ fn hw_narrative(hw: &HwSnapshot) -> String {
         }
     };
     format!(
-        "CPU {:.0}%, die {}{} RAM {:.1}/{:.0}GB ({} pressure).{} {}",
+        "CPU {:.0}% {}, die {}{} RAM {:.1}/{:.0}GB {} ({} pressure).{} {} | {}",
         hw.cpu_usage_pct,
+        hw.cpu_trend,
         temp_str,
         throttle,
         hw.ram_used_gb,
         hw.ram_total_gb,
+        hw.ram_trend,
         pressure,
         disk_str,
-        headroom_str
+        headroom_str,
+        hw.one_liner,
     )
 }
 
@@ -342,8 +345,15 @@ fn blame_narrative(blame: &ProcessBlame) -> String {
     let mut base = if let Some(g) = &blame.culprit_group {
         if blame.anomaly_score > 0.1 && g.process_count > 1 {
             format!(
-                "{} ({:.1}GB across {} processes, {:.0}% CPU) — {} {}",
-                g.name, g.total_ram_gb, g.process_count, g.total_cpu_pct, blame.impact, blame.fix
+                "[{}] {} ({:.1}GB across {} processes, {:.0}% CPU) — {} {} [urgency: {}]",
+                blame.culprit_category,
+                g.name,
+                g.total_ram_gb,
+                g.process_count,
+                g.total_cpu_pct,
+                blame.impact,
+                blame.fix,
+                blame.urgency,
             )
         } else {
             blame_narrative_fallback(blame)
@@ -374,8 +384,15 @@ fn blame_narrative(blame: &ProcessBlame) -> String {
 fn blame_narrative_fallback(blame: &ProcessBlame) -> String {
     match &blame.culprit {
         Some(p) if blame.anomaly_score > 0.1 => format!(
-            "{} (PID {}, {:.0}% CPU, {:.1}GB RAM) — {} {}",
-            p.cmd, p.pid, p.cpu_pct, p.ram_gb, blame.impact, blame.fix
+            "[{}] {} (PID {}, {:.0}% CPU, {:.1}GB RAM) — {} {} [urgency: {}]",
+            blame.culprit_category,
+            p.cmd,
+            p.pid,
+            p.cpu_pct,
+            p.ram_gb,
+            blame.impact,
+            blame.fix,
+            blame.urgency,
         ),
         _ => {
             if blame.fix == blame.impact || blame.fix == "No action needed." {

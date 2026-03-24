@@ -51,6 +51,72 @@ pub enum HeadroomLevel {
     Insufficient,
 }
 
+// ── Trend Direction ──────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum TrendDirection {
+    Rising,
+    Falling,
+    Stable,
+}
+
+impl std::fmt::Display for TrendDirection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TrendDirection::Rising => write!(f, "rising"),
+            TrendDirection::Falling => write!(f, "falling"),
+            TrendDirection::Stable => write!(f, "stable"),
+        }
+    }
+}
+
+// ── Urgency Level ───────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum Urgency {
+    Monitor,
+    ActSoon,
+    ActNow,
+}
+
+impl std::fmt::Display for Urgency {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Urgency::Monitor => write!(f, "monitor"),
+            Urgency::ActSoon => write!(f, "act_soon"),
+            Urgency::ActNow => write!(f, "act_now"),
+        }
+    }
+}
+
+// ── Culprit Category ────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum CulpritCategory {
+    BuildTool,
+    Browser,
+    Ide,
+    AiAgent,
+    System,
+    Unknown,
+}
+
+impl std::fmt::Display for CulpritCategory {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CulpritCategory::BuildTool => write!(f, "build_tool"),
+            CulpritCategory::Browser => write!(f, "browser"),
+            CulpritCategory::Ide => write!(f, "ide"),
+            CulpritCategory::AiAgent => write!(f, "ai_agent"),
+            CulpritCategory::System => write!(f, "system"),
+            CulpritCategory::Unknown => write!(f, "unknown"),
+        }
+    }
+}
+
 // ── Core Data Types ───────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -67,6 +133,26 @@ pub struct HwSnapshot {
     pub headroom: HeadroomLevel,
     pub headroom_reason: String,
     pub ts: DateTime<Utc>,
+    // ── Agent-context enrichment fields ──────────────────────────────────
+    /// CPU trajectory: rising, falling, or stable (based on EWMA fast vs slow).
+    pub cpu_trend: TrendDirection,
+    /// RAM trajectory: rising, falling, or stable.
+    pub ram_trend: TrendDirection,
+    /// Temperature trajectory: rising, falling, or stable.
+    pub temp_trend: TrendDirection,
+    /// Change in CPU % since the previous collector tick.
+    pub cpu_delta_pct: f64,
+    /// Change in RAM (GB) since the previous collector tick.
+    pub ram_delta_gb: f64,
+    /// Top resource consumer (one-line summary). Empty when system is idle.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub top_culprit: String,
+    /// Current impact level (mirrors process_blame.impact_level).
+    pub impact_level: ImpactLevel,
+    /// How long the current impact level has persisted (seconds).
+    pub impact_duration_s: u64,
+    /// Ultra-compact one-line summary for token-constrained agents.
+    pub one_liner: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -102,6 +188,10 @@ pub struct ProcessBlame {
     /// PIDs of other `axon serve` instances (not self). Empty when no siblings.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub stale_axon_pids: Vec<u32>,
+    /// How urgent is the situation: monitor, act_soon, or act_now.
+    pub urgency: Urgency,
+    /// What kind of process is the culprit: build_tool, browser, ide, ai_agent, system, unknown.
+    pub culprit_category: CulpritCategory,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

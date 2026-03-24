@@ -111,6 +111,15 @@ impl AppState {
                 headroom: HeadroomLevel::Adequate,
                 headroom_reason: "System has headroom".to_string(),
                 ts: now,
+                cpu_trend: TrendDirection::Stable,
+                ram_trend: TrendDirection::Stable,
+                temp_trend: TrendDirection::Stable,
+                cpu_delta_pct: 0.0,
+                ram_delta_gb: 0.0,
+                top_culprit: String::new(),
+                impact_level: ImpactLevel::Healthy,
+                impact_duration_s: 0,
+                one_liner: "System idle.".to_string(),
             },
             blame: ProcessBlame {
                 anomaly_type: AnomalyType::None,
@@ -122,6 +131,8 @@ impl AppState {
                 fix: "No action needed.".to_string(),
                 ts: now,
                 stale_axon_pids: Vec::new(),
+                urgency: Urgency::Monitor,
+                culprit_category: CulpritCategory::Unknown,
             },
             battery: None,
             profile,
@@ -202,6 +213,14 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
 
     let self_pid = std::process::id();
 
+    // Previous-tick values for delta and trend computation
+    let mut prev_cpu_pct: f64 = 0.0;
+    let mut prev_ram_used_gb: f64 = 0.0;
+    let mut prev_temp: Option<f64> = None;
+    // Track how long current impact level has persisted
+    let mut impact_level_since: std::time::Instant = std::time::Instant::now();
+    let mut current_impact_for_duration = ImpactLevel::Healthy;
+
     let mut ticker = interval(Duration::from_secs(2));
 
     loop {
@@ -254,6 +273,16 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
         let disk_pressure =
             crate::thresholds::disk_pressure_with_hysteresis(disk_pct, &prev_disk_pressure);
 
+        // Compute trend directions from tick-to-tick deltas
+        let cpu_trend = impact::compute_trend_direction(cpu_pct, prev_cpu_pct, 3.0);
+        let ram_trend = impact::compute_trend_direction(ram_used_gb, prev_ram_used_gb, 0.1);
+        let temp_trend = match (die_temp, prev_temp) {
+            (Some(cur), Some(prv)) => impact::compute_trend_direction(cur, prv, 2.0),
+            _ => TrendDirection::Stable,
+        };
+        let cpu_delta_pct = cpu_pct - prev_cpu_pct;
+        let ram_delta_gb = ram_used_gb - prev_ram_used_gb;
+
         let mut hw = HwSnapshot {
             die_temp_celsius: die_temp,
             throttling,
@@ -267,10 +296,24 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
             headroom: HeadroomLevel::Adequate,
             headroom_reason: String::new(),
             ts: chrono::Utc::now(),
+            cpu_trend: cpu_trend.clone(),
+            ram_trend: ram_trend.clone(),
+            temp_trend: temp_trend.clone(),
+            cpu_delta_pct,
+            ram_delta_gb,
+            top_culprit: String::new(), // filled after process collection
+            impact_level: ImpactLevel::Healthy, // filled after impact computation
+            impact_duration_s: 0, // filled after impact computation
+            one_liner: String::new(), // filled after all fields are known
         };
         let (headroom, headroom_reason) = impact::compute_headroom(&hw);
         hw.headroom = headroom;
         hw.headroom_reason = headroom_reason;
+
+        // Update previous-tick values for next iteration
+        prev_cpu_pct = cpu_pct;
+        prev_ram_used_gb = ram_used_gb;
+        prev_temp = die_temp;
 
         // ── Process collection + EWMA update ──────────────────────────────
 
@@ -405,6 +448,10 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
         let impact_msg = impact::impact_message(&impact_level, &anomaly_type);
         let fix = impact::suggest_fix(culprit.as_ref(), culprit_group.as_ref(), &anomaly_type);
 
+        let urgency = impact::compute_urgency(&impact_level, &cpu_trend, &ram_trend);
+        let culprit_category =
+            impact::classify_culprit_from_blame(culprit_group.as_ref(), culprit.as_ref());
+
         let blame = ProcessBlame {
             anomaly_type,
             impact_level: impact_level.clone(),
@@ -415,7 +462,48 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
             fix,
             ts: chrono::Utc::now(),
             stale_axon_pids,
+            urgency,
+            culprit_category,
         };
+
+        // ── Enrich hw snapshot with post-process fields ──────────────────
+        // Top culprit summary
+        hw.top_culprit = if let Some(g) = &blame.culprit_group {
+            if blame.anomaly_score > 0.1 && g.process_count > 1 {
+                format!(
+                    "{} ({:.1}GB, {:.0}% CPU, {} procs)",
+                    g.name, g.total_ram_gb, g.total_cpu_pct, g.process_count
+                )
+            } else if blame.anomaly_score > 0.1 {
+                if let Some(p) = &blame.culprit {
+                    format!("{} ({:.0}% CPU, {:.1}GB)", p.cmd, p.cpu_pct, p.ram_gb)
+                } else {
+                    String::new()
+                }
+            } else {
+                String::new()
+            }
+        } else if let Some(p) = &blame.culprit {
+            if blame.anomaly_score > 0.1 {
+                format!("{} ({:.0}% CPU, {:.1}GB)", p.cmd, p.cpu_pct, p.ram_gb)
+            } else {
+                String::new()
+            }
+        } else {
+            String::new()
+        };
+
+        hw.impact_level = impact_level.clone();
+
+        // Track impact duration
+        if impact_level != current_impact_for_duration {
+            current_impact_for_duration = impact_level.clone();
+            impact_level_since = std::time::Instant::now();
+        }
+        hw.impact_duration_s = impact_level_since.elapsed().as_secs();
+
+        // Build one-liner
+        hw.one_liner = build_one_liner(&hw, &blame);
 
         debug!(
             tick = tick_count,
@@ -845,6 +933,44 @@ fn build_battery_status(
         time_to_empty_min: time_to_empty,
         narrative,
     }
+}
+
+// ── One-Liner Builder ────────────────────────────────────────────────────────
+
+fn build_one_liner(hw: &HwSnapshot, blame: &ProcessBlame) -> String {
+    let mut parts: Vec<String> = Vec::with_capacity(4);
+
+    // CPU with trend
+    parts.push(format!("CPU {:.0}% {}", hw.cpu_usage_pct, hw.cpu_trend));
+
+    // RAM with trend
+    parts.push(format!(
+        "RAM {:.1}/{:.0}GB {}",
+        hw.ram_used_gb, hw.ram_total_gb, hw.ram_trend
+    ));
+
+    // Temp if available
+    if let Some(t) = hw.die_temp_celsius {
+        if hw.throttling {
+            parts.push(format!("{:.0}C [THROTTLING]", t));
+        } else if t > 70.0 {
+            parts.push(format!("{:.0}C {}", t, hw.temp_trend));
+        }
+    }
+
+    // Top culprit if present
+    if !hw.top_culprit.is_empty() {
+        parts.push(hw.top_culprit.clone());
+    }
+
+    // Urgency
+    let action = match blame.urgency {
+        Urgency::ActNow => " -- act now",
+        Urgency::ActSoon => " -- act soon",
+        Urgency::Monitor => "",
+    };
+
+    format!("{}{}", parts.join(", "), action)
 }
 
 // ── System Profile (built once at startup) ────────────────────────────────────
