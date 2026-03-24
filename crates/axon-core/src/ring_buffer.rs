@@ -10,8 +10,10 @@ use std::sync::{Arc, RwLock};
 
 use crate::types::{AnomalyType, HwSnapshot, ImpactLevel};
 
-/// Capacity: ~30 minutes at 2-second intervals. ~72KB of RAM.
-const DEFAULT_CAPACITY: usize = 900;
+/// Capacity: ~1 hour at 2-second intervals. ~210KB of RAM.
+/// Covers the default session_health window (1h) and short hardware_trend
+/// queries (last_1h) entirely from RAM, avoiding SQLite I/O.
+const DEFAULT_CAPACITY: usize = 1800;
 
 /// Combined snapshot + blame summary stored in the ring buffer.
 /// Lightweight: only the fields session_health needs from ProcessBlame.
@@ -184,6 +186,130 @@ impl SnapshotRing {
             peak_temp_celsius: temp_max,
             throttle_event_count: throttle_count,
         })
+    }
+
+    /// Compute hardware trend with time-bucketing entirely from the ring.
+    /// Returns None if the ring has fewer than 2 entries in the window.
+    pub fn hardware_trend(
+        &self,
+        range_secs: i64,
+        bucket_secs: i64,
+    ) -> Option<crate::types::TrendData> {
+        use crate::types::{TrendBucket, TrendData};
+
+        let buf = self.inner.read().unwrap();
+        if buf.len() < 2 {
+            return None;
+        }
+
+        let now = buf.back().unwrap().hw.ts;
+        let cutoff = now - chrono::Duration::seconds(range_secs);
+        let entries: Vec<&RingEntry> = buf.iter().filter(|e| e.hw.ts >= cutoff).collect();
+        if entries.len() < 2 {
+            return None;
+        }
+
+        // Bucket entries by time interval
+        let first_ts = entries[0].hw.ts;
+        let mut buckets: Vec<TrendBucket> = Vec::new();
+        let mut bucket_start = first_ts;
+        let mut bucket_entries: Vec<&RingEntry> = Vec::new();
+
+        for e in &entries {
+            while e.hw.ts >= bucket_start + chrono::Duration::seconds(bucket_secs) {
+                if !bucket_entries.is_empty() {
+                    buckets.push(compute_bucket(bucket_start, &bucket_entries));
+                }
+                bucket_entries.clear();
+                bucket_start = bucket_start + chrono::Duration::seconds(bucket_secs);
+            }
+            bucket_entries.push(e);
+        }
+        // Flush last bucket
+        if !bucket_entries.is_empty() {
+            buckets.push(compute_bucket(bucket_start, &bucket_entries));
+        }
+
+        // Trend direction: compare first-half avg CPU to second-half
+        let total_snapshots = entries.len() as u32;
+        let trend_direction = if buckets.len() < 2 {
+            "insufficient_data".to_string()
+        } else {
+            let mid = buckets.len() / 2;
+            let first_avg: f64 =
+                buckets[..mid].iter().map(|b| b.cpu_avg).sum::<f64>() / mid as f64;
+            let second_avg: f64 =
+                buckets[mid..].iter().map(|b| b.cpu_avg).sum::<f64>() / (buckets.len() - mid) as f64;
+            let delta = second_avg - first_avg;
+            if delta > 5.0 {
+                "rising".to_string()
+            } else if delta < -5.0 {
+                "falling".to_string()
+            } else {
+                "stable".to_string()
+            }
+        };
+
+        Some(TrendData {
+            buckets,
+            trend_direction,
+            total_snapshots,
+        })
+    }
+}
+
+fn compute_bucket(
+    bucket_start: chrono::DateTime<chrono::Utc>,
+    entries: &[&RingEntry],
+) -> crate::types::TrendBucket {
+    let n = entries.len() as f64;
+    let mut cpu_sum = 0.0_f64;
+    let mut cpu_max = 0.0_f64;
+    let mut ram_sum = 0.0_f64;
+    let mut ram_max = 0.0_f64;
+    let mut temp_sum = 0.0_f64;
+    let mut temp_count = 0_u32;
+    let mut temp_max: Option<f64> = None;
+    let mut anomaly_count = 0_u32;
+    let mut throttle_count = 0_u32;
+
+    for e in entries {
+        cpu_sum += e.hw.cpu_usage_pct;
+        if e.hw.cpu_usage_pct > cpu_max {
+            cpu_max = e.hw.cpu_usage_pct;
+        }
+        ram_sum += e.hw.ram_used_gb;
+        if e.hw.ram_used_gb > ram_max {
+            ram_max = e.hw.ram_used_gb;
+        }
+        if let Some(t) = e.hw.die_temp_celsius {
+            temp_sum += t;
+            temp_count += 1;
+            temp_max = Some(temp_max.map_or(t, |m: f64| m.max(t)));
+        }
+        if e.anomaly_type != AnomalyType::None {
+            anomaly_count += 1;
+        }
+        if e.hw.throttling {
+            throttle_count += 1;
+        }
+    }
+
+    crate::types::TrendBucket {
+        bucket_start,
+        sample_count: entries.len() as u32,
+        cpu_avg: cpu_sum / n,
+        cpu_max,
+        ram_avg: ram_sum / n,
+        ram_max,
+        temp_avg: if temp_count > 0 {
+            Some(temp_sum / temp_count as f64)
+        } else {
+            None
+        },
+        temp_max,
+        anomaly_count,
+        throttle_count,
     }
 }
 

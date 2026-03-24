@@ -644,9 +644,13 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
             anomaly_score: blame.anomaly_score,
         });
 
-        // ── Persist snapshot every 5 ticks (~10s) ────────────────────────
+        // ── Persist snapshot every 15 ticks (~30s) ────────────────────────
+        // The ring buffer holds ~1 hour of data at 2s resolution for recent
+        // queries (session_health, hardware_trend last_1h). The DB is only
+        // needed for long-term trends (last_24h+) and survives restarts.
+        // Writing every 30s instead of 10s reduces disk I/O by 3x.
 
-        if tick_count == 1 || tick_count.is_multiple_of(5) {
+        if tick_count == 1 || tick_count.is_multiple_of(15) {
             persistence::insert_snapshot(&db, &hw, &blame);
         }
     }

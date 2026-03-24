@@ -159,6 +159,19 @@ impl AxonServer {
             }
         };
 
+        // Fast path: use the ring buffer for short windows (<=1h).
+        // The ring holds ~1h of data at 2s resolution — much higher fidelity
+        // than the DB (10s resolution) and avoids disk I/O entirely.
+        if range_secs <= 3600 {
+            if let Some(trend) = self.ring.hardware_trend(range_secs, bucket_secs) {
+                let narrative = trend_narrative(&trend, range_str);
+                let response = McpResponse::success(trend, narrative);
+                return serde_json::to_string(&response)
+                    .unwrap_or_else(|e| format!("{{\"ok\":false,\"error\":\"{}\"}}", e));
+            }
+        }
+
+        // Slow path: DB for longer windows or when ring has insufficient data.
         match persistence::query_trend(&self.db, range_secs, bucket_secs) {
             Ok(trend) => {
                 let narrative = trend_narrative(&trend, range_str);
