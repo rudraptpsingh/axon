@@ -8,7 +8,10 @@
 //! (`/sys/class/drm/cardX/device/gpu_busy_percent`, `mem_info_vram_*`).
 //! Falls back to all-None if neither is available.
 //!
-//! Other platforms: Returns `None` for all live fields.
+//! Windows: Tries NVIDIA (`nvidia-smi`) first for full data. Falls back to
+//! GPU Engine performance counters (utilization) + WMI Win32_VideoController
+//! (model + VRAM) for AMD/Intel/any GPU. Static info cached; utilization
+//! refreshed every 5 ticks (~10s).
 
 use crate::types::GpuSnapshot;
 
@@ -22,7 +25,11 @@ pub fn read_gpu_snapshot() -> GpuSnapshot {
     {
         read_gpu_linux()
     }
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    #[cfg(target_os = "windows")]
+    {
+        read_gpu_windows()
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
     {
         GpuSnapshot {
             utilization_pct: None,
@@ -227,6 +234,141 @@ fn extract_quoted_string(text: &str, key: &str) -> Option<String> {
     }
 }
 
+// ── Windows implementation ────────────────────────────────────────────────────
+
+/// Cached GPU static info (model + VRAM) — fetched once, reused on every tick.
+#[cfg(target_os = "windows")]
+static GPU_STATIC_CACHE: std::sync::Mutex<Option<(Option<String>, Option<u64>)>> =
+    std::sync::Mutex::new(None);
+
+/// Cached GPU utilization — refreshed every 5 ticks (~10s) to avoid
+/// PowerShell startup overhead on every 2s tick.
+#[cfg(target_os = "windows")]
+static GPU_UTIL_CACHE: std::sync::Mutex<(Option<f64>, u32)> = std::sync::Mutex::new((None, 0));
+
+#[cfg(target_os = "windows")]
+fn read_gpu_windows() -> GpuSnapshot {
+    let now = chrono::Utc::now();
+
+    // nvidia-smi gives full data in a single call — prefer it when available
+    if let Some(snap) = try_nvidia_smi(now) {
+        return snap;
+    }
+
+    // Fallback: combine WMI static info + GPU perf counter utilization
+
+    // 1. Static info (model + VRAM total) — fetch once
+    let mut static_cache = GPU_STATIC_CACHE.lock().unwrap();
+    if static_cache.is_none() {
+        *static_cache = Some(fetch_wmi_gpu_static());
+    }
+    let (ref model, vram_alloc) = static_cache.as_ref().unwrap();
+
+    // 2. Utilization — refresh every 5 ticks
+    let utilization_pct = {
+        let mut util_cache = GPU_UTIL_CACHE.lock().unwrap();
+        util_cache.1 += 1;
+        if util_cache.1 == 1 || util_cache.1 % 5 == 0 {
+            util_cache.0 = fetch_gpu_engine_utilization();
+        }
+        util_cache.0
+    };
+
+    let detected = model.is_some();
+    GpuSnapshot {
+        utilization_pct,
+        tiler_utilization_pct: None,
+        renderer_utilization_pct: None,
+        vram_used_bytes: None,
+        vram_alloc_bytes: *vram_alloc,
+        recovery_count: None,
+        model: model.clone(),
+        core_count: None,
+        detected,
+        ts: now,
+    }
+}
+
+/// Fetch GPU model and VRAM from Win32_VideoController (one-time).
+#[cfg(target_os = "windows")]
+fn fetch_wmi_gpu_static() -> (Option<String>, Option<u64>) {
+    use std::process::Command;
+    let output = match Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-Command",
+            "Get-CimInstance Win32_VideoController | Where-Object { $_.Name -notlike '*IDDCX*' -and $_.Name -notlike '*Basic*' -and $_.Name -notlike '*Remote*' } | Select-Object -First 1 -Property Name,AdapterRAM | ConvertTo-Json",
+        ])
+        .output()
+    {
+        Ok(o) => o,
+        Err(_) => return (None, None),
+    };
+    if !output.status.success() {
+        return (None, None);
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    let text = text.trim();
+    if text.is_empty() || text == "null" {
+        return (None, None);
+    }
+    parse_wmi_gpu_static(text)
+}
+
+#[cfg(target_os = "windows")]
+fn parse_wmi_gpu_static(text: &str) -> (Option<String>, Option<u64>) {
+    let v: serde_json::Value = match serde_json::from_str(text) {
+        Ok(v) => v,
+        Err(_) => return (None, None),
+    };
+    let obj = if v.is_array() { v.get(0).unwrap_or(&v) } else { &v };
+    let model = obj.get("Name").and_then(|v| v.as_str()).map(|s| s.to_string());
+    let vram = obj.get("AdapterRAM").and_then(|v| v.as_u64());
+    (model, vram)
+}
+
+/// Read total GPU utilization from Windows GPU Engine performance counters.
+/// Sums UtilizationPercentage across all GPU engine instances.
+#[cfg(target_os = "windows")]
+fn fetch_gpu_engine_utilization() -> Option<f64> {
+    use std::process::Command;
+    let output = Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-Command",
+            "(Get-CimInstance Win32_PerfFormattedData_GPUPerformanceCounters_GPUEngine -ErrorAction SilentlyContinue | Measure-Object -Property UtilizationPercentage -Sum).Sum",
+        ])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    let val = text.trim().parse::<f64>().ok()?;
+    Some(val.clamp(0.0, 100.0))
+}
+
+/// Parse WMI GPU JSON — used by unit tests.
+#[cfg(all(target_os = "windows", test))]
+fn parse_wmi_gpu(text: &str, now: chrono::DateTime<chrono::Utc>) -> Option<GpuSnapshot> {
+    let (model, vram_alloc_bytes) = parse_wmi_gpu_static(text);
+    if model.is_none() {
+        return None;
+    }
+    Some(GpuSnapshot {
+        utilization_pct: None,
+        tiler_utilization_pct: None,
+        renderer_utilization_pct: None,
+        vram_used_bytes: None,
+        vram_alloc_bytes: vram_alloc_bytes,
+        recovery_count: None,
+        model,
+        core_count: None,
+        detected: true,
+        ts: now,
+    })
+}
+
 // ── Linux implementation ───────────────────────────────────────────────────────
 
 #[cfg(target_os = "linux")]
@@ -250,7 +392,8 @@ fn read_gpu_linux() -> GpuSnapshot {
 
 /// Query `nvidia-smi` for GPU name, utilisation, and VRAM.
 /// Returns `None` if `nvidia-smi` is not present or returns a non-zero exit code.
-#[cfg(target_os = "linux")]
+/// Available on Linux and Windows (nvidia-smi ships with NVIDIA drivers on both).
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 fn try_nvidia_smi(now: chrono::DateTime<chrono::Utc>) -> Option<GpuSnapshot> {
     use std::process::Command;
     let output = Command::new("nvidia-smi")
@@ -269,7 +412,7 @@ fn try_nvidia_smi(now: chrono::DateTime<chrono::Utc>) -> Option<GpuSnapshot> {
 
 /// Parse one line of `nvidia-smi --format=csv,noheader,nounits` output.
 /// Expected format: `<name>, <util%>, <mem_used_MiB>, <mem_total_MiB>`
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 fn parse_nvidia_smi_csv(text: &str, now: chrono::DateTime<chrono::Utc>) -> Option<GpuSnapshot> {
     let line = text.lines().find(|l| !l.trim().is_empty())?;
     let parts: Vec<&str> = line.splitn(4, ',').map(|s| s.trim()).collect();
@@ -377,6 +520,7 @@ fn read_sysfs_string(path: &std::path::Path) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    #[allow(unused_imports)]
     use super::*;
 
     #[cfg(target_os = "macos")]
@@ -435,9 +579,9 @@ mod tests {
         }
     }
 
-    // ── Linux unit tests (parser; no hardware required) ──────────────────────
+    // ── nvidia-smi parser tests (Linux + Windows; no hardware required) ────
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     #[test]
     fn parse_nvidia_smi_csv_typical() {
         let ts = chrono::Utc::now();
@@ -453,7 +597,7 @@ mod tests {
         assert!(snap.core_count.is_none());
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     #[test]
     fn parse_nvidia_smi_csv_zero_util() {
         let ts = chrono::Utc::now();
@@ -464,7 +608,7 @@ mod tests {
         assert_eq!(snap.vram_used_bytes, Some(512 * 1024 * 1024));
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     #[test]
     fn parse_nvidia_smi_csv_empty_returns_none() {
         let ts = chrono::Utc::now();
@@ -472,14 +616,14 @@ mod tests {
         assert!(parse_nvidia_smi_csv("   \n", ts).is_none());
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     #[test]
     fn parse_nvidia_smi_csv_too_few_fields_returns_none() {
         let ts = chrono::Utc::now();
         assert!(parse_nvidia_smi_csv("NVIDIA RTX 3080, 45\n", ts).is_none());
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     #[test]
     fn parse_nvidia_smi_csv_name_with_comma() {
         // splitn(4, ',') ensures the name can contain commas
@@ -492,9 +636,42 @@ mod tests {
         // No assertion on content; just must not panic.
     }
 
-    /// Live smoke test: run on Linux only when a real GPU is present.
+    // ── Windows WMI parser tests ──────────────────────────────────────────────
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn parse_wmi_gpu_amd() {
+        let ts = chrono::Utc::now();
+        let input = r#"{"Name":"AMD Radeon(TM) Graphics","AdapterRAM":536870912}"#;
+        let snap = parse_wmi_gpu(input, ts).expect("should parse AMD GPU");
+        assert_eq!(snap.model.as_deref(), Some("AMD Radeon(TM) Graphics"));
+        assert_eq!(snap.vram_alloc_bytes, Some(536870912));
+        assert!(snap.detected);
+        assert!(snap.utilization_pct.is_none()); // WMI can't read utilization
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn parse_wmi_gpu_nvidia() {
+        let ts = chrono::Utc::now();
+        let input = r#"{"Name":"NVIDIA GeForce RTX 4090","AdapterRAM":4293918720}"#;
+        let snap = parse_wmi_gpu(input, ts).expect("should parse NVIDIA GPU");
+        assert_eq!(snap.model.as_deref(), Some("NVIDIA GeForce RTX 4090"));
+        assert_eq!(snap.vram_alloc_bytes, Some(4293918720));
+        assert!(snap.detected);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn parse_wmi_gpu_null_returns_none() {
+        let ts = chrono::Utc::now();
+        assert!(parse_wmi_gpu("null", ts).is_none());
+        assert!(parse_wmi_gpu("", ts).is_none());
+    }
+
+    /// Live smoke test: run on Linux/Windows when a real GPU is present.
     /// Gated behind --ignored so CI does not require hardware.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     #[test]
     #[ignore]
     fn live_linux_gpu_snapshot_does_not_panic() {

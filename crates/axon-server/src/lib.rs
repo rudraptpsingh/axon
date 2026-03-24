@@ -170,7 +170,7 @@ impl AxonServer {
     }
 
     #[tool(
-        description = "Real-time GPU snapshot. Returns GPU utilization %, tiler and renderer stage utilization, VRAM in use and allocated (bytes), cumulative GPU hang/reset count, model name, and core count. macOS only (Apple Silicon and Intel). Returns null fields on unsupported platforms. Call before GPU-heavy workloads (ML inference, 3D rendering, video encoding) to check GPU headroom and detect driver crashes."
+        description = "Real-time GPU snapshot. Returns GPU utilization %, tiler and renderer stage utilization, VRAM in use and allocated (bytes), cumulative GPU hang/reset count, model name, and core count. macOS (ioreg), Linux (nvidia-smi/AMD sysfs), Windows (nvidia-smi/GPU perf counters + WMI). Returns null fields when no GPU is detected. Call before GPU-heavy workloads (ML inference, 3D rendering, video encoding) to check GPU headroom and detect driver crashes."
     )]
     async fn gpu_snapshot(&self, _p: Parameters<EmptyParams>) -> String {
         let gpu = {

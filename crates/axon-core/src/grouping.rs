@@ -7,8 +7,14 @@ use crate::types::{ProcessGroup, ProcessInfo};
 pub fn normalize_process_name(cmd: &str) -> String {
     let name = cmd.trim_end_matches('\0').trim();
 
-    // Strip path prefix (e.g., "/usr/bin/node" -> "node")
-    let base = name.split('/').next_back().unwrap_or(name);
+    // Strip path prefix (e.g., "/usr/bin/node" -> "node", "C:\Program Files\app.exe" -> "app.exe")
+    let base = name
+        .rsplit(|c| c == '/' || c == '\\')
+        .next()
+        .unwrap_or(name);
+
+    // Strip .exe suffix (Windows)
+    let base = base.strip_suffix(".exe").unwrap_or(base);
 
     // Strip helper suffixes common in macOS apps
     let stripped = base
@@ -102,6 +108,31 @@ mod tests {
     #[test]
     fn test_normalize_strips_null_bytes() {
         assert_eq!(normalize_process_name("node\0\0"), "node");
+    }
+
+    #[test]
+    fn test_normalize_strips_windows_path_and_exe() {
+        assert_eq!(
+            normalize_process_name("C:\\Program Files\\nodejs\\node.exe"),
+            "node"
+        );
+        assert_eq!(
+            normalize_process_name("C:\\Windows\\System32\\cmd.exe"),
+            "cmd"
+        );
+        assert_eq!(
+            normalize_process_name("D:\\tools\\cargo.exe"),
+            "cargo"
+        );
+    }
+
+    #[test]
+    fn test_normalize_mixed_separators() {
+        // Some tools use forward slashes on Windows
+        assert_eq!(
+            normalize_process_name("C:/Users/user/.cargo/bin/cargo.exe"),
+            "cargo"
+        );
     }
 
     /// Verify every real Cursor process variant (observed on macOS) normalizes

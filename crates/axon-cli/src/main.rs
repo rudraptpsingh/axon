@@ -242,11 +242,15 @@ async fn run_diagnose() -> Result<()> {
             .map(|p| p.to_string())
             .collect::<Vec<_>>()
             .join(" ");
+        #[cfg(target_os = "windows")]
+        let kill_hint = format!("taskkill /F /PID {}", pids.replace(' ', " /PID "));
+        #[cfg(not(target_os = "windows"))]
+        let kill_hint = format!("kill {}", pids);
         println!(
-            "[warn] {} stale axon instance(s) detected (PIDs: {}). Kill: kill {}",
+            "[warn] {} stale axon instance(s) detected (PIDs: {}). Kill: {}",
             blame.stale_axon_pids.len(),
             pids,
-            pids
+            kill_hint
         );
     }
 
@@ -1051,6 +1055,10 @@ fn uninstall_claude_code_inner() -> bool {
 fn purge_data() -> Result<()> {
     let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Cannot find home directory"))?;
 
+    // Platform-aware config directory
+    #[cfg(target_os = "windows")]
+    let config_dir = home.join("AppData/Roaming/axon");
+    #[cfg(not(target_os = "windows"))]
     let config_dir = home.join(".config/axon");
     if config_dir.exists() {
         std::fs::remove_dir_all(&config_dir)?;

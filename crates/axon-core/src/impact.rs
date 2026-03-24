@@ -175,14 +175,20 @@ pub fn compute_score_with_io(ram_pct: f64, cpu_pct: f64, swap_gb: f64, io_wait_p
 
 // ── I/O Wait Reader ─────────────────────────────────────────────────────────
 
-/// Read I/O wait percentage from the system.
-/// Linux: parses /proc/stat for iowait. macOS/Windows: returns 0.0 (no iowait concept).
+/// Read I/O wait / disk busy percentage from the system.
+/// Linux: parses /proc/stat for iowait.
+/// Windows: reads PhysicalDisk % Disk Time via `typeperf`.
+/// macOS: returns 0.0 (no iowait concept).
 pub fn read_io_wait_pct() -> f64 {
     #[cfg(target_os = "linux")]
     {
         read_io_wait_linux()
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "windows")]
+    {
+        read_disk_busy_windows()
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
     {
         0.0
     }
@@ -230,6 +236,52 @@ fn read_io_wait_linux() -> f64 {
     };
     *prev = Some((iowait, total));
     result
+}
+
+/// Windows: Read disk busy % via PowerShell Get-CimInstance.
+/// Returns the PhysicalDisk(_Total) % Disk Time, which is the Windows
+/// equivalent of Linux iowait — it measures how busy the disk subsystem is.
+///
+/// PowerShell startup costs ~0.8s, so we cache the result and only refresh
+/// every 5 calls (~10s at 2s tick interval) to avoid blocking the collector.
+#[cfg(target_os = "windows")]
+static DISK_BUSY_CACHE: std::sync::Mutex<(f64, u32)> = std::sync::Mutex::new((0.0, 0));
+
+#[cfg(target_os = "windows")]
+fn read_disk_busy_windows() -> f64 {
+    let mut cache = DISK_BUSY_CACHE.lock().unwrap();
+    cache.1 += 1;
+    // Refresh every 5 ticks (~10s); first call (tick 1) always fetches.
+    if cache.1 > 1 && cache.1 % 5 != 0 {
+        return cache.0;
+    }
+    let val = read_disk_busy_windows_inner();
+    cache.0 = val;
+    val
+}
+
+#[cfg(target_os = "windows")]
+fn read_disk_busy_windows_inner() -> f64 {
+    use std::process::Command;
+    let output = match Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-Command",
+            "(Get-CimInstance Win32_PerfFormattedData_PerfDisk_PhysicalDisk -Filter \"Name='_Total'\").PercentDiskTime",
+        ])
+        .output()
+    {
+        Ok(o) => o,
+        Err(_) => return 0.0,
+    };
+    if !output.status.success() {
+        return 0.0;
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .parse::<f64>()
+        .unwrap_or(0.0)
+        .clamp(0.0, 100.0)
 }
 
 /// Map anomaly score → ImpactLevel with persistence check.

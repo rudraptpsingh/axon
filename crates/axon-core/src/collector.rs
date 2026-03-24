@@ -658,7 +658,11 @@ fn read_battery() -> Option<BatteryStatus> {
     {
         read_battery_linux()
     }
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    #[cfg(target_os = "windows")]
+    {
+        read_battery_windows()
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
     {
         None
     }
@@ -756,6 +760,57 @@ fn read_battery_linux() -> Option<BatteryStatus> {
     Some(build_battery_status(percentage, is_charging, time_to_empty))
 }
 
+/// Windows: Query battery via WMIC (available on all Windows versions).
+/// Parses `wmic path Win32_Battery get EstimatedChargeRemaining,BatteryStatus /format:csv`.
+#[cfg(target_os = "windows")]
+fn read_battery_windows() -> Option<BatteryStatus> {
+    use std::process::Command;
+
+    // Use PowerShell to query WMI for battery info (wmic is deprecated but still works)
+    let output = Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-Command",
+            "Get-CimInstance Win32_Battery | Select-Object -Property EstimatedChargeRemaining,BatteryStatus,EstimatedRunTime | ConvertTo-Json",
+        ])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    let text = text.trim();
+    if text.is_empty() || text == "null" {
+        return None; // No battery present (desktop PC)
+    }
+
+    let v: serde_json::Value = serde_json::from_str(text).ok()?;
+    // Handle both single object and array (multi-battery)
+    let obj = if v.is_array() { v.get(0)? } else { &v };
+
+    let percentage = obj
+        .get("EstimatedChargeRemaining")
+        .and_then(|v| v.as_f64())? as f32;
+
+    // BatteryStatus: 1=Discharging, 2=AC/Charging, 3=FullyCharged, ...
+    let status = obj
+        .get("BatteryStatus")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(1);
+    let is_charging = status == 2 || status == 3 || status == 6 || status == 7 || status == 8 || status == 9;
+
+    let time_to_empty = if !is_charging {
+        obj.get("EstimatedRunTime")
+            .and_then(|v| v.as_u64())
+            .filter(|&v| v < 71_582) // WMI uses 71582 for "unknown"
+            .map(|v| v as u32)
+    } else {
+        None
+    };
+
+    Some(build_battery_status(percentage, is_charging, time_to_empty))
+}
+
 fn build_battery_status(
     percentage: f32,
     is_charging: bool,
@@ -817,11 +872,15 @@ pub fn build_system_profile() -> SystemProfile {
             .map(|p| p.to_string())
             .collect::<Vec<_>>()
             .join(" ");
+        #[cfg(target_os = "windows")]
+        let kill_hint = format!("taskkill /F /PID {}", pid_list.replace(' ', " /PID "));
+        #[cfg(not(target_os = "windows"))]
+        let kill_hint = format!("kill {}", pid_list);
         startup_warnings.push(format!(
-            "{} stale axon serve instance(s) detected (PIDs: {}). Kill them: kill {}",
+            "{} stale axon serve instance(s) detected (PIDs: {}). Kill them: {}",
             axon_siblings.len(),
             pid_list,
-            pid_list,
+            kill_hint,
         ));
     }
 
@@ -897,7 +956,55 @@ fn detect_platform_info(sys: &System) -> (String, String) {
     (model_id, chip)
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+#[cfg(target_os = "windows")]
+fn detect_platform_info(sys: &System) -> (String, String) {
+    let chip = sys
+        .cpus()
+        .first()
+        .map(|cpu| cpu.brand().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "Unknown CPU".to_string());
+
+    // Try to get the machine model from WMI (e.g. "Dell XPS 15 9520", "Surface Laptop 5")
+    let model_id = detect_windows_model()
+        .unwrap_or_else(|| sysinfo::System::host_name().unwrap_or_else(|| "Windows PC".to_string()));
+
+    (model_id, chip)
+}
+
+#[cfg(target_os = "windows")]
+fn detect_windows_model() -> Option<String> {
+    use std::process::Command;
+    let output = Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-Command",
+            "Get-CimInstance Win32_ComputerSystem | Select-Object Manufacturer,Model | ConvertTo-Json",
+        ])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    let text = text.trim();
+    let v: serde_json::Value = serde_json::from_str(text).ok()?;
+    let mfr = v.get("Manufacturer").and_then(|v| v.as_str()).unwrap_or("");
+    let model = v.get("Model").and_then(|v| v.as_str()).unwrap_or("");
+    if model.is_empty()
+        || model.contains("To Be Filled")
+        || model.contains("System Product Name")
+    {
+        return None;
+    }
+    if mfr.is_empty() || mfr == "OEMGR" || mfr.contains("To Be Filled") {
+        Some(model.to_string())
+    } else {
+        Some(format!("{} {}", mfr, model))
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
 fn detect_platform_info(sys: &System) -> (String, String) {
     let chip = sys
         .cpus()

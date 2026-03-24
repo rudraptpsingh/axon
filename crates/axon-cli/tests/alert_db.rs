@@ -106,7 +106,9 @@ fn test_uninstall_purges_db() {
     let axon_data = home.join("Library/Application Support/axon");
     #[cfg(target_os = "linux")]
     let axon_data = home.join(".local/share/axon");
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    #[cfg(target_os = "windows")]
+    let axon_data = home.join("AppData/Local/axon");
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
     let axon_data = home.join(".local/share/axon");
     std::fs::create_dir_all(&axon_data).unwrap();
     std::fs::write(axon_data.join("hardware.db"), "fake").unwrap();

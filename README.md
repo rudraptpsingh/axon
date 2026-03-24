@@ -8,7 +8,7 @@ This is not theoretical. There are [15 open GitHub issues](docs/problem-validati
 
 axon is an [MCP](https://modelcontextprotocol.io/) server that gives AI agents real-time hardware awareness. It tells the agent what process is slowing things down, how to fix it, and whether the machine can handle the next task. One tool call. ~200 tokens. Structured answer.
 
-Works with Claude Desktop, Cursor, VS Code, and Claude Code. macOS and Linux today. Windows coming.
+Works with Claude Desktop, Cursor, VS Code, and Claude Code. macOS, Linux, and Windows.
 
 ## Privacy
 
@@ -164,7 +164,7 @@ Key design decisions:
 
 ## Requirements
 
-- macOS (Apple Silicon or Intel) and Linux. Windows support planned -- the underlying `sysinfo` crate already supports it.
+- macOS (Apple Silicon or Intel), Linux, and Windows.
 - Rust 1.75+ (for building from source)
 
 ## See also

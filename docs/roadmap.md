@@ -367,7 +367,7 @@ Update `crates/axon-cli/src/main.rs` (the `query` subcommand) to accept
 
 ## Item 4: Linux and Windows Support
 
-### Status: Linux done (v0.2.0), Windows planned
+### Status: Linux done (v0.2.0), Windows done (v0.2.6)
 
 ### Problem this solves
 
