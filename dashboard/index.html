@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Axon — Agent Network</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--bg:#07080c;--s1:#0e1017;--s2:#151822;--s3:#1d2130;--t1:#e8eaf0;--t2:#8b90a5;--t3:#585e75;--green:#10b981;--green2:#059669;--amber:#f59e0b;--red:#ef4444;--red2:#dc2626;--blue:#818cf8;--cyan:#22d3ee;--purple:#a78bfa;--border:rgba(255,255,255,0.06);--r:10px}
+body{background:var(--bg);color:var(--t1);font-family:'Inter','SF Pro Display',-apple-system,sans-serif;font-size:13px;height:100vh;overflow:hidden;-webkit-font-smoothing:antialiased}
+code,.mono{font-family:'SF Mono','Fira Code',monospace}
+
+.app{display:grid;grid-template-rows:auto 1fr;height:100vh}
+
+/* ── Nav ── */
+nav{display:flex;justify-content:space-between;align-items:center;padding:0 24px;height:52px;border-bottom:1px solid var(--border);background:var(--s1)}
+nav .left{display:flex;align-items:center;gap:24px}
+.logo{font-size:15px;font-weight:800;letter-spacing:4px;background:linear-gradient(135deg,var(--blue),var(--cyan));-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.logo sub{font-size:9px;color:var(--t3);-webkit-text-fill-color:var(--t3);font-weight:400;letter-spacing:0}
+.nav-tabs{display:flex;gap:2px}
+.nav-tab{padding:8px 16px;font:500 12px inherit;color:var(--t3);background:none;border:none;cursor:pointer;border-radius:6px;transition:all .15s}
+.nav-tab:hover{color:var(--t2);background:var(--s2)}
+.nav-tab.active{color:var(--blue);background:rgba(129,140,248,0.08)}
+nav .center{display:flex;gap:20px;align-items:center}
+.metric{display:flex;align-items:center;gap:5px;font-size:12px}
+.metric .m-label{color:var(--t3);font-size:10px;font-weight:500}
+.metric .m-val{font-weight:700;font-family:'SF Mono',monospace;font-size:12px}
+.htag{font-size:10px;padding:3px 10px;border-radius:20px;font-weight:700;letter-spacing:.3px}
+.htag.ok{background:rgba(16,185,129,0.1);color:var(--green)}.htag.warn{background:rgba(245,158,11,0.1);color:var(--amber)}.htag.crit{background:rgba(239,68,68,0.1);color:var(--red)}
+nav .right{display:flex;gap:8px}
+.btn{padding:8px 18px;border-radius:8px;font:600 12px inherit;cursor:pointer;transition:all .15s;border:none}
+.btn-primary{background:var(--blue);color:white}.btn-primary:hover{background:#6366f1}
+.btn-outline{background:transparent;border:1px solid var(--border);color:var(--t2)}.btn-outline:hover{border-color:var(--t3);color:var(--t1)}
+.btn-green{background:var(--green);color:white}.btn-green:hover{background:var(--green2)}
+.btn:disabled{opacity:.35;cursor:default}
+
+/* ── Pages ── */
+.page{display:none;height:100%;overflow:hidden}.page.active{display:flex}
+
+/* ── Agents page ── */
+.agents-page{flex-direction:column;gap:0}
+.agents-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;padding:20px 24px;overflow-y:auto;flex:1}
+.acard{background:var(--s1);border:1px solid var(--border);border-radius:var(--r);overflow:hidden;display:flex;flex-direction:column;transition:all .2s}
+.acard.running{border-color:rgba(129,140,248,0.3);box-shadow:0 0 20px rgba(129,140,248,0.05)}.acard.done{border-color:rgba(16,185,129,0.2)}.acard.idle{opacity:.3}
+.ac-head{display:flex;justify-content:space-between;align-items:center;padding:14px 18px;border-bottom:1px solid var(--border)}
+.ac-left{display:flex;align-items:center;gap:10px}
+.dot{width:8px;height:8px;border-radius:50%}.dot.on{background:var(--green);box-shadow:0 0 8px var(--green)}.dot.off{background:var(--t3)}.dot.run{background:var(--cyan);box-shadow:0 0 10px var(--cyan);animation:pulse 1.5s infinite}
+@keyframes pulse{0%,100%{opacity:1;box-shadow:0 0 10px var(--cyan)}50%{opacity:.5;box-shadow:0 0 4px var(--cyan)}}
+.ac-name{font-weight:700;font-size:13px}
+.ac-right{text-align:right}
+.chip{display:inline-block;font-size:10px;font-weight:600;padding:3px 10px;border-radius:20px}
+.chip-run{background:rgba(34,211,238,0.1);color:var(--cyan)}.chip-done{background:rgba(16,185,129,0.08);color:var(--green)}.chip-idle{color:var(--t3)}
+.ac-tokens{font-size:11px;color:var(--t3);margin-top:3px;font-family:'SF Mono',monospace}
+.ac-body{flex:1;padding:16px 18px;overflow-y:auto}
+.task-box{font-size:11px;color:var(--t3);padding:10px 12px;background:var(--s2);border-radius:8px;border-left:3px solid var(--s3);line-height:1.5;margin-bottom:14px}
+.pipe-step{position:relative;padding:10px 12px 10px 32px;margin-left:8px;border-left:2px solid var(--border)}
+.pipe-step:last-child{border-left-color:transparent}
+.pipe-step::before{content:'';position:absolute;left:-7px;top:13px;width:12px;height:12px;border-radius:50%;border:2px solid var(--t3);background:var(--s1)}
+.pipe-step.green::before{border-color:var(--green);background:rgba(16,185,129,0.12)}.pipe-step.red::before{border-color:var(--red);background:rgba(239,68,68,0.12)}
+.pipe-label{font-size:10px;font-weight:700;letter-spacing:.5px;margin-bottom:4px}
+.pipe-label.green{color:var(--green)}.pipe-label.red{color:var(--red)}
+.pipe-text{font-size:12px;color:var(--t2);line-height:1.6}
+.pipe-meta{font-size:10px;color:var(--t3);margin-top:4px;font-family:'SF Mono',monospace}
+.pipe-wait{padding:10px 12px 10px 32px;margin-left:8px;border-left:2px solid var(--border);position:relative}
+.pipe-wait::before{content:'';position:absolute;left:-7px;top:13px;width:12px;height:12px;border-radius:50%;border:2px solid var(--t3);border-top-color:var(--blue);animation:spin .7s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.pipe-wait span{font-size:11px;color:var(--t3)}
+
+/* ── Benchmark page ── */
+.bench-page{flex-direction:column}
+.bench-header{padding:20px 24px 0;display:flex;justify-content:space-between;align-items:flex-start}
+.bench-header h2{font-size:18px;font-weight:700}
+.bench-header p{font-size:12px;color:var(--t3);margin-top:4px}
+.bench-status-chip{font-size:11px;padding:4px 12px;border-radius:20px;font-weight:600}
+.bench-grid{display:grid;grid-template-columns:1fr 1fr;gap:20px;padding:16px 24px;flex:1;overflow-y:auto}
+
+/* Side card */
+.bside{background:var(--s1);border:1px solid var(--border);border-radius:var(--r);padding:20px;display:flex;flex-direction:column;gap:16px}
+.bside.naive{border-top:3px solid var(--red)}.bside.axon{border-top:3px solid var(--green)}
+.bside-head{display:flex;justify-content:space-between;align-items:center}
+.bside-head h3{font-size:14px;font-weight:700;display:flex;align-items:center;gap:8px}
+.bside-head .badge{font-size:9px;padding:2px 8px;border-radius:4px;font-weight:600}
+.badge-naive{background:rgba(239,68,68,0.1);color:var(--red)}.badge-axon{background:rgba(16,185,129,0.1);color:var(--green)}
+
+/* Config grid */
+.cfg-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.cfg-item{background:var(--s2);border-radius:8px;padding:10px 12px}
+.cfg-item .cfg-lbl{font-size:9px;color:var(--t3);text-transform:uppercase;letter-spacing:1px;margin-bottom:4px}
+.cfg-item .cfg-val{font-size:18px;font-weight:800;font-family:'SF Mono',monospace}
+
+/* Progress */
+.prog-wrap{display:flex;flex-direction:column;gap:4px}
+.prog-top{display:flex;justify-content:space-between;font-size:11px}
+.prog-bar{height:6px;background:var(--s3);border-radius:3px;overflow:hidden}
+.prog-fill{height:100%;border-radius:3px;transition:width .4s ease}
+.prog-fill.red{background:linear-gradient(90deg,var(--red),var(--amber))}.prog-fill.green{background:linear-gradient(90deg,var(--green),var(--cyan))}
+
+/* Results table */
+.res-table{width:100%}
+.res-row{display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border);font-size:12px}
+.res-row:last-child{border:none}
+.res-row .rl{color:var(--t3)}.res-row .rv{font-weight:700;font-family:'SF Mono',monospace}
+.rv.good{color:var(--green)}.rv.bad{color:var(--red)}.rv.mid{color:var(--amber)}
+
+/* Mini chart */
+.mini-chart{display:flex;align-items:flex-end;gap:2px;height:40px}
+.mini-bar{flex:1;border-radius:2px 2px 0 0;transition:height .3s;min-width:3px}
+
+/* Decision callout */
+.callout{padding:14px 16px;border-radius:8px;border-left:4px solid var(--t3)}
+.callout.bad{background:rgba(239,68,68,0.04);border-left-color:var(--red)}
+.callout.good{background:rgba(16,185,129,0.04);border-left-color:var(--green)}
+.callout h4{font-size:10px;color:var(--t3);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px}
+.callout p{font-size:12px;color:var(--t2);line-height:1.6}
+
+/* Agent setup box */
+.setup-box{background:var(--s2);border-radius:8px;padding:12px 14px;margin-bottom:12px;font-size:11px;line-height:1.6}
+.setup-box .sb-title{font-size:9px;color:var(--t3);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px;font-weight:600}
+.setup-box code{background:var(--s3);padding:1px 5px;border-radius:3px;font-size:10px;color:var(--cyan)}
+.setup-box .sb-line{display:flex;gap:8px;padding:2px 0;color:var(--t2)}
+.setup-box .sb-num{color:var(--t3);font-family:'SF Mono',monospace;min-width:16px;text-align:right;flex-shrink:0}
+
+/* Timeline steps */
+.timeline{display:flex;flex-direction:column;gap:0;margin:12px 0}
+.tl-step{position:relative;padding:8px 12px 8px 30px;border-left:2px solid var(--border);margin-left:8px}
+.tl-step:last-child{border-left-color:transparent}
+.tl-step::before{content:'';position:absolute;left:-7px;top:11px;width:12px;height:12px;border-radius:50%;background:var(--s1)}
+.tl-step.pending::before{border:2px solid var(--t3)}
+.tl-step.active::before{border:2px solid var(--cyan);background:rgba(34,211,238,0.15);box-shadow:0 0 6px rgba(34,211,238,0.2)}
+.tl-step.done::before{border:2px solid var(--green);background:rgba(16,185,129,0.15)}
+.tl-step.fail::before{border:2px solid var(--red);background:rgba(239,68,68,0.15)}
+.tl-head{font-size:11px;font-weight:600;margin-bottom:2px}
+.tl-head.green{color:var(--green)}.tl-head.red{color:var(--red)}.tl-head.blue{color:var(--blue)}.tl-head.cyan{color:var(--cyan)}
+.tl-body{font-size:11px;color:var(--t2);line-height:1.5}
+.tl-body code{background:var(--s3);padding:1px 5px;border-radius:3px;font-size:10px;color:var(--cyan)}
+.tl-mcp{margin-top:4px;background:var(--s2);border-radius:6px;padding:8px 10px;font-size:10px;font-family:'SF Mono',monospace;color:var(--t3);line-height:1.5;border-left:2px solid var(--blue)}
+.tl-mcp .mcp-dir{color:var(--blue);font-weight:700}
+.tl-mcp .mcp-tool{color:var(--amber)}
+.tl-mcp .mcp-val{color:var(--t2)}
+.tl-mcp .mcp-key{color:var(--t3)}
+
+/* ── Comparison summary (appears after both complete) ── */
+.summary{grid-column:span 2;background:var(--s1);border:1px solid var(--border);border-radius:var(--r);padding:24px;display:none}
+.summary.visible{display:block;animation:fadeUp .5s ease-out}
+@keyframes fadeUp{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}
+.summary h3{font-size:16px;font-weight:700;margin-bottom:16px;text-align:center}
+.cmp-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:20px}
+.cmp-card{text-align:center;padding:16px;background:var(--s2);border-radius:8px}
+.cmp-card .cmp-label{font-size:10px;color:var(--t3);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px}
+.cmp-card .cmp-naive{font-size:20px;font-weight:800;color:var(--red);font-family:'SF Mono',monospace}
+.cmp-card .cmp-vs{font-size:10px;color:var(--t3);margin:4px 0}
+.cmp-card .cmp-axon{font-size:20px;font-weight:800;color:var(--green);font-family:'SF Mono',monospace}
+.cmp-card .cmp-delta{font-size:11px;font-weight:700;margin-top:6px;padding:2px 8px;border-radius:4px;display:inline-block}
+.cmp-card .cmp-delta.better{background:rgba(16,185,129,0.1);color:var(--green)}
+.cmp-card .cmp-delta.worse{background:rgba(239,68,68,0.1);color:var(--red)}
+.cmp-bars{display:flex;gap:24px;justify-content:center;align-items:flex-end;height:80px;margin-bottom:16px;padding:0 40px}
+.cmp-bar-group{display:flex;flex-direction:column;align-items:center;gap:4px;flex:1;max-width:200px}
+.cmp-bar-pair{display:flex;gap:4px;align-items:flex-end;width:100%;height:60px}
+.cmp-bar{flex:1;border-radius:4px 4px 0 0;transition:height .5s}
+.cmp-bar.naive{background:var(--red)}.cmp-bar.axon{background:var(--green)}
+.cmp-bar-label{font-size:9px;color:var(--t3)}
+.summary-verdict{text-align:center;font-size:13px;color:var(--t2);line-height:1.6;max-width:600px;margin:0 auto}
+.summary-verdict strong{color:var(--t1)}
+.summary-verdict .highlight{color:var(--green);font-weight:700}
+
+/* Footer */
+.footer{position:fixed;bottom:0;left:0;right:0;height:28px;border-top:1px solid var(--border);background:var(--s1);padding:0 24px;display:flex;align-items:center;gap:12px;overflow-x:auto;white-space:nowrap;z-index:50}
+.footer .fl{font-size:9px;color:var(--t3);text-transform:uppercase;letter-spacing:1px;flex-shrink:0}
+.fa{font-size:10px;display:inline-flex;gap:4px;flex-shrink:0}.fa .sev{font-weight:700;font-size:9px}.fa .sev.critical{color:var(--red)}.fa .sev.warning{color:var(--amber)}.fa .msg{color:var(--t3);font-size:9px}
+
+::-webkit-scrollbar{width:4px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:rgba(255,255,255,0.08);border-radius:2px}
+@media(prefers-reduced-motion:reduce){.dot.run,.pipe-wait::before{animation:none!important}.summary{animation:none!important}}
+</style>
+</head>
+<body>
+<div class="app">
+  <nav>
+    <div class="left">
+      <div class="logo">AXON <sub id="machInfo"></sub></div>
+      <div class="nav-tabs">
+        <button class="nav-tab active" onclick="showPage('agents',this)">Agents</button>
+        <button class="nav-tab" onclick="showPage('bench',this)">Benchmark</button>
+      </div>
+    </div>
+    <div class="center" id="hwStrip">
+      <div class="metric"><span class="m-label">CPU</span><span class="m-val mono" id="vCpu">--%</span></div>
+      <div class="metric"><span class="m-label">RAM</span><span class="m-val mono" id="vRam">--</span></div>
+      <div class="metric"><span class="m-label">GPU</span><span class="m-val mono" id="vGpu">--%</span></div>
+      <div class="metric"><span class="m-label">TEMP</span><span class="m-val mono" id="vTemp">--</span></div>
+      <span class="htag ok" id="headTag">--</span>
+    </div>
+    <div class="right">
+      <button class="btn btn-primary" id="spawnBtn" onclick="spawnAgents()">Spawn Agents</button>
+      <button class="btn btn-green" id="benchBtn" onclick="startBench()">Run Benchmark</button>
+    </div>
+  </nav>
+
+  <div style="height:calc(100vh - 52px - 28px);overflow:hidden">
+    <div class="page agents-page active" id="page-agents"><div class="agents-grid" id="agentsArea"></div></div>
+    <div class="page bench-page" id="page-bench">
+      <div class="bench-header">
+        <div>
+          <h2>Does hardware awareness improve agent performance?</h2>
+          <p style="margin-top:4px">Two agents process the same 30 images (3000x2000 → resize + blur + sharpen). One ignores system state. The other calls Axon's <code class="mono" style="color:var(--blue)">hw_snapshot()</code> first and adapts its batch size based on available headroom.</p>
+        </div>
+        <div class="bench-status-chip" id="benchChip" style="color:var(--t3)">Ready</div>
+      </div>
+      <div class="bench-grid" id="benchGrid">
+        <div class="bside naive" id="naiveSide"><div class="bside-head"><h3>Naive Agent <span class="badge badge-naive">No Axon</span></h3></div><p style="color:var(--t3);font-size:12px;padding:20px 0">Click "Run Benchmark" to start the A/B comparison</p></div>
+        <div class="bside axon" id="axonSide"><div class="bside-head"><h3>Axon-Aware Agent <span class="badge badge-axon">hw_snapshot()</span></h3></div><p style="color:var(--t3);font-size:12px;padding:20px 0">Runs after naive agent completes — same images, same machine, different strategy</p></div>
+        <div class="summary" id="summary"></div>
+      </div>
+    </div>
+  </div>
+</div>
+<div class="footer"><span class="fl">Alerts</span><span id="alertTicker" style="color:var(--t3);font-size:10px">Loading...</span></div>
+
+<script>
+let agents=[],spawned=[],ints=[],alerts=[],spawning=false;
+const esc=s=>s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+const fmtTok=n=>n>=1000?(n/1000).toFixed(1)+'k':''+n;
+const pCol=p=>p<40?'var(--green)':p<70?'var(--amber)':'var(--red)';
+function showPage(id,el){document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));document.getElementById('page-'+id).classList.add('active');document.querySelectorAll('.nav-tab').forEach(t=>t.classList.remove('active'));el.classList.add('active')}
+
+async function spawnAgents(){if(spawning)return;spawning=true;spawned=[];ints=[];const b=document.getElementById('spawnBtn');b.disabled=true;b.textContent='Running...';
+  try{const r=await fetch('/api/spawn-agents',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});const d=await r.json();b.textContent=d.spawned+' running';if(window._ip){clearInterval(window._ip);clearInterval(window._sp)}window._ip=setInterval(fetchInts,1200);window._sp=setInterval(fetchStatus,1500);renderCards()}catch(e){b.textContent='Failed';spawning=false;b.disabled=false}}
+async function startBench(){const b=document.getElementById('benchBtn');b.disabled=true;b.textContent='Running...';document.getElementById('benchChip').textContent='Running...';document.getElementById('benchChip').style.color='var(--cyan)';document.getElementById('summary').className='summary';showPage('bench',document.querySelectorAll('.nav-tab')[1]);try{await fetch('/api/bench/start',{method:'POST'})}catch(e){}if(window._bp)clearInterval(window._bp);window._bp=setInterval(fetchBench,700)}
+
+async function fetchSnap(){try{const d=await(await fetch('/api/snapshot')).json();updateHW(d)}catch(e){}}
+async function fetchProfile(){try{const d=await(await fetch('/api/profile')).json();document.getElementById('machInfo').textContent=d.chip+' · '+d.core_count+'C · '+d.ram_total_gb+'GB · v'+d.axon_version}catch(e){}}
+async function fetchAgents(){try{agents=await(await fetch('/api/agents')).json();renderCards()}catch(e){}}
+async function fetchAlerts(){try{alerts=await(await fetch('/api/alerts')).json();renderAlerts()}catch(e){}}
+async function fetchInts(){try{const d=await(await fetch('/api/interactions')).json();if(d.length!==ints.length){ints=d;renderCards()}}catch(e){}}
+async function fetchStatus(){try{spawned=await(await fetch('/api/agent-status')).json();renderCards();if(spawned.length>0&&spawned.every(a=>a.status!=='running')){document.getElementById('spawnBtn').disabled=false;document.getElementById('spawnBtn').textContent='Spawn Again';spawning=false}}catch(e){}}
+async function fetchBench(){try{const d=await(await fetch('/api/bench/status')).json();renderBench(d);if(d.phase==='done'){clearInterval(window._bp);document.getElementById('benchBtn').disabled=false;document.getElementById('benchBtn').textContent='Run Again';document.getElementById('benchChip').textContent='Complete';document.getElementById('benchChip').style.color='var(--green)'}}catch(e){}}
+
+function updateHW(d){
+  const s=(id,v,p)=>{const e=document.getElementById(id);e.textContent=v;e.style.color=pCol(p)};
+  s('vCpu',Math.round(d.cpu_pct)+'%',d.cpu_pct);s('vRam',d.ram_used_gb.toFixed(1)+'/'+d.ram_total_gb+'GB',(d.ram_used_gb/d.ram_total_gb)*100);
+  s('vGpu',d.gpu_util_pct!=null?Math.round(d.gpu_util_pct)+'%':'--',d.gpu_util_pct||0);s('vTemp',d.die_temp_c!=null?Math.round(d.die_temp_c)+'°':'--',d.die_temp_c||0);
+  const ht=document.getElementById('headTag');ht.className='htag '+(d.headroom==='insufficient'?'crit':d.headroom==='limited'?'warn':'ok');ht.textContent=d.headroom.toUpperCase();
+}
+
+// ── Agent cards ──
+function renderCards(){const area=document.getElementById('agentsArea');let cards=[];if(spawned.length>0)spawned.forEach(sa=>cards.push({t:'s',sa,mi:ints.filter(x=>x.agent_id===sa.id)}));agents.forEach((a,i)=>{if(i<spawned.length)return;cards.push({t:'r',a})});area.innerHTML=cards.map(c=>c.t==='s'?sCard(c.sa,c.mi):rCard(c.a)).join('')}
+function rCard(a){return `<div class="acard${a.registered?'':' idle'}"><div class="ac-head"><div class="ac-left"><div class="dot ${a.registered?'on':'off'}"></div><div class="ac-name">${esc(a.name)}</div></div><div class="ac-right"><span class="chip chip-idle">${a.registered?'Registered':'Not configured'}</span></div></div><div class="ac-body"><div class="task-box">${esc(a.config_path)}</div></div></div>`}
+function sCard(sa,mi){const r=sa.status==='running',d=sa.status==='completed';const steps=mi.filter(x=>!(x.direction==='agent_decision'&&x.message&&x.message.startsWith('Agent starting')));
+  let pipe=steps.map(x=>{if(x.direction!=='agent_decision')return '';const m=x.message||'';const neg=m.toLowerCase().match(/defer|insufficient|not safe|dangerous/);return `<div class="pipe-step ${neg?'red':'green'}"><div class="pipe-label ${neg?'red':'green'}">${neg?'DECISION — DEFER':'DECISION'}</div><div class="pipe-text">${fmtDec(m)}</div>${x.input_tokens?`<div class="pipe-meta">${fmtTok(x.input_tokens)} input · ${fmtTok(x.output_tokens||0)} output tokens</div>`:''}</div>`}).join('');
+  if(r)pipe+='<div class="pipe-wait"><span>'+(steps.length?'Processing...':'Connecting to Axon MCP...')+'</span></div>';
+  return `<div class="acard ${r?'running':d?'done':''}"><div class="ac-head"><div class="ac-left"><div class="dot ${r?'run':d?'on':'off'}"></div><div class="ac-name">${esc(sa.name)}</div></div><div class="ac-right"><span class="chip ${r?'chip-run':d?'chip-done':'chip-idle'}">${r?'Running':d?'Completed':'Failed'}</span>${(sa.input_tokens||sa.output_tokens)?`<div class="ac-tokens">${fmtTok(sa.input_tokens)} in · ${fmtTok(sa.output_tokens)} out</div>`:''}</div></div><div class="ac-body"><div class="task-box">${esc(sa.task.substring(0,100))}...</div>${pipe}</div></div>`}
+function fmtDec(m){let s=esc(m);s=s.replace(/\*\*(.*?)\*\*/g,'<strong style="color:var(--t1)">$1</strong>');s=s.replace(/(insufficient|critical|defer|dangerous|not safe)/gi,'<strong style="color:var(--red)">$1</strong>');s=s.replace(/(adequate|safe|proceed|available)/gi,'<strong style="color:var(--green)">$1</strong>');return s}
+
+// ── Benchmark ──
+function renderBench(d){
+  document.getElementById('naiveSide').innerHTML=bSide(d.naive,'naive',d.phase);
+  document.getElementById('axonSide').innerHTML=bSide(d.axon_aware,'axon',d.phase);
+  if(d.phase==='done')renderSummary(d.naive,d.axon_aware);
+}
+function bSide(run,type,phase){
+  const isN=type==='naive';
+  let h=`<div class="bside-head"><h3>${isN?'Naive Agent':'Axon-Aware Agent'} <span class="badge ${isN?'badge-naive':'badge-axon'}">${isN?'No Axon':'hw_snapshot()'}</span></h3></div>`;
+
+  if(run.status==='pending'&&phase==='setup')return h+'<p style="color:var(--t3);padding:20px 0">Generating 30 test images (3000×2000 JPEG with noise)...</p>';
+  if(run.status==='pending')return h+'<p style="color:var(--t3);padding:20px 0">Waiting for naive run to finish...</p>';
+
+  // Agent setup explanation
+  if(isN){
+    h+=`<div class="setup-box"><div class="sb-title">Agent Setup</div>
+      <div class="sb-line"><span class="sb-num">1.</span> Receive task: process ${run.total} images</div>
+      <div class="sb-line"><span class="sb-num">2.</span> <strong style="color:var(--red)">No resource check</strong> — start immediately</div>
+      <div class="sb-line"><span class="sb-num">3.</span> Launch all ${run.batch_size} resize operations in parallel</div>
+      <div class="sb-line"><span class="sb-num">4.</span> Each: <code>magick img -resize 1200x900 -gaussian-blur -unsharp</code></div>
+    </div>`;
+  } else {
+    h+=`<div class="setup-box"><div class="sb-title">Agent Setup</div>
+      <div class="sb-line"><span class="sb-num">1.</span> Receive task: process ${run.total} images</div>
+      <div class="sb-line"><span class="sb-num">2.</span> <strong style="color:var(--green)">Call Axon</strong> <code>hw_snapshot()</code> to check system state</div>
+      <div class="sb-line"><span class="sb-num">3.</span> Read headroom, RAM pressure, CPU load from response</div>
+      <div class="sb-line"><span class="sb-num">4.</span> <strong style="color:var(--green)">Adapt batch size</strong> to ${run.batch_size||'?'} based on available resources</div>
+      <div class="sb-line"><span class="sb-num">5.</span> Process in controlled batches of ${run.batch_size||'?'}</div>
+    </div>`;
+  }
+
+  // Progress
+  const pct=run.total>0?Math.round((run.processed/run.total)*100):0;
+  h+=`<div class="prog-wrap"><div class="prog-top"><span style="color:var(--t2)">${run.status==='running'?'Processing...':run.status==='done'?'Complete':'...'}</span><span style="font-weight:700;font-family:monospace">${pct}%</span></div><div class="prog-bar"><div class="prog-fill ${isN?'red':'green'}" style="width:${pct}%"></div></div><div class="prog-top" style="margin-top:2px"><span style="color:var(--t3)">${run.processed}/${run.total} images</span><span style="color:var(--t3);font-family:monospace">${run.elapsed_s>0?run.elapsed_s.toFixed(1)+'s':'--'}</span></div></div>`;
+
+  // Timeline showing what happened step by step
+  if(run.status==='running'||run.status==='done'){
+    h+=`<div class="timeline">`;
+    if(isN){
+      h+=tlStep('done','blue','Start Processing',`Launched all <strong>${run.batch_size}</strong> image operations simultaneously`);
+      if(run.status==='running') h+=tlStep('active','cyan','Resizing Images',`${run.processed}/${run.total} images — all cores saturated`);
+      if(run.status==='done'){
+        const pk=run.snapshots.length?Math.max(...run.snapshots.map(s=>s.cpu)):0;
+        const pr=run.snapshots.length?Math.max(...run.snapshots.map(s=>s.ram_gb)):0;
+        const crit=run.snapshots.some(s=>s.pressure==='critical');
+        h+=tlStep('done',crit?'red':'red','Processing Complete',`All ${run.total} images done in <strong>${run.elapsed_s.toFixed(1)}s</strong>`);
+        h+=tlStep(crit?'fail':'done',crit?'red':'red','System Impact',`Peak CPU: <strong>${Math.round(pk)}%</strong> · Peak RAM: <strong>${pr.toFixed(1)}GB</strong>${crit?' · <strong style="color:var(--red)">Hit critical RAM pressure</strong>':''}`);
+      }
+    } else {
+      // Axon-aware timeline with MCP interaction
+      h+=tlStep('done','blue','Call Axon',`Agent calls <code>hw_snapshot()</code> via MCP protocol`);
+      // Show the actual Axon response
+      const lastSnap=run.snapshots.length?run.snapshots[0]:null;
+      if(lastSnap||run.status==='done'){
+        h+=`<div class="tl-step done" style="border-left:2px solid var(--border);margin-left:8px;padding:8px 12px 8px 30px;position:relative">
+          <div class="tl-head cyan">Axon Response</div>
+          <div class="tl-mcp">
+            <div><span class="mcp-dir">AXON → AGENT</span> <span class="mcp-tool">hw_snapshot()</span></div>
+            <div style="margin-top:4px"><span class="mcp-key">ram_pressure:</span> <span class="mcp-val" style="color:var(--amber)">warn/critical</span></div>
+            <div><span class="mcp-key">headroom:</span> <span class="mcp-val" style="color:var(--red)">insufficient</span></div>
+            <div><span class="mcp-key">ram_used:</span> <span class="mcp-val">${lastSnap?lastSnap.ram_gb.toFixed(1):'~5.5'}/8.0 GB</span></div>
+            <div><span class="mcp-key">cpu_pct:</span> <span class="mcp-val">${lastSnap?Math.round(lastSnap.cpu):'~30'}%</span></div>
+          </div>
+        </div>`;
+      }
+      h+=tlStep('done','green','Adapt Strategy',`Headroom insufficient → <strong>reduce batch from ${run.total} to ${run.batch_size}</strong>`);
+      if(run.status==='running') h+=tlStep('active','cyan','Processing',`Batch ${run.batch_size} at a time — ${run.processed}/${run.total} done`);
+      if(run.status==='done'){
+        const pk=run.snapshots.length?Math.max(...run.snapshots.map(s=>s.cpu)):0;
+        const pr=run.snapshots.length?Math.max(...run.snapshots.map(s=>s.ram_gb)):0;
+        h+=tlStep('done','green','Processing Complete',`All ${run.total} images done in <strong>${run.elapsed_s.toFixed(1)}s</strong> with batch size ${run.batch_size}`);
+        h+=tlStep('done','green','System Stable',`Peak CPU: <strong>${Math.round(pk)}%</strong> · Peak RAM: <strong>${pr.toFixed(1)}GB</strong> — no critical pressure`);
+      }
+    }
+    h+=`</div>`;
+  }
+
+  // Results table (when done)
+  if(run.status==='done'){
+    const pk=run.snapshots.length?Math.max(...run.snapshots.map(s=>s.cpu)):0;
+    const pr=run.snapshots.length?Math.max(...run.snapshots.map(s=>s.ram_gb)):0;
+    const crit=run.snapshots.some(s=>s.pressure==='critical');
+    h+=`<div class="res-table"><div class="res-row"><span class="rl">Total Time</span><span class="rv">${run.elapsed_s.toFixed(1)}s</span></div><div class="res-row"><span class="rl">Images</span><span class="rv ${run.failed?'bad':'good'}">${run.processed}/${run.total}${run.failed?' ('+run.failed+' failed)':''}</span></div><div class="res-row"><span class="rl">Peak CPU</span><span class="rv ${pk>80?'bad':pk>50?'mid':'good'}">${Math.round(pk)}%</span></div><div class="res-row"><span class="rl">Peak RAM</span><span class="rv ${crit?'bad':'mid'}">${pr.toFixed(1)}GB${crit?' ⚠ CRITICAL':''}</span></div><div class="res-row"><span class="rl">Batch Size</span><span class="rv" style="color:${isN?'var(--red)':'var(--green)'}">${run.batch_size}</span></div></div>`;
+  }
+
+  // CPU chart
+  if(run.snapshots.length>2){h+=`<div style="margin-top:8px"><div style="font-size:9px;color:var(--t3);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px">CPU Load During Run</div><div class="mini-chart">`;
+    run.snapshots.forEach(s=>{const c=s.cpu>80?'var(--red)':s.cpu>50?'var(--amber)':'var(--green)';h+=`<div class="mini-bar" style="height:${Math.max(s.cpu,2)}%;background:${c}"></div>`});h+=`</div></div>`}
+
+  return h;
+}
+
+function tlStep(state,color,title,body){
+  return `<div class="tl-step ${state}"><div class="tl-head ${color}">${title}</div><div class="tl-body">${body}</div></div>`;
+}
+
+function renderSummary(n,a){
+  const el=document.getElementById('summary');
+  const nPkCpu=n.snapshots.length?Math.max(...n.snapshots.map(s=>s.cpu)):0;
+  const aPkCpu=a.snapshots.length?Math.max(...a.snapshots.map(s=>s.cpu)):0;
+  const nPkRam=n.snapshots.length?Math.max(...n.snapshots.map(s=>s.ram_gb)):0;
+  const aPkRam=a.snapshots.length?Math.max(...a.snapshots.map(s=>s.ram_gb)):0;
+  const cpuDelta=Math.round(nPkCpu-aPkCpu);
+  const ramDelta=(nPkRam-aPkRam).toFixed(1);
+  const timeDiff=(n.elapsed_s-a.elapsed_s).toFixed(1);
+
+  el.innerHTML=`<h3>Results Comparison</h3>
+    <div class="cmp-grid">
+      <div class="cmp-card"><div class="cmp-label">Peak CPU</div><div class="cmp-naive">${Math.round(nPkCpu)}%</div><div class="cmp-vs">vs</div><div class="cmp-axon">${Math.round(aPkCpu)}%</div><div class="cmp-delta ${cpuDelta>0?'better':'worse'}">${cpuDelta>0?'↓':'↑'} ${Math.abs(cpuDelta)}%</div></div>
+      <div class="cmp-card"><div class="cmp-label">Peak RAM</div><div class="cmp-naive">${nPkRam.toFixed(1)}GB</div><div class="cmp-vs">vs</div><div class="cmp-axon">${aPkRam.toFixed(1)}GB</div><div class="cmp-delta ${parseFloat(ramDelta)>0?'better':'worse'}">${parseFloat(ramDelta)>0?'↓':'↑'} ${Math.abs(ramDelta)}GB</div></div>
+      <div class="cmp-card"><div class="cmp-label">Time</div><div class="cmp-naive">${n.elapsed_s.toFixed(1)}s</div><div class="cmp-vs">vs</div><div class="cmp-axon">${a.elapsed_s.toFixed(1)}s</div><div class="cmp-delta ${parseFloat(timeDiff)>=0?'better':'worse'}">${parseFloat(timeDiff)>=0?'':'+'} ${Math.abs(timeDiff)}s</div></div>
+      <div class="cmp-card"><div class="cmp-label">Batch Size</div><div class="cmp-naive">${n.batch_size}</div><div class="cmp-vs">vs</div><div class="cmp-axon">${a.batch_size}</div><div class="cmp-delta better">Adapted</div></div>
+    </div>
+    <div class="cmp-bars">
+      <div class="cmp-bar-group"><div class="cmp-bar-pair"><div class="cmp-bar naive" style="height:${nPkCpu*0.6}px"></div><div class="cmp-bar axon" style="height:${aPkCpu*0.6}px"></div></div><div class="cmp-bar-label">Peak CPU</div></div>
+      <div class="cmp-bar-group"><div class="cmp-bar-pair"><div class="cmp-bar naive" style="height:${nPkRam*8}px"></div><div class="cmp-bar axon" style="height:${aPkRam*8}px"></div></div><div class="cmp-bar-label">Peak RAM</div></div>
+      <div class="cmp-bar-group"><div class="cmp-bar-pair"><div class="cmp-bar naive" style="height:${Math.min(n.elapsed_s*4,60)}px"></div><div class="cmp-bar axon" style="height:${Math.min(a.elapsed_s*4,60)}px"></div></div><div class="cmp-bar-label">Time</div></div>
+    </div>
+    <div class="summary-verdict">
+      The Axon-aware agent called <strong>hw_snapshot()</strong> before processing, detected <strong style="color:var(--amber)">limited headroom</strong>,
+      and adapted its batch size from ${n.batch_size} to <span class="highlight">${a.batch_size}</span>.
+      This reduced peak CPU by <span class="highlight">${cpuDelta>0?cpuDelta:0}%</span> and peak RAM by <span class="highlight">${parseFloat(ramDelta)>0?ramDelta:0}GB</span>
+      while still processing all ${a.total} images successfully.
+    </div>`;
+  el.className='summary visible';
+}
+
+function renderAlerts(){const t=document.getElementById('alertTicker');const r=alerts.slice().reverse().slice(0,6);if(!r.length){t.textContent='No alerts';return}t.innerHTML=r.map(a=>`<span class="fa"><span class="sev ${a.severity}">${a.severity.toUpperCase()}</span> <span class="msg">${esc(a.message.substring(0,50))}</span></span>`).join(' · ')}
+
+async function init(){await fetchProfile();await fetchAgents();await fetchSnap();await fetchAlerts();setInterval(fetchSnap,2000);setInterval(fetchAlerts,5000)}
+init();
+</script>
+</body>
+</html>

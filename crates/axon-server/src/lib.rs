@@ -1,3 +1,6 @@
+#[cfg(feature = "dashboard")]
+pub mod dashboard;
+
 use std::sync::Arc;
 
 use axon_core::{

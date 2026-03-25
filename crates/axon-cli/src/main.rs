@@ -39,6 +39,14 @@ struct ServeArgs {
     /// Filter for a channel: channel_id.severity=critical or channel_id.types=a,b (repeatable)
     #[arg(long = "alert-filter", value_name = "CHANNEL.KEY=VALUE")]
     alert_filter: Vec<String>,
+    /// Start the web dashboard on port 7670
+    #[cfg(feature = "dashboard")]
+    #[arg(long)]
+    dashboard: bool,
+    /// Dashboard port (default: 7670)
+    #[cfg(feature = "dashboard")]
+    #[arg(long, default_value = "7670")]
+    dashboard_port: u16,
 }
 
 #[derive(Subcommand)]
@@ -150,6 +158,14 @@ async fn run_serve(args: ServeArgs) -> Result<()> {
 
     // Brief warm-up so first tool call isn't stale
     tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
+
+    // When --dashboard is set, run the dashboard as the primary task.
+    // The MCP stdio server only works when a client is connected via stdin,
+    // so in dashboard-only mode we skip it and just serve the web UI.
+    #[cfg(feature = "dashboard")]
+    if args.dashboard {
+        return axon_server::dashboard::run_dashboard(state, db, args.dashboard_port).await;
+    }
 
     run_server(state, db, ring, dispatcher).await
 }

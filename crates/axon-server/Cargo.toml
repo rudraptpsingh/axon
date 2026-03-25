@@ -16,3 +16,9 @@ tokio = { version = "1", features = ["full"] }
 chrono = { version = "0.4", features = ["serde"] }
 anyhow = "1"
 tracing = "0.1"
+axum = { version = "0.8", optional = true }
+dirs = { version = "5", optional = true }
+
+[features]
+default = []
+dashboard = ["axum", "dirs"]
