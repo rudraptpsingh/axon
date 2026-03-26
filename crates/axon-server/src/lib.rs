@@ -450,6 +450,26 @@ fn blame_narrative(blame: &ProcessBlame) -> String {
         ));
     }
 
+    // Parallel agent storm: too many concurrent claude subagents can saturate disk I/O
+    // and CPU on resource-constrained machines, causing system lockups before OOM triggers.
+    // Observed: 24 agents in 2 min → 17x disk I/O spike → system freeze (#15487).
+    {
+        let non_orch_count = blame.claude_agents.iter().filter(|a| !a.is_orchestrator).count();
+        if non_orch_count >= 8 {
+            let pids: Vec<String> = blame.claude_agents.iter()
+                .filter(|a| !a.is_orchestrator)
+                .map(|a| a.pid.to_string())
+                .collect();
+            base.push_str(&format!(
+                " [WARN] {} parallel claude subagents running simultaneously — disk I/O storm risk \
+                 (#15487). On limited systems (VPS, low-RAM) this can cause system freeze before OOM. \
+                 Consider reducing parallel tasks. PIDs: {}",
+                non_orch_count,
+                pids.join(" ")
+            ));
+        }
+    }
+
     // Fast RAM spike detection: runaway allocation from terminal resize (SIGWINCH burst).
     // Seen as 1GB→21GB in 6s in issue #39022 — OOM kill risk within seconds.
     let spiking: Vec<String> = blame
