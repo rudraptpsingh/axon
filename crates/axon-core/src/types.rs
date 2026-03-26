@@ -150,6 +150,12 @@ pub struct ClaudeAgentInfo {
     /// with GC pressure — CPU thrashing typically appears after 6-8h of uptime.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub uptime_s: Option<u64>,
+    /// True when this claude PID's RAM jumped >300MB above its fast EWMA baseline in a single
+    /// tick (~2s). Indicates runaway memory allocation — likely triggered by rapid terminal
+    /// resize (SIGWINCH burst) on a large session. OOM kill risk within seconds.
+    /// See: github.com/anthropics/claude-code/issues/39022.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ram_spike: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

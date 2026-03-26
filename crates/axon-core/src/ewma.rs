@@ -8,7 +8,7 @@ const ALPHA_FAST: f64 = 0.4;
 const ALPHA_SLOW: f64 = 0.05;
 
 /// Minimum samples before each timescale reports deltas.
-const WARMUP_FAST: u32 = 2;
+pub const WARMUP_FAST: u32 = 2;
 const WARMUP_MEDIUM: u32 = 3;
 /// Public so the collector can check slow-warmup before reading slow delta.
 pub const WARMUP_SLOW: u32 = 8;
@@ -203,6 +203,13 @@ impl ProcessBaseline {
             return None;
         }
         Some((cpu - self.slow.cpu, ram - self.slow.ram))
+    }
+
+    /// Fast-timescale RAM baseline (alpha=0.4, ~5s window).
+    /// Compare against current RAM to detect a sudden spike (>0.3GB gap = runaway allocation).
+    /// Useful for catching SIGWINCH/resize OOM patterns (issue #39022).
+    pub fn fast_ram(&self) -> f64 {
+        self.fast.ram
     }
 
     /// True when the slow baseline diverges significantly from the fast baseline,

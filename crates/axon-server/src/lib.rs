@@ -424,6 +424,59 @@ fn blame_narrative(blame: &ProcessBlame) -> String {
         ));
     }
 
+    // Fast RAM spike detection: runaway allocation from terminal resize (SIGWINCH burst).
+    // Seen as 1GB→21GB in 6s in issue #39022 — OOM kill risk within seconds.
+    let spiking: Vec<String> = blame
+        .claude_agents
+        .iter()
+        .filter(|a| a.ram_spike == Some(true))
+        .map(|a| format!("PID {} ({:.1}GB)", a.pid, a.ram_gb))
+        .collect();
+    if !spiking.is_empty() {
+        base.push_str(&format!(
+            " [CRITICAL] Runaway RAM allocation on {} — OOM kill imminent. \
+             Stop resizing terminal NOW. If in tmux, stop dragging pane divider. \
+             Emergency kill: kill -9 {}",
+            spiking.join(", "),
+            blame
+                .claude_agents
+                .iter()
+                .filter(|a| a.ram_spike == Some(true))
+                .map(|a| a.pid.to_string())
+                .collect::<Vec<_>>()
+                .join(" ")
+        ));
+    }
+
+    // Orchestrator stall detection (#38932): orchestrator idle for >10min while
+    // subagents are still running = Ink render loop throttled, inbox poller starved.
+    // Manual keystroke is the only known workaround; axon alerts the agent.
+    let orchestrator_idle_min = blame
+        .claude_agents
+        .iter()
+        .find(|a| a.is_orchestrator)
+        .and_then(|orch| {
+            let idle_secs = orch.uptime_s?;
+            // Rough heuristic: if orchestrator cpu < 2% but has been running >5min
+            // and there are active subagents, it may be stalled.
+            let has_subagents = blame.claude_agents.iter().any(|a| !a.is_orchestrator);
+            let low_cpu = orch.cpu_pct < 2.0;
+            let long_lived = idle_secs > 300; // 5 min
+            if has_subagents && low_cpu && long_lived {
+                Some((orch.pid, idle_secs / 60))
+            } else {
+                None
+            }
+        });
+    if let Some((orch_pid, idle_min)) = orchestrator_idle_min {
+        base.push_str(&format!(
+            " [WARN] Orchestrator PID {} idle for ~{}min with active subagents — \
+             possible Ink render loop stall (#38932). \
+             Send a keystroke to the terminal to wake the inbox poller.",
+            orch_pid, idle_min
+        ));
+    }
+
     // Spin-loop detection for individual claude agents
     let spinning: Vec<String> = blame
         .claude_agents
@@ -450,6 +503,28 @@ fn blame_narrative(blame: &ProcessBlame) -> String {
     // GC pressure warnings per claude process.
     // Bun/Node runtime accumulates render buffer state; high RAM → GC thrashing.
     // Known fix: /clear resets buffer (2GB → 160MB, CPU 98% → 0% instantly).
+    // Duplicate session ID detection (#39151): multiple claude instances resuming
+    // the same session file causes interleaved writes, context corruption, data loss.
+    {
+        let mut seen: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
+        for agent in &blame.claude_agents {
+            if let Some(sid) = agent.session_id.as_deref() {
+                if let Some(&other_pid) = seen.get(sid) {
+                    base.push_str(&format!(
+                        " [WARN] Session {} open in multiple claude instances (PIDs: {} and {}). \
+                         Concurrent access corrupts session JSONL — kill one: kill {}",
+                        &sid[..sid.len().min(12)],
+                        other_pid,
+                        agent.pid,
+                        agent.pid
+                    ));
+                } else {
+                    seen.insert(sid, agent.pid);
+                }
+            }
+        }
+    }
+
     // Browser extension CPU warning: Chrome/Edge extension processes can peg
     // a single helper at 65% CPU. Detect Browser culprit + high CPU + helper in name.
     // See: github.com/anthropics/claude-code/issues/37544

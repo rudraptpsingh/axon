@@ -627,6 +627,22 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
                 } else {
                     None
                 };
+                // Fast RAM spike detection: compare current RAM against fast EWMA baseline.
+                // A >300MB gap in a single tick indicates runaway allocation — SIGWINCH/resize
+                // OOM pattern (1GB→21GB in 6s observed). Uses fast EWMA (α=0.4, ~5s window)
+                // as baseline; needs at least WARMUP_FAST samples to avoid false positives.
+                let ram_spike = ewma.get(pid_u32).and_then(|b| {
+                    if b.samples >= crate::ewma::WARMUP_FAST + 1 {
+                        let fast_ram = b.fast_ram();
+                        if fast_ram > 0.05 && current_ram_gb - fast_ram > 0.3 {
+                            Some(true)
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                });
                 Some(ClaudeAgentInfo {
                     pid: pid_u32,
                     session_id: meta.session_id,
@@ -637,6 +653,7 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
                     suspected_spin_loop,
                     gc_pressure,
                     uptime_s,
+                    ram_spike,
                 })
             })
             .collect();
