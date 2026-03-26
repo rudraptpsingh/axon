@@ -263,6 +263,11 @@ pub struct ProcessBlame {
     /// a PID slot and accumulate until the parent exits or reaps them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub zombie_pids: Vec<u32>,
+    /// PIDs of claude processes that were tracked last tick but have now disappeared
+    /// without a graceful exit — likely crashed (Bun segfault, OOM kill, SIGKILL).
+    /// See: github.com/anthropics/claude-code/issues/21875 (Bun segfaults).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub crashed_agent_pids: Vec<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

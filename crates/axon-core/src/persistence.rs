@@ -677,6 +677,7 @@ mod tests {
             stranded_idle_pids: Vec::new(),
             orphan_pids: Vec::new(),
             zombie_pids: Vec::new(),
+            crashed_agent_pids: Vec::new(),
         }
     }
 

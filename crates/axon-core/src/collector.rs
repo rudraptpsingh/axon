@@ -211,6 +211,7 @@ impl AppState {
                 stranded_idle_pids: Vec::new(),
                 orphan_pids: Vec::new(),
                 zombie_pids: Vec::new(),
+                crashed_agent_pids: Vec::new(),
             },
             battery: None,
             profile,
@@ -340,6 +341,8 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
     // Orphan detection: all PIDs that were descendants of any claude process
     // last tick. Any survivor this tick with PPID=1 is an orphan.
     let mut prev_claude_descendants: std::collections::HashSet<u32> = std::collections::HashSet::new();
+    // Crash detection: track claude PIDs seen last tick; disappearances = crashes.
+    let mut prev_claude_agent_pids: std::collections::HashSet<u32> = std::collections::HashSet::new();
 
     let self_pid = std::process::id();
 
@@ -789,6 +792,22 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
         #[cfg(not(target_os = "linux"))]
         let zombie_pids: Vec<u32> = Vec::new();
 
+        // ── Claude crash detection ────────────────────────────────────────────
+        // PIDs tracked last tick that no longer appear in the process list.
+        // These likely crashed (Bun segfault, OOM kill) rather than exiting cleanly.
+        // First tick prev_claude_agent_pids is empty, so no false positives.
+        let current_claude_pid_set: std::collections::HashSet<u32> =
+            claude_agents.iter().map(|a| a.pid).collect();
+        let mut crashed_agent_pids: Vec<u32> = prev_claude_agent_pids
+            .iter()
+            .filter(|&&pid| !current_claude_pid_set.contains(&pid)
+                // Exclude PIDs that are now orphans (already reported separately)
+                && !orphan_pids.contains(&pid))
+            .copied()
+            .collect();
+        crashed_agent_pids.sort_unstable();
+        prev_claude_agent_pids = current_claude_pid_set;
+
         // Check for agent accumulation — AgentAccumulation now only fires when
         // at least one non-orchestrator claude sub-agent is genuinely idle
         // (stranded after its task completed). This prevents false positives
@@ -847,6 +866,7 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
             stranded_idle_pids,
             orphan_pids,
             zombie_pids,
+            crashed_agent_pids,
         };
 
         // ── Enrich hw snapshot with post-process fields ──────────────────

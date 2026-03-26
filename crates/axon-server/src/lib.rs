@@ -409,6 +409,17 @@ fn blame_narrative(blame: &ProcessBlame) -> String {
         ));
     }
 
+    // Crashed claude processes: PIDs tracked last tick that have disappeared.
+    // Likely causes: Bun segfault (#21875), OOM kill (#39022), SIGKILL.
+    if !blame.crashed_agent_pids.is_empty() {
+        let pids = blame.crashed_agent_pids.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(" ");
+        base.push_str(&format!(
+            " [WARN] Claude PID(s) {} disappeared unexpectedly — likely crashed \
+             (Bun segfault, OOM kill, or SIGKILL). Check system logs: journalctl -k | grep -E 'Killed|OOM'",
+            pids
+        ));
+    }
+
     // Zombie subprocesses: un-reaped children of claude, holding PID slots.
     if !blame.zombie_pids.is_empty() {
         let pids = blame
