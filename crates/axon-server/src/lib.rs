@@ -400,6 +400,22 @@ fn hw_narrative(hw: &HwSnapshot) -> String {
         Some(gb) if gb >= 2.0 => format!(" [INFO] ~/.claude/ is {:.1}GB.", gb),
         _ => String::new(),
     };
+    // Tmp-claude size: task .output files, napi-rs addons, cowork VM fragments accumulate
+    // with no TTL. Observed 537 GB from a single session (#26911).
+    let tmp_claude_str = match hw.tmp_claude_size_gb {
+        Some(gb) if gb >= 50.0 => format!(
+            " [CRITICAL] /tmp/claude-{{uid}}/ is {:.0}GB — task .output files or napi-rs temp \
+             addons accumulating with no cleanup (github.com/anthropics/claude-code/issues/26911). \
+             Run: rm -rf /tmp/claude-$(id -u)/ to free disk immediately.",
+            gb
+        ),
+        Some(gb) if gb >= 5.0 => format!(
+            " [WARN] /tmp/claude-{{uid}}/ is {:.1}GB — task output files accumulating. \
+             Check: du -sh /tmp/claude-$(id -u)/ and remove if safe.",
+            gb
+        ),
+        _ => String::new(),
+    };
     // MCP server count: too many simultaneous MCP servers drain commit charge.
     let mcp_str = match hw.mcp_server_count {
         Some(n) if n >= 8 => format!(
@@ -411,7 +427,7 @@ fn hw_narrative(hw: &HwSnapshot) -> String {
         _ => String::new(),
     };
     format!(
-        "CPU {:.0}% {}, die {}{} RAM {:.1}/{:.0}GB {} ({} pressure).{}{}{}{}{}{}{}  {} | {}",
+        "CPU {:.0}% {}, die {}{} RAM {:.1}/{:.0}GB {} ({} pressure).{}{}{}{}{}{}{}{}  {} | {}",
         hw.cpu_usage_pct,
         hw.cpu_trend,
         temp_str,
@@ -426,6 +442,7 @@ fn hw_narrative(hw: &HwSnapshot) -> String {
         fd_str,
         oom_str,
         dot_claude_str,
+        tmp_claude_str,
         mcp_str,
         headroom_str,
         hw.one_liner,
@@ -797,8 +814,9 @@ fn blame_narrative(blame: &ProcessBlame) -> String {
             if rate > 300.0 {
                 base.push_str(&format!(
                     " [CRITICAL] PID {} RSS growing at {:.0} MB/hr — crash trajectory. \
-                     node-pty ArrayBuffer leak reaches OOM in hours. Run /clear now or \
-                     restart claude before the process is killed by OOM.",
+                     Likely cause: fetch Response stream bodies not cancelled before GC \
+                     (confirmed root cause in github.com/anthropics/claude-code/issues/33874). \
+                     Run /clear now or restart claude before the process is killed by OOM.",
                     agent.pid, rate
                 ));
             } else if rate > 50.0 {
@@ -959,9 +977,23 @@ fn gpu_narrative(gpu: &GpuSnapshot) -> String {
         Some(0) | None => String::new(),
         Some(n) => format!(" [WARN: {} GPU hang(s)]", n),
     };
+    let vram_growth_str = match gpu.vram_growth_mb_per_hr {
+        Some(rate) if rate > 500.0 => format!(
+            " [WARN] GPU VRAM growing at {:.0} MB/hr while GPU is idle — \
+             IOAccelerator non-reclaimable memory accumulation across sessions \
+             (github.com/anthropics/claude-code/issues/35804). \
+             Restart Claude or relaunch the GPU process to reclaim.",
+            rate
+        ),
+        Some(rate) if rate > 100.0 => format!(
+            " [INFO] GPU VRAM growing at {:.0} MB/hr — monitor for accumulation (#35804).",
+            rate
+        ),
+        _ => String::new(),
+    };
     format!(
-        "GPU {}{}: util {}, {}.{}",
-        model_str, cores_str, util, vram_str, hang_str
+        "GPU {}{}: util {}, {}.{}{}",
+        model_str, cores_str, util, vram_str, hang_str, vram_growth_str
     )
 }
 

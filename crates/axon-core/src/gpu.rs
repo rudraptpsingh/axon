@@ -42,6 +42,7 @@ pub fn read_gpu_snapshot() -> GpuSnapshot {
             core_count: None,
             detected: false,
             ts: chrono::Utc::now(),
+            vram_growth_mb_per_hr: None,
         }
     }
 }
@@ -83,6 +84,7 @@ fn empty_snapshot(ts: chrono::DateTime<chrono::Utc>) -> GpuSnapshot {
         core_count: None,
         detected: false,
         ts,
+        vram_growth_mb_per_hr: None,
     }
 }
 
@@ -146,6 +148,7 @@ fn parse_ioreg_accelerator(text: &str, ts: chrono::DateTime<chrono::Utc>) -> Gpu
         core_count,
         detected,
         ts,
+        vram_growth_mb_per_hr: None,
     }
 }
 
@@ -286,6 +289,7 @@ fn read_gpu_windows() -> GpuSnapshot {
         core_count: None,
         detected,
         ts: now,
+        vram_growth_mb_per_hr: None,
     }
 }
 
@@ -373,6 +377,7 @@ fn parse_wmi_gpu(text: &str, now: chrono::DateTime<chrono::Utc>) -> Option<GpuSn
         core_count: None,
         detected: true,
         ts: now,
+        vram_growth_mb_per_hr: None,
     })
 }
 
@@ -394,6 +399,7 @@ fn read_gpu_linux() -> GpuSnapshot {
             core_count: None,
             detected: false,
             ts: now,
+            vram_growth_mb_per_hr: None,
         })
 }
 
@@ -448,6 +454,7 @@ fn parse_nvidia_smi_csv(text: &str, now: chrono::DateTime<chrono::Utc>) -> Optio
         core_count: None,
         detected: true,
         ts: now,
+        vram_growth_mb_per_hr: None,
     })
 }
 
@@ -478,6 +485,7 @@ fn try_amd_sysfs(now: chrono::DateTime<chrono::Utc>) -> Option<GpuSnapshot> {
         core_count: None,
         detected: true,
         ts: now,
+        vram_growth_mb_per_hr: None,
     })
 }
 

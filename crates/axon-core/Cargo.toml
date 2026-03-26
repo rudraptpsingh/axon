@@ -14,6 +14,7 @@ tracing = "0.1"
 rusqlite = { version = "0.31", features = ["bundled"] }
 dirs = "5"
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3"

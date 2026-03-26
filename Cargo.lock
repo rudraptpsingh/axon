@@ -135,6 +135,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "dirs",
+ "libc",
  "reqwest",
  "rusqlite",
  "serde",

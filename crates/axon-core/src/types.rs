@@ -305,6 +305,12 @@ pub struct HwSnapshot {
     /// commit charge; > 8 risks address space exhaustion on 32-bit hosts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mcp_server_count: Option<u32>,
+    /// Total size of /tmp/claude-{uid}/ directory in GB, sampled every 30 ticks (~60s).
+    /// Task tool .output files, napi-rs temp addons, and cowork VM bundle fragments
+    /// accumulate here with no TTL. Observed: 537 GB from a single research session (#26911).
+    /// Fires [WARN] at 5GB, [CRITICAL] at 50GB.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tmp_claude_size_gb: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -534,6 +540,14 @@ pub struct GpuSnapshot {
     /// all metric fields will be None.
     pub detected: bool,
     pub ts: DateTime<Utc>,
+    /// Rate at which GPU-accessible memory is growing (MB/hr), computed from
+    /// successive vram_used_bytes readings in the collector. None until two
+    /// readings are available or when VRAM is stable. A positive value while
+    /// utilization_pct is near zero indicates IOAccelerator non-reclaimable
+    /// memory accumulation across sessions — observed ~1 GB per idle Claude
+    /// session (#35804). Fires narrative at > 100 MB/hr.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vram_growth_mb_per_hr: Option<f64>,
 }
 
 // ── MCP Response Envelope ─────────────────────────────────────────────────────

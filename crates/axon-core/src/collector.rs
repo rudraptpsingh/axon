@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use libc;
 use sysinfo::{Disks, System};
 use tokio::time::{interval, Duration};
 use tracing::debug;
@@ -201,6 +202,7 @@ impl AppState {
                 oom_freeze_risk: None,
                 dot_claude_size_gb: None,
                 mcp_server_count: None,
+                tmp_claude_size_gb: None,
             },
             blame: ProcessBlame {
                 anomaly_type: AnomalyType::None,
@@ -394,6 +396,77 @@ fn read_dot_claude_size_gb() -> Option<f64> {
     Some(total_bytes as f64 / 1_073_741_824.0)
 }
 
+/// Compute total size (GB) of /tmp/claude-{uid}/ by walking the directory.
+/// On macOS: /private/tmp/claude-{uid}/  On Linux: /tmp/claude-{uid}/
+/// Only called every ~60s to amortize filesystem overhead.
+fn read_tmp_claude_size_gb() -> Option<f64> {
+    let uid = {
+        #[cfg(unix)]
+        {
+            unsafe { libc::getuid() }
+        }
+        #[cfg(not(unix))]
+        {
+            return None;
+        }
+    };
+    #[cfg(target_os = "macos")]
+    let base = std::path::PathBuf::from(format!("/private/tmp/claude-{}", uid));
+    #[cfg(target_os = "linux")]
+    let base = std::path::PathBuf::from(format!("/tmp/claude-{}", uid));
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    let base = { return None; };
+
+    if !base.exists() {
+        return None;
+    }
+    let mut total_bytes: u64 = 0;
+    let mut stack = vec![base];
+    while let Some(dir) = stack.pop() {
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        for entry in entries.flatten() {
+            let meta = match entry.metadata() {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
+            if meta.is_dir() {
+                stack.push(entry.path());
+            } else {
+                total_bytes += meta.len();
+            }
+        }
+    }
+    // Return None when trivially small (< 100 KB) to suppress noise.
+    let gb = total_bytes as f64 / 1_073_741_824.0;
+    if gb > 0.0001 { Some(gb) } else { None }
+}
+
+/// Return the open file-descriptor count for a process on macOS using proc_pidinfo.
+/// Uses PROC_PIDLISTFDS (flavor 1) — first call with null buffer returns total byte
+/// count needed; dividing by sizeof(proc_fdinfo) = 8 gives the FD count. Returns
+/// None if the call fails (permission denied for other users' processes, etc.).
+#[cfg(target_os = "macos")]
+fn macos_fd_count(pid: u32) -> Option<u32> {
+    const PROC_PIDLISTFDS: libc::c_int = 1;
+    const PROC_FDINFO_SIZE: libc::c_int = 8; // sizeof(struct proc_fdinfo)
+    let byte_count = unsafe {
+        libc::proc_pidinfo(
+            pid as libc::c_int,
+            PROC_PIDLISTFDS,
+            0,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if byte_count <= 0 {
+        return None;
+    }
+    Some((byte_count / PROC_FDINFO_SIZE) as u32)
+}
+
 /// Count currently running MCP server processes: python/node/bun/deno processes
 /// whose command line suggests they are serving the MCP protocol.
 fn count_mcp_servers(sys: &System) -> u32 {
@@ -533,6 +606,10 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
     let mut idle_spin_ticks: HashMap<u32, u32> = HashMap::new();
     // Dot-claude size: sampled infrequently to avoid fs overhead.
     let mut cached_dot_claude_size_gb: Option<f64> = None;
+    // Tmp-claude size (/tmp/claude-{uid}/): sampled infrequently to avoid fs overhead.
+    let mut cached_tmp_claude_size_gb: Option<f64> = None;
+    // Previous VRAM reading for growth rate computation.
+    let mut prev_vram_bytes: Option<u64> = None;
 
     let self_pid = std::process::id();
 
@@ -684,6 +761,14 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
                 } else {
                     None
                 }
+            },
+            // tmp_claude_size sampled every 30 ticks (~60s) to avoid fs overhead.
+            tmp_claude_size_gb: if tick_count % 30 == 2 {
+                let size = read_tmp_claude_size_gb();
+                cached_tmp_claude_size_gb = size;
+                size
+            } else {
+                cached_tmp_claude_size_gb
             },
         };
         prev_disk_used_gb = Some(disk_used_gb);
@@ -986,7 +1071,10 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
                                 .and_then(|v| v.parse::<u64>().ok())
                                 .and_then(|fd_size| if fd_size > 4096 { Some(true) } else { None })
                         });
-                #[cfg(not(target_os = "linux"))]
+                #[cfg(target_os = "macos")]
+                let fd_leak: Option<bool> = macos_fd_count(pid_u32)
+                    .and_then(|count| if count > 4096 { Some(true) } else { None });
+                #[cfg(not(any(target_os = "linux", target_os = "macos")))]
                 let fd_leak: Option<bool> = None;
 
                 // Child churn rate: delta of direct child count / 2s.
@@ -1032,7 +1120,11 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
 
                 // Idle CPU spin: CPU > 30% but no new children AND minimal I/O.
                 // Catches futex/pread polling loops (#22275 variant: idle-but-burning).
-                // Track consecutive ticks; report duration when >= 30 ticks (~60s).
+                // Two thresholds:
+                //   Fast path: CPU > 80% for 5 ticks (10s) — catches acute MCP-triggered
+                //              spin loops (#36729: single bad tool response → 100% CPU).
+                //   Slow path: CPU > 30% for 30 ticks (60s) — catches the low-burn idle
+                //              spinner pattern (#22509: 30-60% at idle CLI prompt).
                 let has_io_activity = io_read_mb_per_sec.is_some_and(|r| r > 1.0);
                 let has_child_delta = child_churn_rate_per_sec.is_some();
                 let cpu_raw = process.cpu_usage() as f64;
@@ -1042,14 +1134,19 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
                 } else {
                     *idle_spin_ticks_val = 0;
                 }
-                let idle_cpu_spin_secs: Option<u64> = if *idle_spin_ticks_val >= 30 {
+                // Fast path fires at 5 ticks (10s) for high-burn spins (>80% CPU).
+                // Slow path fires at 30 ticks (60s) for low-burn spins (>30% CPU).
+                let idle_cpu_spin_secs: Option<u64> = if cpu_raw > 80.0 && *idle_spin_ticks_val >= 5 {
+                    Some(*idle_spin_ticks_val as u64 * 2)
+                } else if *idle_spin_ticks_val >= 30 {
                     Some(*idle_spin_ticks_val as u64 * 2)
                 } else {
                     None
                 };
 
                 // RSS growth rate in MB/hr from slow EWMA delta.
-                // Fires before gc_pressure threshold; catches node-pty leaks (#31511).
+                // Fires before gc_pressure threshold; catches fetch Response body leaks
+                // (root cause confirmed in #33874 — stream bodies not cancelled before GC).
                 let rss_growth_rate_mb_per_hr: Option<f64> = ram_growth_gb_per_sec.and_then(|r| {
                     let mb_per_hr = r * 3600.0 * 1024.0;
                     if mb_per_hr > 50.0 {
@@ -1439,7 +1536,24 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
 
         // Always store the snapshot so the MCP tool can report "no GPU detected"
         // rather than appearing to have no data at all.
-        let gpu = Some(gpu::read_gpu_snapshot());
+        let mut gpu_snap = gpu::read_gpu_snapshot();
+        // Compute VRAM growth rate from successive vram_used_bytes readings.
+        // Positive rate + near-zero utilization indicates IOAccelerator non-reclaimable
+        // memory accumulation across idle Claude sessions (#35804).
+        // Rate is computed over 2s tick interval; converted to MB/hr.
+        if let Some(current_vram) = gpu_snap.vram_used_bytes {
+            if let Some(prev) = prev_vram_bytes {
+                let delta_bytes = current_vram as i64 - prev as i64;
+                // 2s per tick → 1800 ticks/hr
+                let mb_per_hr = delta_bytes as f64 / 1_048_576.0 * 1800.0;
+                // Only report significant growth (> 100 MB/hr) to suppress noise.
+                if mb_per_hr > 100.0 {
+                    gpu_snap.vram_growth_mb_per_hr = Some(mb_per_hr);
+                }
+            }
+            prev_vram_bytes = Some(current_vram);
+        }
+        let gpu = Some(gpu_snap);
 
         // ── Battery (every 15 ticks ≈ 30s) ────────────────────────────────
 
