@@ -660,6 +660,10 @@ mod tests {
                 swap_total_gb: None,
                 disk_fill_rate_gb_per_sec: None,
             irq_per_sec: None,
+            system_fd_pct: None,
+            oom_freeze_risk: None,
+            dot_claude_size_gb: None,
+            mcp_server_count: None,
         }
     }
 
@@ -681,6 +685,8 @@ mod tests {
             orphan_pids: Vec::new(),
             zombie_pids: Vec::new(),
             crashed_agent_pids: Vec::new(),
+            stale_session_count: None,
+            subagent_orphan_count_total: None,
         }
     }
 

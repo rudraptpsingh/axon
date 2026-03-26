@@ -958,6 +958,10 @@ mod tests {
                 swap_total_gb: None,
                 disk_fill_rate_gb_per_sec: None,
             irq_per_sec: None,
+            system_fd_pct: None,
+            oom_freeze_risk: None,
+            dot_claude_size_gb: None,
+            mcp_server_count: None,
         }
     }
 

@@ -365,8 +365,56 @@ fn hw_narrative(hw: &HwSnapshot) -> String {
         }
         _ => String::new(),
     };
+    // System FD pool exhaustion: affects all processes system-wide (#11136, Cursor file watcher).
+    let fd_str = match hw.system_fd_pct {
+        Some(pct) if pct >= 95.0 => format!(
+            " [CRITICAL] System FD pool {:.0}% full — any open() will fail with ENFILE. \
+             Restart processes leaking inotify watchers immediately: \
+             lsof | awk '{{print $2}}' | sort | uniq -c | sort -rn | head",
+            pct
+        ),
+        Some(pct) if pct >= 85.0 => format!(
+            " [WARN] System FD pool {:.0}% full — approaching global ENFILE limit. \
+             Investigate with: cat /proc/sys/fs/file-nr",
+            pct
+        ),
+        _ => String::new(),
+    };
+    // OOM freeze risk: no swap + minimal free RAM = Linux hard freeze on next big alloc.
+    let oom_str = if hw.oom_freeze_risk == Some(true) {
+        " [CRITICAL] OOM freeze risk — MemFree + SwapFree < 64MB with no swap configured. \
+         Next large allocation will trigger kernel freeze (not OOM kill). \
+         Free RAM immediately or add swap: sudo fallocate -l 4G /swapfile && \
+         sudo mkswap /swapfile && sudo swapon /swapfile"
+            .to_string()
+    } else {
+        String::new()
+    };
+    // Dot-claude size: runaway logs/cache accumulation.
+    let dot_claude_str = match hw.dot_claude_size_gb {
+        Some(gb) if gb >= 10.0 => format!(
+            " [WARN] ~/.claude/ is {:.0}GB — likely runaway debug logs or node_modules cache. \
+             Check: du -sh ~/.claude/debug/ ~/.claude/node_modules/ ~/.claude/projects/",
+            gb
+        ),
+        Some(gb) if gb >= 2.0 => format!(
+            " [INFO] ~/.claude/ is {:.1}GB.",
+            gb
+        ),
+        _ => String::new(),
+    };
+    // MCP server count: too many simultaneous MCP servers drain commit charge.
+    let mcp_str = match hw.mcp_server_count {
+        Some(n) if n >= 8 => format!(
+            " [WARN] {} MCP server processes running — high server count accumulates commit \
+             charge per session. Consider restarting Claude to release unused MCP servers.",
+            n
+        ),
+        Some(n) if n >= 4 => format!(" {} MCP servers running.", n),
+        _ => String::new(),
+    };
     format!(
-        "CPU {:.0}% {}, die {}{} RAM {:.1}/{:.0}GB {} ({} pressure).{}{}{} {} | {}",
+        "CPU {:.0}% {}, die {}{} RAM {:.1}/{:.0}GB {} ({} pressure).{}{}{}{}{}{}{}  {} | {}",
         hw.cpu_usage_pct,
         hw.cpu_trend,
         temp_str,
@@ -378,6 +426,10 @@ fn hw_narrative(hw: &HwSnapshot) -> String {
         disk_str,
         swap_str,
         irq_str,
+        fd_str,
+        oom_str,
+        dot_claude_str,
+        mcp_str,
         headroom_str,
         hw.one_liner,
     )
@@ -686,6 +738,108 @@ fn blame_narrative(blame: &ProcessBlame) -> String {
                  likely fs.watch/inotify watcher leak. Will crash with EMFILE when ulimit \
                  is reached. Restart claude now to recover; reinstall plugins if recurring.",
                 agent.pid
+            ));
+        }
+
+        // Child churn rate: rapid subprocess spawn/reap = zombie storm (#34092).
+        // 185 zombies/sec caused RSS 400MB → 17GB in one session.
+        if let Some(rate) = agent.child_churn_rate_per_sec {
+            base.push_str(&format!(
+                " [WARN] PID {} spawning+reaping children at {:.0}/s — zombie storm pattern. \
+                 statusLine render bug (#34092) produced 185/s and RSS grew 400MB→17GB. \
+                 Run: kill {} and restart. Check for recursive render or tool-call loops.",
+                agent.pid, rate, agent.pid
+            ));
+        }
+
+        // I/O read polling loop: repeated binary re-reads wasting disk bandwidth.
+        // See: github.com/anthropics/claude-code/issues/22543.
+        if let Some(rate) = agent.io_read_mb_per_sec {
+            base.push_str(&format!(
+                " [WARN] PID {} reading {:.0} MB/s from disk with low CPU — likely \
+                 polling loop re-reading a large file repeatedly (cowork-svc pattern: \
+                 213MB binary every 2s). Check lsof -p {} for the hot file path.",
+                agent.pid, rate, agent.pid
+            ));
+        }
+
+        // Idle CPU spin: sustained CPU burn with no real work (futex/pread loop).
+        if let Some(secs) = agent.idle_cpu_spin_secs {
+            base.push_str(&format!(
+                " [WARN] PID {} has been spinning at >30% CPU for {}s with no child \
+                 activity and minimal I/O — likely a userspace poll/futex busy-wait loop. \
+                 Check: strace -p {} -e trace=pread64,futex,poll -c for 5s.",
+                agent.pid, secs, agent.pid
+            ));
+        }
+
+        // RSS growth rate: early warning before gc_pressure threshold.
+        // See: github.com/anthropics/claude-code/issues/31511, #33118.
+        if let Some(rate) = agent.rss_growth_rate_mb_per_hr {
+            if rate > 300.0 {
+                base.push_str(&format!(
+                    " [CRITICAL] PID {} RSS growing at {:.0} MB/hr — crash trajectory. \
+                     node-pty ArrayBuffer leak reaches OOM in hours. Run /clear now or \
+                     restart claude before the process is killed by OOM.",
+                    agent.pid, rate
+                ));
+            } else if rate > 50.0 {
+                base.push_str(&format!(
+                    " [WARN] PID {} RSS growing at {:.0} MB/hr — early leak signal. \
+                     Monitor: if growth continues, run /clear to reset session buffers.",
+                    agent.pid, rate
+                ));
+            }
+        }
+
+        // Large session file: synchronous full load causes infinite hang (#21022).
+        if let Some(mb) = agent.large_session_file_mb {
+            base.push_str(&format!(
+                " [WARN] PID {} session file is {:.0}MB — files > 40MB cause synchronous \
+                 full-load hangs (infinite thinking spin, no CPU activity). \
+                 Archive old sessions: ls -lh ~/.claude/projects/",
+                agent.pid, mb
+            ));
+        }
+
+        // Bun crash trajectory: uptime + growth rate predict imminent mimalloc OOM.
+        if agent.bun_crash_trajectory == Some(true) {
+            base.push_str(&format!(
+                " [CRITICAL] PID {} is on a crash trajectory (>4h uptime + rapid RSS growth). \
+                 mimalloc OOM crash expected within 1-2h (#21875, #29192). \
+                 Save work and restart claude now to avoid data loss.",
+                agent.pid
+            ));
+        }
+
+        // Zombie child accumulation per PID (complement to child_churn_rate).
+        if let Some(count) = agent.zombie_child_count {
+            if count >= 10 {
+                base.push_str(&format!(
+                    " [WARN] PID {} has {} zombie children — parent not reaping fast enough. \
+                     Zombie PID slots accumulate; fork() fails when table fills.",
+                    agent.pid, count
+                ));
+            }
+        }
+    }
+
+    // Stale session summary (blame-level, not per-agent).
+    if let Some(count) = blame.stale_session_count {
+        base.push_str(&format!(
+            " [INFO] {} stale claude session(s) with >200MB RAM and >24h uptime. \
+             These are invisible wait states. List: ps aux | grep claude | awk '$2>86400'",
+            count
+        ));
+    }
+
+    // Broad orphan count (includes idle orphans not in orphan_pids).
+    if let Some(count) = blame.subagent_orphan_count_total {
+        if count > blame.orphan_pids.len() as u32 {
+            base.push_str(&format!(
+                " [INFO] {} orphaned claude/bun processes (PPID=1) including idle ones. \
+                 Check: ps --ppid 1 -o pid,comm,rss | grep -E 'bun|node|claude'",
+                count
             ));
         }
     }
