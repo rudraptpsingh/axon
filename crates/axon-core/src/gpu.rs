@@ -321,8 +321,15 @@ fn parse_wmi_gpu_static(text: &str) -> (Option<String>, Option<u64>) {
         Ok(v) => v,
         Err(_) => return (None, None),
     };
-    let obj = if v.is_array() { v.get(0).unwrap_or(&v) } else { &v };
-    let model = obj.get("Name").and_then(|v| v.as_str()).map(|s| s.to_string());
+    let obj = if v.is_array() {
+        v.get(0).unwrap_or(&v)
+    } else {
+        &v
+    };
+    let model = obj
+        .get("Name")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
     let vram = obj.get("AdapterRAM").and_then(|v| v.as_u64());
     (model, vram)
 }

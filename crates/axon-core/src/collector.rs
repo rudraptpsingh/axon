@@ -197,6 +197,10 @@ impl AppState {
                 swap_used_gb: None,
                 swap_total_gb: None,
                 disk_fill_rate_gb_per_sec: None,
+                system_fd_pct: None,
+                oom_freeze_risk: None,
+                dot_claude_size_gb: None,
+                mcp_server_count: None,
             },
             blame: ProcessBlame {
                 anomaly_type: AnomalyType::None,
@@ -215,6 +219,8 @@ impl AppState {
                 orphan_pids: Vec::new(),
                 zombie_pids: Vec::new(),
                 crashed_agent_pids: Vec::new(),
+                stale_session_count: None,
+                subagent_orphan_count_total: None,
             },
             battery: None,
             profile,
@@ -288,7 +294,7 @@ fn read_irq_per_sec() -> Option<u64> {
         .lines()
         .skip(1) // skip the CPU0 CPU1 ... header
         .filter_map(|line| {
-            let after_colon = line.splitn(2, ':').nth(1)?;
+            let after_colon = line.split_once(':')?.1;
             Some(
                 after_colon
                     .split_whitespace()
@@ -313,6 +319,168 @@ fn read_irq_per_sec() -> Option<u64> {
     };
     *prev_guard = Some((total, now));
     result
+}
+
+/// Read system-wide FD pool utilization % from /proc/sys/fs/file-nr.
+/// Format: "allocated\tfree\tmax\n". Returns None on non-Linux or parse error.
+#[cfg(target_os = "linux")]
+fn read_system_fd_pct() -> Option<f64> {
+    let content = std::fs::read_to_string("/proc/sys/fs/file-nr").ok()?;
+    let mut parts = content.split_whitespace();
+    let allocated: u64 = parts.next()?.parse().ok()?;
+    let free: u64 = parts.next()?.parse().ok()?;
+    let max: u64 = parts.next()?.parse().ok()?;
+    if max == 0 {
+        return None;
+    }
+    let in_use = allocated.saturating_sub(free);
+    Some(in_use as f64 / max as f64 * 100.0)
+}
+
+/// Read MemFree and SwapFree from /proc/meminfo to detect OOM freeze risk.
+/// Returns true when MemFree + SwapFree < 64MB and SwapFree == 0.
+#[cfg(target_os = "linux")]
+fn check_oom_freeze_risk() -> Option<bool> {
+    let content = std::fs::read_to_string("/proc/meminfo").ok()?;
+    let mut mem_free_kb: Option<u64> = None;
+    let mut swap_free_kb: Option<u64> = None;
+    for line in content.lines() {
+        if line.starts_with("MemFree:") {
+            mem_free_kb = line.split_whitespace().nth(1).and_then(|v| v.parse().ok());
+        } else if line.starts_with("SwapFree:") {
+            swap_free_kb = line.split_whitespace().nth(1).and_then(|v| v.parse().ok());
+        }
+        if mem_free_kb.is_some() && swap_free_kb.is_some() {
+            break;
+        }
+    }
+    let mf = mem_free_kb?;
+    let sf = swap_free_kb?;
+    // Freeze risk: no swap AND very low free memory
+    if sf == 0 && (mf + sf) < 65536 {
+        Some(true)
+    } else {
+        None
+    }
+}
+
+/// Compute total size (GB) of ~/.claude/ by walking the directory.
+/// Only called every ~60s to amortize filesystem overhead.
+fn read_dot_claude_size_gb() -> Option<f64> {
+    let home = std::env::var("HOME").ok()?;
+    let dot_claude = std::path::PathBuf::from(&home).join(".claude");
+    if !dot_claude.exists() {
+        return None;
+    }
+    let mut total_bytes: u64 = 0;
+    let mut stack = vec![dot_claude];
+    while let Some(dir) = stack.pop() {
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        for entry in entries.flatten() {
+            let meta = match entry.metadata() {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
+            if meta.is_dir() {
+                stack.push(entry.path());
+            } else {
+                total_bytes += meta.len();
+            }
+        }
+    }
+    Some(total_bytes as f64 / 1_073_741_824.0)
+}
+
+/// Count currently running MCP server processes: python/node/bun/deno processes
+/// whose command line suggests they are serving the MCP protocol.
+fn count_mcp_servers(sys: &System) -> u32 {
+    sys.processes()
+        .values()
+        .filter(|p| {
+            let name = p.name().to_string_lossy().to_lowercase();
+            let is_runtime = name.starts_with("python")
+                || name.starts_with("node")
+                || name.starts_with("bun")
+                || name.starts_with("deno")
+                || name.starts_with("uv");
+            if !is_runtime {
+                return false;
+            }
+            // Check cmd args for MCP-indicative patterns
+            let cmd: String = p
+                .cmd()
+                .iter()
+                .map(|s| s.to_string_lossy().to_lowercase())
+                .collect::<Vec<_>>()
+                .join(" ");
+            cmd.contains("mcp")
+                || cmd.contains("model-context")
+                || cmd.contains("modelcontextprotocol")
+        })
+        .count() as u32
+}
+
+/// Find the largest ~/.claude/projects/**/*.jsonl file for a given session_id.
+/// Returns size in MB if any file exceeds 40MB.
+fn largest_session_file_mb(session_id: Option<&str>) -> Option<f64> {
+    let home = std::env::var("HOME").ok()?;
+    let projects_dir = std::path::PathBuf::from(&home)
+        .join(".claude")
+        .join("projects");
+    if !projects_dir.exists() {
+        return None;
+    }
+    let mut max_bytes: u64 = 0;
+    let mut stack = vec![projects_dir];
+    while let Some(dir) = stack.pop() {
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                // If session_id is known, skip dirs that don't match
+                if let Some(sid) = session_id {
+                    let dir_name = path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_default();
+                    // Only descend if dir name contains session id prefix (first 8 chars)
+                    let prefix = &sid[..sid.len().min(8)];
+                    if !dir_name.contains(prefix) && !dir_name.is_empty() {
+                        stack.push(path);
+                        continue;
+                    }
+                }
+                stack.push(path);
+            } else if path.extension().is_some_and(|e| e == "jsonl") {
+                if let Ok(meta) = entry.metadata() {
+                    max_bytes = max_bytes.max(meta.len());
+                }
+            }
+        }
+    }
+    let mb = max_bytes as f64 / 1_048_576.0;
+    if mb > 40.0 {
+        Some(mb)
+    } else {
+        None
+    }
+}
+
+/// Read cumulative read_bytes for a PID from /proc/<pid>/io. Linux only.
+#[cfg(target_os = "linux")]
+fn read_pid_io_bytes(pid: u32) -> Option<u64> {
+    let content = std::fs::read_to_string(format!("/proc/{}/io", pid)).ok()?;
+    content
+        .lines()
+        .find(|l| l.starts_with("read_bytes:"))
+        .and_then(|l| l.split_whitespace().nth(1))
+        .and_then(|v| v.parse().ok())
 }
 
 /// Spawns a background Tokio task that refreshes hardware state every 2 seconds.
@@ -349,9 +517,22 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
 
     // Orphan detection: all PIDs that were descendants of any claude process
     // last tick. Any survivor this tick with PPID=1 is an orphan.
-    let mut prev_claude_descendants: std::collections::HashSet<u32> = std::collections::HashSet::new();
+    let mut prev_claude_descendants: std::collections::HashSet<u32> =
+        std::collections::HashSet::new();
     // Crash detection: track claude PIDs seen last tick; disappearances = crashes.
-    let mut prev_claude_agent_pids: std::collections::HashSet<u32> = std::collections::HashSet::new();
+    let mut prev_claude_agent_pids: std::collections::HashSet<u32> =
+        std::collections::HashSet::new();
+
+    // Child churn rate: track per-PID direct child count from last tick.
+    // Delta / 2s = spawns+reaps per second. Catches zombie storms (#34092).
+    let mut prev_child_counts: HashMap<u32, u32> = HashMap::new();
+    // I/O read polling loop: track per-PID cumulative read_bytes from /proc/<pid>/io.
+    let mut prev_io_read_bytes: HashMap<u32, u64> = HashMap::new();
+    // Idle CPU spin: track per-PID consecutive ticks with CPU > 30% but no children
+    // spawning and minimal I/O — userspace futex/pread polling loop detection.
+    let mut idle_spin_ticks: HashMap<u32, u32> = HashMap::new();
+    // Dot-claude size: sampled infrequently to avoid fs overhead.
+    let mut cached_dot_claude_size_gb: Option<f64> = None;
 
     let self_pid = std::process::id();
 
@@ -450,24 +631,60 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
             ram_delta_gb,
             top_culprit: String::new(), // filled after process collection
             impact_level: ImpactLevel::Healthy, // filled after impact computation
-            impact_duration_s: 0, // filled after impact computation
-            one_liner: String::new(), // filled after all fields are known
-            ai_agent_count: 0,    // filled after process collection
-            ai_agent_ram_gb: 0.0, // filled after process collection
+            impact_duration_s: 0,       // filled after impact computation
+            one_liner: String::new(),   // filled after all fields are known
+            ai_agent_count: 0,          // filled after process collection
+            ai_agent_ram_gb: 0.0,       // filled after process collection
             irq_per_sec,
             swap_used_gb: {
                 let used = sys.used_swap();
-                if used > 0 { Some(used as f64 / 1_073_741_824.0) } else { None }
+                if used > 0 {
+                    Some(used as f64 / 1_073_741_824.0)
+                } else {
+                    None
+                }
             },
             swap_total_gb: {
                 let total = sys.total_swap();
-                if total > 0 { Some(total as f64 / 1_073_741_824.0) } else { None }
+                if total > 0 {
+                    Some(total as f64 / 1_073_741_824.0)
+                } else {
+                    None
+                }
             },
             disk_fill_rate_gb_per_sec: prev_disk_used_gb.and_then(|prev| {
                 // tick interval is ~2s; only report if growth > 50MB to avoid noise.
                 let delta = disk_used_gb - prev;
-                if delta > 0.05 { Some(delta / 2.0) } else { None }
+                if delta > 0.05 {
+                    Some(delta / 2.0)
+                } else {
+                    None
+                }
             }),
+            #[cfg(target_os = "linux")]
+            system_fd_pct: read_system_fd_pct(),
+            #[cfg(not(target_os = "linux"))]
+            system_fd_pct: None,
+            #[cfg(target_os = "linux")]
+            oom_freeze_risk: check_oom_freeze_risk(),
+            #[cfg(not(target_os = "linux"))]
+            oom_freeze_risk: None,
+            // dot_claude_size sampled every 30 ticks (~60s) to avoid fs overhead.
+            dot_claude_size_gb: if tick_count % 30 == 1 {
+                let size = read_dot_claude_size_gb();
+                cached_dot_claude_size_gb = size;
+                size
+            } else {
+                cached_dot_claude_size_gb
+            },
+            mcp_server_count: {
+                let c = count_mcp_servers(&sys);
+                if c > 0 {
+                    Some(c)
+                } else {
+                    None
+                }
+            },
         };
         prev_disk_used_gb = Some(disk_used_gb);
         let (headroom, headroom_reason) = impact::compute_headroom(&hw);
@@ -522,9 +739,7 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
                 AnomalyType::ThermalThrottle | AnomalyType::CpuSaturation => {
                     0.70 * cpu_norm + 0.30 * ram_norm
                 }
-                AnomalyType::MemoryPressure => {
-                    0.30 * cpu_norm + 0.70 * ram_norm
-                }
+                AnomalyType::MemoryPressure => 0.30 * cpu_norm + 0.70 * ram_norm,
                 _ => {
                     let dominant = cpu_norm.max(ram_norm);
                     let recessive = cpu_norm.min(ram_norm);
@@ -592,6 +807,34 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
         let culprit = process_infos.first().cloned();
         let groups = grouping::build_groups(&process_infos);
 
+        // ── Pre-compute per-PID child counts and zombie counts ────────────
+        // Build parent→child_count and parent→zombie_child_count maps from
+        // all live processes. Used by the claude_agents filter_map below
+        // (avoids holding a second borrow on sys.processes() inside the closure).
+        let mut direct_child_counts: HashMap<u32, u32> = HashMap::new();
+        #[cfg(target_os = "linux")]
+        let mut zombie_child_counts_map: HashMap<u32, u32> = HashMap::new();
+        for process in sys.processes().values() {
+            #[cfg(target_os = "linux")]
+            let pid_u32 = usize::from(process.pid()) as u32;
+            if let Some(parent) = process.parent() {
+                let parent_u32 = usize::from(parent) as u32;
+                *direct_child_counts.entry(parent_u32).or_insert(0) += 1;
+                #[cfg(target_os = "linux")]
+                {
+                    // Check if this process is a zombie
+                    let stat_path = format!("/proc/{}/stat", pid_u32);
+                    if let Ok(stat) = std::fs::read_to_string(&stat_path) {
+                        if let Some(after) = stat.rfind(')') {
+                            if stat[after + 2..].trim_start().starts_with('Z') {
+                                *zombie_child_counts_map.entry(parent_u32).or_insert(0) += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // ── Claude sub-agent breakdown ────────────────────────────────────
         // Scan sys.processes() directly so idle sub-agents below the
         // blame_score filter threshold are still visible.
@@ -599,8 +842,7 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
             .processes()
             .iter()
             .filter_map(|(pid, process)| {
-                let name =
-                    grouping::normalize_process_name(&process.name().to_string_lossy());
+                let name = grouping::normalize_process_name(&process.name().to_string_lossy());
                 if !name.to_lowercase().contains("claude") {
                     return None;
                 }
@@ -609,8 +851,7 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
                 if grouping::is_memory_monitor_process(pid_u32) {
                     return None;
                 }
-                let meta = grouping::read_claude_cmdline(pid_u32)
-                    .unwrap_or_default();
+                let meta = grouping::read_claude_cmdline(pid_u32).unwrap_or_default();
                 let current_ram_gb = process.memory() as f64 / 1_073_741_824.0;
                 let current_cpu_norm = process.cpu_usage() as f64 / cpu_count;
                 // RAM growth rate: signed slow-EWMA delta / slow time constant (~40s).
@@ -631,7 +872,7 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
                 // system-wide CPU confirms this process is the dominant consumer.
                 let suspected_spin_loop = {
                     let this_cpu = process.cpu_usage() as f64;
-                    let low_irq = hw.irq_per_sec.map_or(false, |irq| irq < 5_000);
+                    let low_irq = hw.irq_per_sec.is_some_and(|irq| irq < 5_000);
                     if this_cpu >= 40.0 && low_irq && hw.cpu_usage_pct >= 35.0 {
                         Some(true)
                     } else {
@@ -642,12 +883,15 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
                 // means GC is thrashing. /clear resets the buffer (2GB → 160MB).
                 // Also flag long-running sessions (>4h) with growing RAM as pre-crisis.
                 let uptime_s = ewma.get(pid_u32).map(|b| b.samples as u64 * 2);
-                let long_running = uptime_s.map_or(false, |s| s > 4 * 3600);
+                let long_running = uptime_s.is_some_and(|s| s > 4 * 3600);
                 let gc_pressure = if current_ram_gb >= 1.5 {
                     Some("critical".to_string())
                 } else if current_ram_gb >= 0.8 {
                     Some("warn".to_string())
-                } else if long_running && current_ram_gb >= 0.4 && ram_growth_gb_per_sec.map_or(false, |r| r > 0.0) {
+                } else if long_running
+                    && current_ram_gb >= 0.4
+                    && ram_growth_gb_per_sec.is_some_and(|r| r > 0.0)
+                {
                     // Long session + RAM growing → pre-warn before hitting 800MB threshold
                     Some("accumulating".to_string())
                 } else {
@@ -658,7 +902,7 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
                 // OOM pattern (1GB→21GB in 6s observed). Uses fast EWMA (α=0.4, ~5s window)
                 // as baseline; needs at least WARMUP_FAST samples to avoid false positives.
                 let ram_spike = ewma.get(pid_u32).and_then(|b| {
-                    if b.samples >= crate::ewma::WARMUP_FAST + 1 {
+                    if b.samples > crate::ewma::WARMUP_FAST {
                         let fast_ram = b.fast_ram();
                         if fast_ram > 0.05 && current_ram_gb - fast_ram > 0.3 {
                             Some(true)
@@ -679,13 +923,21 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
                 // state: index 20), RSS field 24 (index 21) per /proc/[pid]/stat layout.
                 #[cfg(target_os = "linux")]
                 let (suspected_io_block, suspected_alloc_thrash) = {
-                    let stat_content = std::fs::read_to_string(format!("/proc/{}/stat", pid_u32)).ok();
+                    let stat_content =
+                        std::fs::read_to_string(format!("/proc/{}/stat", pid_u32)).ok();
                     let is_d_state = stat_content
                         .as_deref()
-                        .and_then(|s| s.rfind(')').map(|i| s[i + 2..].trim_start().starts_with('D')))
+                        .and_then(|s| {
+                            s.rfind(')')
+                                .map(|i| s[i + 2..].trim_start().starts_with('D'))
+                        })
                         .unwrap_or(false);
                     let ticks = agent_d_state_ticks.entry(pid_u32).or_insert(0);
-                    if is_d_state { *ticks += 1; } else { *ticks = 0; }
+                    if is_d_state {
+                        *ticks += 1;
+                    } else {
+                        *ticks = 0;
+                    }
                     let io_block = if *ticks >= 2 { Some(true) } else { None };
 
                     // VSZ/RSS ratio: fields at index 20 (vsize bytes) and 21 (rss pages)
@@ -699,7 +951,11 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
                             if rss_pages > 0 {
                                 let vsz_pages = vsize_bytes / 4096;
                                 let ratio = vsz_pages / rss_pages;
-                                if ratio > 50 { Some(true) } else { None }
+                                if ratio > 50 {
+                                    Some(true)
+                                } else {
+                                    None
+                                }
                             } else {
                                 None
                             }
@@ -720,19 +976,120 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
                 // open fd index), so FDSize > 4096 reliably indicates a leak in progress.
                 // Observed: 757,812 open fds before EMFILE. See issue #11136.
                 #[cfg(target_os = "linux")]
-                let fd_leak: Option<bool> = std::fs::read_to_string(
-                    format!("/proc/{}/status", pid_u32)
-                )
-                .ok()
-                .and_then(|s| {
-                    s.lines()
-                        .find(|l| l.starts_with("FDSize:"))
-                        .and_then(|l| l.split_whitespace().nth(1))
-                        .and_then(|v| v.parse::<u64>().ok())
-                        .and_then(|fd_size| if fd_size > 4096 { Some(true) } else { None })
-                });
+                let fd_leak: Option<bool> =
+                    std::fs::read_to_string(format!("/proc/{}/status", pid_u32))
+                        .ok()
+                        .and_then(|s| {
+                            s.lines()
+                                .find(|l| l.starts_with("FDSize:"))
+                                .and_then(|l| l.split_whitespace().nth(1))
+                                .and_then(|v| v.parse::<u64>().ok())
+                                .and_then(|fd_size| if fd_size > 4096 { Some(true) } else { None })
+                        });
                 #[cfg(not(target_os = "linux"))]
                 let fd_leak: Option<bool> = None;
+
+                // Child churn rate: delta of direct child count / 2s.
+                // Catches zombie storms (#34092): 185 zombies/sec, RSS 400MB→17GB.
+                let current_child_count = direct_child_counts.get(&pid_u32).copied().unwrap_or(0);
+                let child_churn_rate_per_sec = {
+                    let prev_count = prev_child_counts
+                        .get(&pid_u32)
+                        .copied()
+                        .unwrap_or(current_child_count);
+                    let delta = current_child_count.abs_diff(prev_count);
+                    if delta > 20 {
+                        Some(delta as f64 / 2.0)
+                    } else {
+                        None
+                    }
+                };
+                prev_child_counts.insert(pid_u32, current_child_count);
+
+                // I/O read polling loop: high read_bytes/s with low CPU suggests
+                // repeated binary re-reads (cowork-svc 195MB/s pattern, #22543).
+                #[cfg(target_os = "linux")]
+                let io_read_mb_per_sec: Option<f64> = {
+                    let current_bytes = read_pid_io_bytes(pid_u32).unwrap_or(0);
+                    let result = prev_io_read_bytes.get(&pid_u32).and_then(|&prev| {
+                        if current_bytes >= prev {
+                            let delta_mb = (current_bytes - prev) as f64 / 1_048_576.0;
+                            // High read rate with modest CPU: polling/re-read loop
+                            if delta_mb > 50.0 && current_cpu_norm < 20.0 {
+                                Some(delta_mb / 2.0) // per second (2s tick)
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    });
+                    prev_io_read_bytes.insert(pid_u32, current_bytes);
+                    result
+                };
+                #[cfg(not(target_os = "linux"))]
+                let io_read_mb_per_sec: Option<f64> = None;
+
+                // Idle CPU spin: CPU > 30% but no new children AND minimal I/O.
+                // Catches futex/pread polling loops (#22275 variant: idle-but-burning).
+                // Track consecutive ticks; report duration when >= 30 ticks (~60s).
+                let has_io_activity = io_read_mb_per_sec.is_some_and(|r| r > 1.0);
+                let has_child_delta = child_churn_rate_per_sec.is_some();
+                let cpu_raw = process.cpu_usage() as f64;
+                let idle_spin_ticks_val = idle_spin_ticks.entry(pid_u32).or_insert(0);
+                if cpu_raw > 30.0 && !has_child_delta && !has_io_activity {
+                    *idle_spin_ticks_val += 1;
+                } else {
+                    *idle_spin_ticks_val = 0;
+                }
+                let idle_cpu_spin_secs: Option<u64> = if *idle_spin_ticks_val >= 30 {
+                    Some(*idle_spin_ticks_val as u64 * 2)
+                } else {
+                    None
+                };
+
+                // RSS growth rate in MB/hr from slow EWMA delta.
+                // Fires before gc_pressure threshold; catches node-pty leaks (#31511).
+                let rss_growth_rate_mb_per_hr: Option<f64> = ram_growth_gb_per_sec.and_then(|r| {
+                    let mb_per_hr = r * 3600.0 * 1024.0;
+                    if mb_per_hr > 50.0 {
+                        Some(mb_per_hr)
+                    } else {
+                        None
+                    }
+                });
+
+                // Largest session file size for this PID's session.
+                // Sampled only every 30 ticks (~60s) to amortize glob cost.
+                let large_session_file_mb: Option<f64> = if tick_count % 30 == 1 {
+                    largest_session_file_mb(meta.session_id.as_deref())
+                } else {
+                    None
+                };
+
+                // Bun crash trajectory: uptime > 4h AND RSS growing > 300 MB/hr.
+                let bun_crash_trajectory: Option<bool> = {
+                    let long_running = uptime_s.is_some_and(|s| s > 4 * 3600);
+                    let fast_growth = rss_growth_rate_mb_per_hr.is_some_and(|r| r > 300.0);
+                    if long_running && fast_growth {
+                        Some(true)
+                    } else {
+                        None
+                    }
+                };
+
+                // Zombie child count for this PID specifically.
+                #[cfg(target_os = "linux")]
+                let zombie_child_count: Option<u32> = {
+                    let count = zombie_child_counts_map.get(&pid_u32).copied().unwrap_or(0);
+                    if count > 0 {
+                        Some(count)
+                    } else {
+                        None
+                    }
+                };
+                #[cfg(not(target_os = "linux"))]
+                let zombie_child_count: Option<u32> = None;
 
                 Some(ClaudeAgentInfo {
                     pid: pid_u32,
@@ -748,6 +1105,13 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
                     suspected_io_block,
                     suspected_alloc_thrash,
                     fd_leak,
+                    child_churn_rate_per_sec,
+                    io_read_mb_per_sec,
+                    idle_cpu_spin_secs,
+                    rss_growth_rate_mb_per_hr,
+                    large_session_file_mb,
+                    bun_crash_trajectory,
+                    zombie_child_count,
                 })
             })
             .collect();
@@ -768,6 +1132,9 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
         // Evict PIDs that no longer exist
         agent_idle_ticks.retain(|pid, _| active_pids.contains(pid));
         agent_d_state_ticks.retain(|pid, _| active_pids.contains(pid));
+        idle_spin_ticks.retain(|pid, _| active_pids.contains(pid));
+        prev_child_counts.retain(|pid, _| active_pids.contains(pid));
+        prev_io_read_bytes.retain(|pid, _| active_pids.contains(pid));
 
         let stranded_idle_pids: Vec<u32> = agent_idle_ticks
             .iter()
@@ -814,7 +1181,7 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
                     // Reparented to init (orphaned)
                     && children_of
                         .get(&init_pid)
-                        .map_or(false, |v| v.contains(&pid))
+                        .is_some_and(|v| v.contains(&pid))
             })
             .copied()
             .collect();
@@ -892,48 +1259,96 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
             claude_agents.iter().map(|a| a.pid).collect();
         let mut crashed_agent_pids: Vec<u32> = prev_claude_agent_pids
             .iter()
-            .filter(|&&pid| !current_claude_pid_set.contains(&pid)
+            .filter(|&&pid| {
+                !current_claude_pid_set.contains(&pid)
                 // Exclude PIDs that are now orphans (already reported separately)
-                && !orphan_pids.contains(&pid))
+                && !orphan_pids.contains(&pid)
+            })
             .copied()
             .collect();
         crashed_agent_pids.sort_unstable();
         prev_claude_agent_pids = current_claude_pid_set;
 
+        // ── Stale session count ───────────────────────────────────────────
+        // Claude/bun PIDs with uptime > 86400s (24h) and RSS > 200MB that are
+        // not actively working (CPU < idle threshold). These are invisible wait
+        // states draining RAM.
+        let stale_session_count: Option<u32> = {
+            let count = claude_agents
+                .iter()
+                .filter(|a| {
+                    a.uptime_s.is_some_and(|s| s > 86400)
+                        && a.ram_gb > 0.2
+                        && a.cpu_pct < crate::thresholds::AGENT_IDLE_CPU_THRESHOLD_PCT
+                })
+                .count() as u32;
+            if count > 0 {
+                Some(count)
+            } else {
+                None
+            }
+        };
+
+        // ── Total orphan count (including idle orphans) ───────────────────
+        // Broader than orphan_pids (which only catches high-CPU orphans).
+        // Count ALL PPID=1 claude/bun processes regardless of CPU.
+        let subagent_orphan_count_total: Option<u32> = {
+            let count = if let Some(init_children) = children_of.get(&(1u32)) {
+                init_children
+                    .iter()
+                    .filter(|&&pid| {
+                        if let Some(proc) = sys.processes().get(&sysinfo::Pid::from(pid as usize)) {
+                            let name = proc.name().to_string_lossy().to_lowercase();
+                            name.starts_with("bun")
+                                || name.starts_with("node")
+                                || name.starts_with("deno")
+                                || name.contains("claude")
+                        } else {
+                            false
+                        }
+                    })
+                    .count() as u32
+            } else {
+                0
+            };
+            if count > 0 {
+                Some(count)
+            } else {
+                None
+            }
+        };
+
         // Check for agent accumulation — AgentAccumulation now only fires when
         // at least one non-orchestrator claude sub-agent is genuinely idle
         // (stranded after its task completed). This prevents false positives
         // when multiple agents are all actively working in parallel.
-        let (anomaly_type, culprit_group) =
-            if !stranded_idle_pids.is_empty() {
-                // Confirmed stranded agents: fire AgentAccumulation on the agent group
-                if let Some(agent_group) = impact::detect_agent_accumulation(&groups) {
-                    let non_agent_cpu_hog = groups.iter().find(|g| {
-                        g.name != agent_group.name
-                            && g.total_cpu_pct > agent_group.total_cpu_pct * 3.0
-                    });
-                    if let Some(hog) = non_agent_cpu_hog {
-                        (anomaly_type, Some(hog.clone()))
-                    } else {
-                        (AnomalyType::AgentAccumulation, Some(agent_group.clone()))
-                    }
-                } else {
-                    (anomaly_type, groups.first().cloned())
-                }
-            } else if let Some(agent_group) = impact::detect_agent_accumulation(&groups) {
-                // Agents exist but none are stranded — use regular blame, not AgentAccumulation
+        let (anomaly_type, culprit_group) = if !stranded_idle_pids.is_empty() {
+            // Confirmed stranded agents: fire AgentAccumulation on the agent group
+            if let Some(agent_group) = impact::detect_agent_accumulation(&groups) {
                 let non_agent_cpu_hog = groups.iter().find(|g| {
-                    g.name != agent_group.name
-                        && g.total_cpu_pct > agent_group.total_cpu_pct * 3.0
+                    g.name != agent_group.name && g.total_cpu_pct > agent_group.total_cpu_pct * 3.0
                 });
                 if let Some(hog) = non_agent_cpu_hog {
                     (anomaly_type, Some(hog.clone()))
                 } else {
-                    (anomaly_type, groups.first().cloned())
+                    (AnomalyType::AgentAccumulation, Some(agent_group.clone()))
                 }
             } else {
                 (anomaly_type, groups.first().cloned())
-            };
+            }
+        } else if let Some(agent_group) = impact::detect_agent_accumulation(&groups) {
+            // Agents exist but none are stranded — use regular blame, not AgentAccumulation
+            let non_agent_cpu_hog = groups.iter().find(|g| {
+                g.name != agent_group.name && g.total_cpu_pct > agent_group.total_cpu_pct * 3.0
+            });
+            if let Some(hog) = non_agent_cpu_hog {
+                (anomaly_type, Some(hog.clone()))
+            } else {
+                (anomaly_type, groups.first().cloned())
+            }
+        } else {
+            (anomaly_type, groups.first().cloned())
+        };
 
         let impact_msg = impact::impact_message(&impact_level, &anomaly_type);
         let fix = impact::suggest_fix(culprit.as_ref(), culprit_group.as_ref(), &anomaly_type);
@@ -959,6 +1374,8 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
             orphan_pids,
             zombie_pids,
             crashed_agent_pids,
+            stale_session_count,
+            subagent_orphan_count_total,
         };
 
         // ── Enrich hw snapshot with post-process fields ──────────────────
@@ -1399,7 +1816,8 @@ fn read_battery_windows() -> Option<BatteryStatus> {
         .get("BatteryStatus")
         .and_then(|v| v.as_u64())
         .unwrap_or(1);
-    let is_charging = status == 2 || status == 3 || status == 6 || status == 7 || status == 8 || status == 9;
+    let is_charging =
+        status == 2 || status == 3 || status == 6 || status == 7 || status == 8 || status == 9;
 
     let time_to_empty = if !is_charging {
         obj.get("EstimatedRunTime")
@@ -1626,8 +2044,9 @@ fn detect_platform_info(sys: &System) -> (String, String) {
         .unwrap_or_else(|| "Unknown CPU".to_string());
 
     // Try to get the machine model from WMI (e.g. "Dell XPS 15 9520", "Surface Laptop 5")
-    let model_id = detect_windows_model()
-        .unwrap_or_else(|| sysinfo::System::host_name().unwrap_or_else(|| "Windows PC".to_string()));
+    let model_id = detect_windows_model().unwrap_or_else(|| {
+        sysinfo::System::host_name().unwrap_or_else(|| "Windows PC".to_string())
+    });
 
     (model_id, chip)
 }
@@ -1651,10 +2070,7 @@ fn detect_windows_model() -> Option<String> {
     let v: serde_json::Value = serde_json::from_str(text).ok()?;
     let mfr = v.get("Manufacturer").and_then(|v| v.as_str()).unwrap_or("");
     let model = v.get("Model").and_then(|v| v.as_str()).unwrap_or("");
-    if model.is_empty()
-        || model.contains("To Be Filled")
-        || model.contains("System Product Name")
-    {
+    if model.is_empty() || model.contains("To Be Filled") || model.contains("System Product Name") {
         return None;
     }
     if mfr.is_empty() || mfr == "OEMGR" || mfr.contains("To Be Filled") {

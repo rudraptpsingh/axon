@@ -582,45 +582,98 @@ pub fn suggest_fix(
 pub fn classify_culprit(name: &str) -> CulpritCategory {
     let lower = name.to_lowercase();
     let base = lower
-        .rsplit(|c: char| c == '/' || c == '\\')
+        .rsplit(['/', '\\'])
         .next()
         .unwrap_or(&lower)
         .trim_end_matches(".exe");
 
     // System processes (check early — these are never build tools or browsers)
-    if ["kernel", "systemd", "launchd", "svchost", "csrss", "dwm", "wininit",
-        "loginwindow", "windowserver", "kworker", "ksoftirqd", "init",
-        "system idle", "system", "memory compression", "registry", "smss",
-        "lsass", "services", "wudfhost", "taskhostw", "runtimebroker",
-        "searchhost", "explorer", "finder", "mds", "spotlight"]
-        .iter()
-        .any(|&s| base == s || lower.contains(s))
+    if [
+        "kernel",
+        "systemd",
+        "launchd",
+        "svchost",
+        "csrss",
+        "dwm",
+        "wininit",
+        "loginwindow",
+        "windowserver",
+        "kworker",
+        "ksoftirqd",
+        "init",
+        "system idle",
+        "system",
+        "memory compression",
+        "registry",
+        "smss",
+        "lsass",
+        "services",
+        "wudfhost",
+        "taskhostw",
+        "runtimebroker",
+        "searchhost",
+        "explorer",
+        "finder",
+        "mds",
+        "spotlight",
+    ]
+    .iter()
+    .any(|&s| base == s || lower.contains(s))
     {
         return CulpritCategory::System;
     }
 
     // Browsers (check before build tools — "chrome" must not match "go")
-    if ["chrome", "firefox", "safari", "edge", "brave", "opera", "vivaldi", "arc"]
-        .iter()
-        .any(|&b| base.contains(b))
+    if [
+        "chrome", "firefox", "safari", "edge", "brave", "opera", "vivaldi", "arc",
+    ]
+    .iter()
+    .any(|&b| base.contains(b))
     {
         return CulpritCategory::Browser;
     }
 
     // AI agents
-    if ["claude", "copilot", "ollama", "llama", "mlx", "llamafile", "gpt"]
-        .iter()
-        .any(|&a| base.contains(a))
+    if [
+        "claude",
+        "copilot",
+        "ollama",
+        "llama",
+        "mlx",
+        "llamafile",
+        "gpt",
+    ]
+    .iter()
+    .any(|&a| base.contains(a))
     {
         return CulpritCategory::AiAgent;
     }
 
     // IDEs (check before build tools — "code" is an IDE, not a build tool)
-    if ["cursor", "windsurf", "zed", "idea", "webstorm", "pycharm",
-        "goland", "rider", "clion", "datagrip", "rubymine", "phpstorm",
-        "android studio", "xcode", "sublime", "atom", "emacs", "vim", "nvim", "neovim"]
-        .iter()
-        .any(|&i| base.contains(i))
+    if [
+        "cursor",
+        "windsurf",
+        "zed",
+        "idea",
+        "webstorm",
+        "pycharm",
+        "goland",
+        "rider",
+        "clion",
+        "datagrip",
+        "rubymine",
+        "phpstorm",
+        "android studio",
+        "xcode",
+        "sublime",
+        "atom",
+        "emacs",
+        "vim",
+        "nvim",
+        "neovim",
+    ]
+    .iter()
+    .any(|&i| base.contains(i))
     {
         return CulpritCategory::Ide;
     }
@@ -630,9 +683,11 @@ pub fn classify_culprit(name: &str) -> CulpritCategory {
     }
 
     // Build tools (use exact base match for short names to avoid false positives)
-    let exact_build = ["cargo", "rustc", "gcc", "g++", "clang", "make", "cmake",
-        "ninja", "msbuild", "javac", "gradle", "maven", "tsc", "go", "dotnet", "swift"];
-    if exact_build.iter().any(|&t| base == t) {
+    let exact_build = [
+        "cargo", "rustc", "gcc", "g++", "clang", "make", "cmake", "ninja", "msbuild", "javac",
+        "gradle", "maven", "tsc", "go", "dotnet", "swift",
+    ];
+    if exact_build.contains(&base) {
         return CulpritCategory::BuildTool;
     }
     // Contains-match for longer, unambiguous names
@@ -954,10 +1009,14 @@ mod tests {
             one_liner: String::new(),
             ai_agent_count: 0,
             ai_agent_ram_gb: 0.0,
-                swap_used_gb: None,
-                swap_total_gb: None,
-                disk_fill_rate_gb_per_sec: None,
+            swap_used_gb: None,
+            swap_total_gb: None,
+            disk_fill_rate_gb_per_sec: None,
             irq_per_sec: None,
+            system_fd_pct: None,
+            oom_freeze_risk: None,
+            dot_claude_size_gb: None,
+            mcp_server_count: None,
         }
     }
 
@@ -1238,7 +1297,11 @@ mod tests {
             .filter(|(_, &t)| t >= crate::thresholds::AGENT_IDLE_STRANDED_TICKS)
             .map(|(p, _)| *p)
             .collect();
-        assert_eq!(stranded, vec![pid], "30 ticks should reach stranded threshold");
+        assert_eq!(
+            stranded,
+            vec![pid],
+            "30 ticks should reach stranded threshold"
+        );
 
         // One active tick resets the counter
         idle_ticks.insert(pid, 0);
@@ -1247,7 +1310,10 @@ mod tests {
             .filter(|(_, &t)| t >= crate::thresholds::AGENT_IDLE_STRANDED_TICKS)
             .map(|(p, _)| *p)
             .collect();
-        assert!(stranded_after_reset.is_empty(), "active tick should clear stranded state");
+        assert!(
+            stranded_after_reset.is_empty(),
+            "active tick should clear stranded state"
+        );
     }
 
     // ── Culprit Category Tests ────────────────────────────────────────────
@@ -1346,7 +1412,10 @@ mod tests {
 
     #[test]
     fn test_classify_culprit_system() {
-        assert_eq!(classify_culprit("Memory Compression"), CulpritCategory::System);
+        assert_eq!(
+            classify_culprit("Memory Compression"),
+            CulpritCategory::System
+        );
         assert_eq!(classify_culprit("svchost"), CulpritCategory::System);
         assert_eq!(classify_culprit("kernel"), CulpritCategory::System);
     }
@@ -1361,7 +1430,11 @@ mod tests {
     #[test]
     fn test_urgency_critical_always_act_now() {
         assert_eq!(
-            compute_urgency(&ImpactLevel::Critical, &TrendDirection::Stable, &TrendDirection::Stable),
+            compute_urgency(
+                &ImpactLevel::Critical,
+                &TrendDirection::Stable,
+                &TrendDirection::Stable
+            ),
             Urgency::ActNow
         );
     }
@@ -1369,7 +1442,11 @@ mod tests {
     #[test]
     fn test_urgency_strained_rising_is_act_now() {
         assert_eq!(
-            compute_urgency(&ImpactLevel::Strained, &TrendDirection::Rising, &TrendDirection::Stable),
+            compute_urgency(
+                &ImpactLevel::Strained,
+                &TrendDirection::Rising,
+                &TrendDirection::Stable
+            ),
             Urgency::ActNow
         );
     }
@@ -1377,7 +1454,11 @@ mod tests {
     #[test]
     fn test_urgency_strained_stable_is_act_soon() {
         assert_eq!(
-            compute_urgency(&ImpactLevel::Strained, &TrendDirection::Stable, &TrendDirection::Stable),
+            compute_urgency(
+                &ImpactLevel::Strained,
+                &TrendDirection::Stable,
+                &TrendDirection::Stable
+            ),
             Urgency::ActSoon
         );
     }
@@ -1385,7 +1466,11 @@ mod tests {
     #[test]
     fn test_urgency_degrading_rising_is_act_soon() {
         assert_eq!(
-            compute_urgency(&ImpactLevel::Degrading, &TrendDirection::Rising, &TrendDirection::Stable),
+            compute_urgency(
+                &ImpactLevel::Degrading,
+                &TrendDirection::Rising,
+                &TrendDirection::Stable
+            ),
             Urgency::ActSoon
         );
     }
@@ -1393,7 +1478,11 @@ mod tests {
     #[test]
     fn test_urgency_degrading_stable_is_monitor() {
         assert_eq!(
-            compute_urgency(&ImpactLevel::Degrading, &TrendDirection::Stable, &TrendDirection::Stable),
+            compute_urgency(
+                &ImpactLevel::Degrading,
+                &TrendDirection::Stable,
+                &TrendDirection::Stable
+            ),
             Urgency::Monitor
         );
     }
@@ -1401,7 +1490,11 @@ mod tests {
     #[test]
     fn test_urgency_healthy_is_monitor() {
         assert_eq!(
-            compute_urgency(&ImpactLevel::Healthy, &TrendDirection::Rising, &TrendDirection::Rising),
+            compute_urgency(
+                &ImpactLevel::Healthy,
+                &TrendDirection::Rising,
+                &TrendDirection::Rising
+            ),
             Urgency::Monitor
         );
     }
@@ -1410,17 +1503,26 @@ mod tests {
 
     #[test]
     fn test_trend_direction_rising() {
-        assert_eq!(compute_trend_direction(50.0, 40.0, 3.0), TrendDirection::Rising);
+        assert_eq!(
+            compute_trend_direction(50.0, 40.0, 3.0),
+            TrendDirection::Rising
+        );
     }
 
     #[test]
     fn test_trend_direction_falling() {
-        assert_eq!(compute_trend_direction(30.0, 40.0, 3.0), TrendDirection::Falling);
+        assert_eq!(
+            compute_trend_direction(30.0, 40.0, 3.0),
+            TrendDirection::Falling
+        );
     }
 
     #[test]
     fn test_trend_direction_stable_within_threshold() {
-        assert_eq!(compute_trend_direction(41.0, 40.0, 3.0), TrendDirection::Stable);
+        assert_eq!(
+            compute_trend_direction(41.0, 40.0, 3.0),
+            TrendDirection::Stable
+        );
     }
 
     /// Cursor-specific fix across all anomaly types: always suggests Cmd+W.

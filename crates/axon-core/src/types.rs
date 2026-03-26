@@ -178,6 +178,47 @@ pub struct ClaudeAgentInfo {
     /// See: github.com/anthropics/claude-code/issues/11136.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fd_leak: Option<bool>,
+    /// Rate at which this claude PID spawns+reaps child processes (children/sec over
+    /// last 2s). Values > 20/s indicate a zombie storm or tight subprocess loop —
+    /// the statusLine render bug (#34092) produced 185 zombies/sec, RSS growing
+    /// 400MB → 17GB. None when no children are spawning.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub child_churn_rate_per_sec: Option<f64>,
+    /// Disk I/O read throughput for this PID in MB/sec (Linux, from /proc/<pid>/io).
+    /// High read bytes with low CPU% indicates a polling/re-read loop — the cowork-svc
+    /// pattern reads a 213MB binary every 2s (195MB/s). None when below threshold.
+    /// See: github.com/anthropics/claude-code/issues/22543.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub io_read_mb_per_sec: Option<f64>,
+    /// Seconds this PID has been above 30% CPU with no new child spawns and minimal
+    /// I/O. Indicates a userspace spin/poll loop (pread64/futex pattern) rather than
+    /// real work. Distinct from suspected_spin_loop (which fires on high IRQ-free CPU
+    /// at system level); this fires on sustained low-productivity CPU use.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idle_cpu_spin_secs: Option<u64>,
+    /// EWMA-smoothed RSS growth rate in MB/hr. Fires before the gc_pressure threshold
+    /// (800MB). Values > 50 MB/hr are notable; > 300 MB/hr is a crash trajectory.
+    /// Catches the node-pty ArrayBuffer leak cluster (10+ issues, 72GB/hr observed).
+    /// See: github.com/anthropics/claude-code/issues/31511, #33118.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rss_growth_rate_mb_per_hr: Option<f64>,
+    /// Size (MB) of the largest ~/.claude/projects/**/*.jsonl session file for this
+    /// process's session_id. Files > 40MB cause synchronous full-load hangs —
+    /// observed as infinite "thinking" spin with no CPU activity (#21022).
+    /// None when no large session files are found or session_id is unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub large_session_file_mb: Option<f64>,
+    /// True when this bun/node process has uptime > 4h AND rss_growth_rate_mb_per_hr
+    /// > 300. Predicts a mimalloc OOM crash within the next 1-2h — matches the
+    /// >      bun memory leak trajectory (#21875, #29192, #33118). Act before the crash.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bun_crash_trajectory: Option<bool>,
+    /// Instantaneous count of zombie children for this claude PID (complement to
+    /// child_churn_rate_per_sec for burst detection). Non-zero means the process is
+    /// not reaping children fast enough — zombie accumulation stalls new spawns once
+    /// the PID table fills. See: github.com/anthropics/claude-code/issues/34092.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub zombie_child_count: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -240,6 +281,30 @@ pub struct HwSnapshot {
     /// Fires when delta between ticks exceeds 50 MB (0.05 GB) over 2 seconds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub disk_fill_rate_gb_per_sec: Option<f64>,
+    /// System-wide open file descriptor pool utilization (%). Linux only, from
+    /// /proc/sys/fs/file-nr: (allocated - free) / max * 100. Values > 90% mean the
+    /// system is close to the global FD hard limit — any process attempting open()
+    /// will get ENFILE. Affects all processes, not just the target. None on non-Linux.
+    /// See: github.com/anthropics/claude-code/issues/11136.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_fd_pct: Option<f64>,
+    /// True when MemFree + SwapFree < 64MB and SwapFree == 0 (Linux /proc/meminfo).
+    /// This is the Linux hard-freeze precondition: with no swap and no free RAM, the
+    /// next large allocation triggers OOM freeze — the kernel stalls indefinitely
+    /// rather than killing processes. Recovery requires reboot. None on non-Linux.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oom_freeze_risk: Option<bool>,
+    /// Total size of ~/.claude/ directory in GB, sampled every 30 ticks (~60s).
+    /// Values > 1 GB warrant investigation; > 10 GB is likely a runaway debug-log
+    /// or node_modules/.cache leak. Cascade failure observed at 0 bytes free from
+    /// 472GB debug logs and 20GB/week .node module accumulation (#16093, #26911).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dot_claude_size_gb: Option<f64>,
+    /// Count of currently running MCP server processes (python/node/bun/deno with
+    /// MCP-related command lines). > 4 simultaneous MCP servers accumulate per-session
+    /// commit charge; > 8 risks address space exhaustion on 32-bit hosts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp_server_count: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -303,6 +368,16 @@ pub struct ProcessBlame {
     /// See: github.com/anthropics/claude-code/issues/21875 (Bun segfaults).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub crashed_agent_pids: Vec<u32>,
+    /// Count of claude/bun processes with age > 86400s and RSS > 200MB. These are
+    /// stale sessions that were never cleaned up — invisible wait-state accumulation
+    /// that slowly drains RAM. Normal operation: 0. > 2 indicates a cleanup problem.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stale_session_count: Option<u32>,
+    /// Total count of PPID=1 (reparented-to-init) claude/bun processes regardless of
+    /// CPU usage. Broadens orphan_pids (which only fires for high-CPU orphans) to
+    /// catch idle orphaned MCP server subprocesses consuming RAM silently.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subagent_orphan_count_total: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

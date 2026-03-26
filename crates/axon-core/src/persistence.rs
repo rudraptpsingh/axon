@@ -340,9 +340,7 @@ pub fn query_session_health(db: &DbHandle, since: DateTime<Utc>) -> Result<Sessi
                 anomaly_type: row.get::<_, String>(4).unwrap_or_default(),
                 impact_level: row.get::<_, String>(5).unwrap_or_default(),
                 anomaly_score: row.get::<_, f64>(6).unwrap_or(0.0),
-                ai_agent_count: row.get::<_, Option<i32>>(7)
-                    .unwrap_or(None)
-                    .unwrap_or(0) as u32,
+                ai_agent_count: row.get::<_, Option<i32>>(7).unwrap_or(None).unwrap_or(0) as u32,
             })
         })?
         .filter_map(|r| r.ok())
@@ -406,7 +404,10 @@ pub fn query_session_health(db: &DbHandle, since: DateTime<Utc>) -> Result<Sessi
             throttle_count += 1;
         }
 
-        if matches!(row.anomaly_type.as_str(), "agent_accumulation" | "agentaccumulation") {
+        if matches!(
+            row.anomaly_type.as_str(),
+            "agent_accumulation" | "agentaccumulation"
+        ) {
             agent_accumulation_events += 1;
         }
         if row.ai_agent_count > peak_ai_agent_count {
@@ -602,8 +603,8 @@ pub fn query_trend(db: &DbHandle, range_secs: i64, bucket_secs: i64) -> Result<T
     } else {
         let mid = buckets.len() / 2;
         let first_avg: f64 = buckets[..mid].iter().map(|b| b.avg_cpu_pct).sum::<f64>() / mid as f64;
-        let second_avg: f64 =
-            buckets[mid..].iter().map(|b| b.avg_cpu_pct).sum::<f64>() / (buckets.len() - mid) as f64;
+        let second_avg: f64 = buckets[mid..].iter().map(|b| b.avg_cpu_pct).sum::<f64>()
+            / (buckets.len() - mid) as f64;
         let delta = second_avg - first_avg;
         if delta > 5.0 {
             "rising".to_string()
@@ -656,10 +657,14 @@ mod tests {
             one_liner: String::new(),
             ai_agent_count: 0,
             ai_agent_ram_gb: 0.0,
-                swap_used_gb: None,
-                swap_total_gb: None,
-                disk_fill_rate_gb_per_sec: None,
+            swap_used_gb: None,
+            swap_total_gb: None,
+            disk_fill_rate_gb_per_sec: None,
             irq_per_sec: None,
+            system_fd_pct: None,
+            oom_freeze_risk: None,
+            dot_claude_size_gb: None,
+            mcp_server_count: None,
         }
     }
 
@@ -681,6 +686,8 @@ mod tests {
             orphan_pids: Vec::new(),
             zombie_pids: Vec::new(),
             crashed_agent_pids: Vec::new(),
+            stale_session_count: None,
+            subagent_orphan_count_total: None,
         }
     }
 

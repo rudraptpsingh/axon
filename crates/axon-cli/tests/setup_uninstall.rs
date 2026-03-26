@@ -45,11 +45,7 @@ fn with_fake_home(f: impl FnOnce(&std::path::Path)) {
     {
         std::fs::create_dir_all(home.join("AppData/Roaming/Claude")).unwrap();
         std::fs::create_dir_all(home.join("AppData/Roaming/Code/User")).unwrap();
-        std::fs::write(
-            home.join("AppData/Roaming/Code/User/settings.json"),
-            "{}",
-        )
-        .unwrap();
+        std::fs::write(home.join("AppData/Roaming/Code/User/settings.json"), "{}").unwrap();
     }
 
     std::fs::create_dir_all(home.join(".cursor")).unwrap();

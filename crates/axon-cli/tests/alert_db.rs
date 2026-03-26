@@ -12,6 +12,12 @@ fn axon_bin() -> &'static str {
 #[test]
 #[ignore] // ~5s: needs real hardware
 fn test_diagnose_creates_db_and_alerts() {
+    // sqlite3 CLI required for schema inspection; skip if not present (e.g. Windows CI)
+    if Command::new("sqlite3").arg("--version").output().is_err() {
+        eprintln!("sqlite3 CLI not found, skipping test");
+        return;
+    }
+
     let data_dir = tempdir().unwrap();
 
     let output = Command::new(axon_bin())
@@ -49,6 +55,12 @@ fn test_diagnose_creates_db_and_alerts() {
 #[test]
 #[ignore] // ~5s: needs real hardware
 fn test_alert_schema_has_required_columns() {
+    // sqlite3 CLI required for schema inspection; skip if not present (e.g. Windows CI)
+    if Command::new("sqlite3").arg("--version").output().is_err() {
+        eprintln!("sqlite3 CLI not found, skipping test");
+        return;
+    }
+
     let data_dir = tempdir().unwrap();
 
     Command::new(axon_bin())
@@ -83,6 +95,12 @@ fn test_alert_schema_has_required_columns() {
 #[test]
 #[ignore] // ~5s: needs real hardware
 fn test_uninstall_purges_db() {
+    // dirs::home_dir() on Windows uses the Windows API, not the HOME env var,
+    // so the HOME override used by this test has no effect on Windows.
+    if cfg!(target_os = "windows") {
+        eprintln!("HOME env var override does not affect dirs on Windows; skipping");
+        return;
+    }
     let data_dir = tempdir().unwrap();
     let home_dir = tempdir().unwrap();
     let home = home_dir.path();

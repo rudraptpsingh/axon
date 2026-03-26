@@ -82,8 +82,16 @@ impl EwmaTracker {
         // not pollute the baseline, but still move the tracker toward the new value.
         let z_cpu = (e_cpu / sigma_cpu).abs();
         let z_ram = (e_ram / sigma_ram).abs();
-        let lam_cpu = if z_cpu <= HUBER_C { self.alpha } else { self.alpha * HUBER_C / z_cpu };
-        let lam_ram = if z_ram <= HUBER_C { self.alpha } else { self.alpha * HUBER_C / z_ram };
+        let lam_cpu = if z_cpu <= HUBER_C {
+            self.alpha
+        } else {
+            self.alpha * HUBER_C / z_cpu
+        };
+        let lam_ram = if z_ram <= HUBER_C {
+            self.alpha
+        } else {
+            self.alpha * HUBER_C / z_ram
+        };
 
         self.cpu += lam_cpu * e_cpu;
         self.ram += lam_ram * e_ram;
@@ -350,8 +358,16 @@ mod tests {
         // AEWMA converges slightly slower than fixed EWMA because variance
         // tracking needs more samples to tighten, but still converges.
         let (cpu_d, ram_d) = store.update(1, 50.0, 2.0);
-        assert!(cpu_d < 0.5, "converged AEWMA should have near-zero delta, got {}", cpu_d);
-        assert!(ram_d < 0.05, "converged AEWMA should have near-zero delta, got {}", ram_d);
+        assert!(
+            cpu_d < 0.5,
+            "converged AEWMA should have near-zero delta, got {}",
+            cpu_d
+        );
+        assert!(
+            ram_d < 0.05,
+            "converged AEWMA should have near-zero delta, got {}",
+            ram_d
+        );
     }
 
     // ── Multi-timescale tests ─────────────────────────────────────────────
