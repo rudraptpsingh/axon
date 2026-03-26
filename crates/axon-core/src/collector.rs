@@ -14,6 +14,77 @@ use crate::{
     types::*,
 };
 
+// ── CUSUM state for system-level impact scoring ───────────────────────────────
+// Replaces the old `above_threshold_count` counter. CUSUM (Cumulative Sum,
+// Page 1954) is optimal for detecting step changes: it accumulates evidence
+// that the score has shifted above the idle baseline, and does NOT re-adapt
+// to sustained anomalies the way EWMA does (no "inertia problem").
+//
+// Initialisation uses Lucas & Crosier (1982) FIR headstart (s_pos = h/2) so
+// the detector responds faster to an anomaly that exists at startup.
+// The reference mean μ is estimated from the first CUSUM_WARMUP_TICKS ticks.
+
+const CUSUM_WARMUP_TICKS: usize = 3;
+/// Fixed noise floor for normalised score (empirically ~0.04 on an idle machine).
+const CUSUM_SIGMA: f64 = 0.04;
+/// Allowance: detect shifts > 0.5σ above μ (standard k=0.5 default).
+const CUSUM_K: f64 = 0.5;
+/// Alert threshold (4σ → ~1 false alarm per 370 ticks ≈ 12 min at 2s ticks).
+const CUSUM_H: f64 = 4.0;
+/// After this many consecutive alert ticks (~60s), slowly adapt μ to acknowledge
+/// a genuine new baseline (e.g. user started a long compile job).
+const CUSUM_ADAPT_TICKS: u32 = 30;
+
+struct CusumState {
+    s_pos: f64,
+    mu: f64,
+    warmup_scores: Vec<f64>,
+    ticks_since_alert: u32,
+}
+
+impl CusumState {
+    fn new() -> Self {
+        Self {
+            s_pos: 0.0,
+            mu: 0.0,
+            warmup_scores: Vec::with_capacity(CUSUM_WARMUP_TICKS),
+            ticks_since_alert: 0,
+        }
+    }
+
+    /// Feed a new score. Returns true when CUSUM signals a sustained anomaly.
+    fn update(&mut self, score: f64) -> bool {
+        // Collect first N scores to estimate the idle baseline μ.
+        if self.warmup_scores.len() < CUSUM_WARMUP_TICKS {
+            self.warmup_scores.push(score);
+            if self.warmup_scores.len() == CUSUM_WARMUP_TICKS {
+                self.mu = self.warmup_scores.iter().sum::<f64>() / CUSUM_WARMUP_TICKS as f64;
+                // FIR headstart: begin at h/2 so startup anomalies are caught faster.
+                self.s_pos = CUSUM_H / 2.0;
+            }
+            return false;
+        }
+
+        let z = (score - self.mu) / CUSUM_SIGMA;
+        self.s_pos = (self.s_pos + z - CUSUM_K).max(0.0);
+
+        let triggered = self.s_pos >= CUSUM_H;
+        if triggered {
+            self.ticks_since_alert += 1;
+            if self.ticks_since_alert >= CUSUM_ADAPT_TICKS {
+                // Slowly shift μ toward the current level (deliberate baseline adaptation
+                // after 60 s of sustained alert, not automatic drift like EWMA).
+                self.mu = self.mu * 0.9 + score * 0.1;
+                self.s_pos = CUSUM_H / 2.0; // partial reset, stay sensitive
+                self.ticks_since_alert = 0;
+            }
+        } else {
+            self.ticks_since_alert = 0;
+        }
+        triggered
+    }
+}
+
 struct TestPrevStateConfig {
     ram_pressure: Option<RamPressure>,
     throttling: Option<bool>,
@@ -122,6 +193,7 @@ impl AppState {
                 one_liner: "System idle.".to_string(),
                 ai_agent_count: 0,
                 ai_agent_ram_gb: 0.0,
+                irq_per_sec: None,
             },
             blame: ProcessBlame {
                 anomaly_type: AnomalyType::None,
@@ -195,13 +267,57 @@ impl DebounceState {
     }
 }
 
+// ── IRQ rate reader (Linux only) ──────────────────────────────────────────────
+
+#[cfg(target_os = "linux")]
+static PREV_IRQ_STATE: std::sync::Mutex<Option<(u64, std::time::Instant)>> =
+    std::sync::Mutex::new(None);
+
+/// Read total hardware interrupt rate (interrupts/sec) by diffing /proc/interrupts.
+/// Returns None on first call (no delta available yet) or on parse error.
+#[cfg(target_os = "linux")]
+fn read_irq_per_sec() -> Option<u64> {
+    let content = std::fs::read_to_string("/proc/interrupts").ok()?;
+    // Sum all numeric values on each line after the first colon-delimited IRQ label.
+    // Header line (first) has no colon — skip naturally via splitn.
+    let total: u64 = content
+        .lines()
+        .skip(1) // skip the CPU0 CPU1 ... header
+        .filter_map(|line| {
+            let after_colon = line.splitn(2, ':').nth(1)?;
+            Some(
+                after_colon
+                    .split_whitespace()
+                    .filter_map(|s| s.parse::<u64>().ok())
+                    .sum::<u64>(),
+            )
+        })
+        .sum();
+
+    let now = std::time::Instant::now();
+    let mut prev_guard = PREV_IRQ_STATE.lock().ok()?;
+    let result = match *prev_guard {
+        Some((prev_total, prev_time)) => {
+            let elapsed = now.duration_since(prev_time).as_secs_f64();
+            if elapsed > 0.1 {
+                Some(((total.saturating_sub(prev_total)) as f64 / elapsed) as u64)
+            } else {
+                None
+            }
+        }
+        None => None,
+    };
+    *prev_guard = Some((total, now));
+    result
+}
+
 /// Spawns a background Tokio task that refreshes hardware state every 2 seconds.
 /// Updates the SharedState in place for the MCP server to read.
 pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring: SnapshotRing) {
     let mut sys = System::new_all();
     let mut ewma = EwmaStore::default();
     let mut tick_count: u32 = 0;
-    let mut above_threshold_count: u32 = 0;
+    let mut cusum = CusumState::new();
     let test_prev = TestPrevStateConfig::from_env();
 
     // Confirmed (debounced) state for transition detection
@@ -297,6 +413,11 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
         let cpu_delta_pct = cpu_pct - prev_cpu_pct;
         let ram_delta_gb = ram_used_gb - prev_ram_used_gb;
 
+        #[cfg(target_os = "linux")]
+        let irq_per_sec = read_irq_per_sec();
+        #[cfg(not(target_os = "linux"))]
+        let irq_per_sec: Option<u64> = None;
+
         let mut hw = HwSnapshot {
             die_temp_celsius: die_temp,
             throttling,
@@ -321,6 +442,7 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
             one_liner: String::new(), // filled after all fields are known
             ai_agent_count: 0,    // filled after process collection
             ai_agent_ram_gb: 0.0, // filled after process collection
+            irq_per_sec,
         };
         let (headroom, headroom_reason) = impact::compute_headroom(&hw);
         hw.headroom = headroom;
@@ -363,18 +485,24 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
                 (cpu_delta, ram_delta)
             };
 
+            // Dominant-resource weighting: the bottleneck resource drives the score.
+            // 70% weight on the anomaly-type primary resource, 30% on secondary.
+            // In the balanced case, the higher of cpu/ram gets 65%, lower gets 35%.
+            // This prevents a process using only one resource heavily from scoring
+            // lower than a process using both resources moderately.
+            let cpu_norm = (eff_cpu / 100.0).min(1.0);
+            let ram_norm = (eff_ram / ram_total_gb.max(1.0)).min(1.0);
             let blame_score = match anomaly_type {
                 AnomalyType::ThermalThrottle | AnomalyType::CpuSaturation => {
-                    0.6 * (eff_cpu / 100.0).min(1.0)
-                        + 0.4 * (eff_ram / ram_total_gb.max(1.0)).min(1.0)
+                    0.70 * cpu_norm + 0.30 * ram_norm
                 }
                 AnomalyType::MemoryPressure => {
-                    0.25 * (eff_cpu / 100.0).min(1.0)
-                        + 0.75 * (eff_ram / ram_total_gb.max(1.0)).min(1.0)
+                    0.30 * cpu_norm + 0.70 * ram_norm
                 }
                 _ => {
-                    0.5 * (eff_cpu / 100.0).min(1.0)
-                        + 0.5 * (eff_ram / ram_total_gb.max(1.0)).min(1.0)
+                    let dominant = cpu_norm.max(ram_norm);
+                    let recessive = cpu_norm.min(ram_norm);
+                    0.65 * dominant + 0.35 * recessive
                 }
             };
 
@@ -422,11 +550,7 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
         let io_wait_pct = impact::read_io_wait_pct();
         let score = impact::compute_score_with_io(ram_pct, cpu_pct, swap_gb, io_wait_pct);
 
-        if score > crate::thresholds::IMPACT_SCORE_ELEVATED {
-            above_threshold_count = above_threshold_count.saturating_add(1);
-        } else {
-            above_threshold_count = above_threshold_count.saturating_sub(1);
-        }
+        let cusum_triggered = cusum.update(score);
 
         let top_process_cpu_pct = process_infos
             .iter()
@@ -434,7 +558,7 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
             .fold(0.0_f64, f64::max);
         let impact_level = impact::score_to_level_with_context(
             score,
-            above_threshold_count,
+            cusum_triggered,
             cpu_pct,
             ram_pct,
             top_process_cpu_pct,
@@ -461,12 +585,26 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
                 }
                 let meta = grouping::read_claude_cmdline(pid_u32)
                     .unwrap_or_default();
+                let current_ram_gb = process.memory() as f64 / 1_073_741_824.0;
+                let current_cpu_norm = process.cpu_usage() as f64 / cpu_count;
+                // RAM growth rate: signed slow-EWMA delta / slow time constant (~40s).
+                // Positive = context/heap growing; negative = shrinking after task.
+                let ram_growth_gb_per_sec = ewma.get(pid_u32).and_then(|b| {
+                    let (_, ram_delta) = b.signed_slow_delta(current_cpu_norm, current_ram_gb)?;
+                    if ram_delta.abs() > 0.005 {
+                        // Slow EWMA time constant: 1/alpha_slow = 1/0.05 = 20 ticks = 40s
+                        Some(ram_delta / 40.0)
+                    } else {
+                        None
+                    }
+                });
                 Some(ClaudeAgentInfo {
                     pid: pid_u32,
                     session_id: meta.session_id,
                     is_orchestrator: meta.is_orchestrator,
-                    ram_gb: process.memory() as f64 / 1_073_741_824.0,
+                    ram_gb: current_ram_gb,
                     cpu_pct: process.cpu_usage() as f64,
+                    ram_growth_gb_per_sec,
                 })
             })
             .collect();

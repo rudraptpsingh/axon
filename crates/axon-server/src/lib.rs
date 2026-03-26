@@ -327,8 +327,16 @@ fn hw_narrative(hw: &HwSnapshot) -> String {
             )
         }
     };
+    // IRQ rate hint: high IRQ with moderate CPU → real I/O; near-zero IRQ with high CPU → spin-loop.
+    let irq_str = match hw.irq_per_sec {
+        Some(irq) if irq > 50_000 => format!(" IRQ {}/s (I/O-heavy).", irq),
+        Some(irq) if hw.cpu_usage_pct > 60.0 && irq < 5_000 => {
+            format!(" IRQ {}/s (low — possible spin-loop).", irq)
+        }
+        _ => String::new(),
+    };
     format!(
-        "CPU {:.0}% {}, die {}{} RAM {:.1}/{:.0}GB {} ({} pressure).{} {} | {}",
+        "CPU {:.0}% {}, die {}{} RAM {:.1}/{:.0}GB {} ({} pressure).{}{} {} | {}",
         hw.cpu_usage_pct,
         hw.cpu_trend,
         temp_str,
@@ -338,6 +346,7 @@ fn hw_narrative(hw: &HwSnapshot) -> String {
         hw.ram_trend,
         pressure,
         disk_str,
+        irq_str,
         headroom_str,
         hw.one_liner,
     )

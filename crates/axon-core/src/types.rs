@@ -129,6 +129,11 @@ pub struct ClaudeAgentInfo {
     pub is_orchestrator: bool,
     pub ram_gb: f64,
     pub cpu_pct: f64,
+    /// RAM growth rate over the last ~40 seconds (GB/sec, positive = growing).
+    /// None until the slow EWMA baseline has accumulated enough history (~16s).
+    /// Use to anticipate context exhaustion before OOM: >0.01 GB/sec is notable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ram_growth_gb_per_sec: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -172,6 +177,12 @@ pub struct HwSnapshot {
     /// Combined RAM used by all AI agent processes (GB).
     #[serde(default)]
     pub ai_agent_ram_gb: f64,
+    /// Per-second total hardware interrupt rate (Linux only). None on other platforms.
+    /// High IRQ rate with moderate CPU% → real I/O work (disk/net).
+    /// Near-zero IRQ with high CPU% → spin-loop or pure compute (e.g. yes, tight loop).
+    /// Useful for distinguishing cargo build (high IRQ) from runaway agent (low IRQ).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub irq_per_sec: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

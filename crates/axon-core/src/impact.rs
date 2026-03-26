@@ -302,34 +302,28 @@ pub fn score_to_level(score: f64, above_threshold_count: u32) -> ImpactLevel {
     }
 }
 
-/// Score → ImpactLevel with an extreme-signal fast path.
+/// Score → ImpactLevel with CUSUM-based persistence and extreme-signal fast paths.
 ///
-/// Identical to `score_to_level` except that when cpu_pct > 90 or ram_pct > 85
-/// the persistence requirement is reduced to 1 tick instead of
-/// `IMPACT_PERSISTENCE_SAMPLES`. This prevents the 2-tick (4-second) lag that
-/// occurs in one-shot `axon query` mode where the collector starts fresh and
-/// would otherwise report `Healthy` on the very first tick while CPU is at 100%.
+/// `cusum_triggered`: true when the CUSUM accumulator has crossed its threshold,
+/// indicating a sustained shift in the anomaly score above the idle baseline.
+/// This replaces the old `above_threshold_count` counter.
 ///
-/// Additionally, if `top_process_cpu_pct >= 90.0` (a single process pegging
-/// one full CPU core), the result is clamped to at least Degrading. On a
-/// multi-core machine one core at 100% produces a global cpu_pct of only
-/// 25% (4 cores) — below every threshold — so without this the scoreboard
-/// always returns Healthy even for a clearly runaway process.
+/// Two additional fast paths that bypass CUSUM:
+/// 1. `top_process_cpu_pct >= 90.0`: single process pegging a full core.
+///    On a 4-core machine, global cpu_pct is only 25% — below every threshold —
+///    so without this the scoreboard stays Healthy for a clearly runaway process.
+/// 2. `cpu_pct > 90.0 || ram_pct > 85.0`: extreme system-wide signals trigger
+///    immediately without waiting for CUSUM accumulation.
 pub fn score_to_level_with_context(
     score: f64,
-    above_threshold_count: u32,
+    cusum_triggered: bool,
     cpu_pct: f64,
     ram_pct: f64,
     top_process_cpu_pct: f64,
 ) -> ImpactLevel {
-    // Per-process core saturation is an unconditional fast path: if any single
-    // process is monopolising a full CPU core (>=90% raw), we skip both the
-    // score-elevation count gate and the score thresholds and return at least
-    // Degrading immediately.  On a multi-core machine the global cpu_pct may
-    // be only 25% (1 of 4 cores), so the normal path would never fire.
+    // Per-process core saturation fast path: bypass CUSUM entirely.
+    // Still uses the system score to distinguish severity bands.
     if top_process_cpu_pct >= 90.0 {
-        // Still respect the score for distinguishing Degrading/Strained/Critical
-        // when the system-level score is already high.
         return if score >= thresholds::IMPACT_LEVEL_STRAINED_BELOW {
             ImpactLevel::Critical
         } else if score >= thresholds::IMPACT_LEVEL_DEGRADING_BELOW {
@@ -339,14 +333,12 @@ pub fn score_to_level_with_context(
         };
     }
 
-    let required = if cpu_pct > 90.0 || ram_pct > 85.0 {
-        1
-    } else {
-        thresholds::IMPACT_PERSISTENCE_SAMPLES
-    };
-    if above_threshold_count < required {
+    // Extreme system-wide signals or CUSUM confirmation required to escalate.
+    let triggered = cusum_triggered || cpu_pct > 90.0 || ram_pct > 85.0;
+    if !triggered {
         return ImpactLevel::Healthy;
     }
+
     if score < thresholds::IMPACT_LEVEL_HEALTHY_BELOW {
         ImpactLevel::Healthy
     } else if score < thresholds::IMPACT_LEVEL_DEGRADING_BELOW {
@@ -962,6 +954,7 @@ mod tests {
             one_liner: String::new(),
             ai_agent_count: 0,
             ai_agent_ram_gb: 0.0,
+            irq_per_sec: None,
         }
     }
 
@@ -1160,38 +1153,42 @@ mod tests {
 
     #[test]
     fn test_score_to_level_with_context_extreme_cpu_bypasses_persistence() {
-        // At CPU 100%, above_count=1 should NOT return Healthy (old behavior would)
-        let level = score_to_level_with_context(0.65, 1, 100.0, 5.0, 0.0);
+        // At CPU 100%, CUSUM not needed — extreme CPU fast path fires.
+        let level = score_to_level_with_context(0.65, false, 100.0, 5.0, 0.0);
         assert_ne!(
             level,
             ImpactLevel::Healthy,
-            "extreme CPU should bypass the 2-tick persistence requirement"
+            "extreme CPU bypasses CUSUM requirement"
         );
         assert_eq!(level, ImpactLevel::Critical);
     }
 
     #[test]
     fn test_score_to_level_with_context_extreme_ram_bypasses_persistence() {
-        let level = score_to_level_with_context(0.45, 1, 20.0, 90.0, 0.0);
+        let level = score_to_level_with_context(0.45, false, 20.0, 90.0, 0.0);
         assert_ne!(level, ImpactLevel::Healthy);
         assert_eq!(level, ImpactLevel::Strained);
     }
 
     #[test]
-    fn test_score_to_level_with_context_normal_load_still_requires_persistence() {
-        // Normal CPU/RAM: 1 sample is not enough — should still return Healthy
-        let level = score_to_level_with_context(0.35, 1, 50.0, 60.0, 0.0);
+    fn test_score_to_level_with_context_normal_load_requires_cusum() {
+        // Normal CPU/RAM without CUSUM trigger → Healthy (CUSUM must confirm sustained load).
+        let level = score_to_level_with_context(0.35, false, 50.0, 60.0, 0.0);
         assert_eq!(
             level,
             ImpactLevel::Healthy,
-            "non-extreme signals still require 2 ticks"
+            "non-extreme signals require CUSUM confirmation"
         );
+        // Same score with CUSUM triggered → Degrading.
+        let level2 = score_to_level_with_context(0.35, true, 50.0, 60.0, 0.0);
+        assert_eq!(level2, ImpactLevel::Degrading);
     }
 
     #[test]
-    fn test_score_to_level_with_context_zero_count_always_healthy() {
-        // Even extreme signals return Healthy on tick 0 (before any samples)
-        let level = score_to_level_with_context(0.9, 0, 100.0, 5.0, 0.0);
+    fn test_score_to_level_with_context_cusum_false_without_extreme_signals_is_healthy() {
+        // Without CUSUM trigger and without extreme signals, always Healthy
+        // regardless of the score (CUSUM must confirm the anomaly first).
+        let level = score_to_level_with_context(0.9, false, 50.0, 50.0, 0.0);
         assert_eq!(level, ImpactLevel::Healthy);
     }
 
@@ -1200,7 +1197,7 @@ mod tests {
         // On a 4-core machine, one process at 100% = 25% global CPU.
         // Without top_process_cpu_pct, score ≈ 0.125 → always Healthy.
         // With top_process_cpu_pct >= 90, must be at least Degrading.
-        let level = score_to_level_with_context(0.125, 1, 25.0, 3.0, 100.0);
+        let level = score_to_level_with_context(0.125, false, 25.0, 3.0, 100.0);
         assert_eq!(
             level,
             ImpactLevel::Degrading,
@@ -1211,7 +1208,7 @@ mod tests {
     #[test]
     fn test_score_to_level_per_process_high_cpu_does_not_downgrade_critical() {
         // A high system score should not be downgraded by the per-process path
-        let level = score_to_level_with_context(0.8, 2, 80.0, 70.0, 100.0);
+        let level = score_to_level_with_context(0.8, true, 80.0, 70.0, 100.0);
         assert_eq!(level, ImpactLevel::Critical);
     }
 
