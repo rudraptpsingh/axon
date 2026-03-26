@@ -666,6 +666,7 @@ mod tests {
             dot_claude_size_gb: None,
             mcp_server_count: None,
             tmp_claude_size_gb: None,
+            process_spawn_rate_per_sec: None,
         }
     }
 
@@ -689,6 +690,7 @@ mod tests {
             crashed_agent_pids: Vec::new(),
             stale_session_count: None,
             subagent_orphan_count_total: None,
+            background_bash_count: None,
         }
     }
 

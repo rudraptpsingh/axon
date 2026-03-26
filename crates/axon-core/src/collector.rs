@@ -203,6 +203,7 @@ impl AppState {
                 dot_claude_size_gb: None,
                 mcp_server_count: None,
                 tmp_claude_size_gb: None,
+                process_spawn_rate_per_sec: None,
             },
             blame: ProcessBlame {
                 anomaly_type: AnomalyType::None,
@@ -223,6 +224,7 @@ impl AppState {
                 crashed_agent_pids: Vec::new(),
                 stale_session_count: None,
                 subagent_orphan_count_total: None,
+                background_bash_count: None,
             },
             battery: None,
             profile,
@@ -610,6 +612,12 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
     let mut cached_tmp_claude_size_gb: Option<f64> = None;
     // Previous VRAM reading for growth rate computation.
     let mut prev_vram_bytes: Option<u64> = None;
+    // Total process count from last tick for spawn rate computation.
+    let mut prev_total_process_count: Option<usize> = None;
+    // Agent stall: per-PID consecutive ticks with CPU < 2% (near-idle).
+    let mut agent_stall_ticks: HashMap<u32, u32> = HashMap::new();
+    // Session file size from last sample for growth rate computation.
+    let mut prev_session_file_mb: HashMap<u32, f64> = HashMap::new();
 
     let self_pid = std::process::id();
 
@@ -769,6 +777,21 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
                 size
             } else {
                 cached_tmp_claude_size_gb
+            },
+            // Fork bomb / runaway spawn detection: track system process count delta.
+            // Fire at > 50 new processes/sec. Catches #36127, #37490, #27415.
+            process_spawn_rate_per_sec: {
+                let current_count = sys.processes().len();
+                let rate = prev_total_process_count.and_then(|prev| {
+                    if current_count > prev {
+                        let delta = (current_count - prev) as f64 / 2.0; // per-sec (2s tick)
+                        if delta > 5.0 { Some(delta) } else { None }
+                    } else {
+                        None
+                    }
+                });
+                prev_total_process_count = Some(current_count);
+                rate
             },
         };
         prev_disk_used_gb = Some(disk_used_gb);
@@ -1175,6 +1198,40 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
                     }
                 };
 
+                // Agent stall detection: inverse of idle_cpu_spin_secs.
+                // Catches stalled API calls, hung IPC, frozen tool execution.
+                // Tracks consecutive ticks with CPU < 2% and no child activity.
+                // Only for non-orchestrator agents (orchestrator legitimately waits).
+                let agent_stall_ticks_val = agent_stall_ticks.entry(pid_u32).or_insert(0);
+                if cpu_raw < 2.0 && !has_child_delta && !meta.is_orchestrator {
+                    *agent_stall_ticks_val += 1;
+                } else {
+                    *agent_stall_ticks_val = 0;
+                }
+                let agent_stall_secs: Option<u64> = if *agent_stall_ticks_val >= 60 {
+                    // 60 ticks = 120 seconds of near-zero activity
+                    Some(*agent_stall_ticks_val as u64 * 2)
+                } else {
+                    None
+                };
+
+                // Session file growth rate: delta of large_session_file_mb over 60s.
+                // Infers context burn rate without API access (#36727, #22265).
+                let session_file_growth_mb_per_hr: Option<f64> = if tick_count % 30 == 1 {
+                    large_session_file_mb.and_then(|current| {
+                        let prev = prev_session_file_mb.get(&pid_u32).copied();
+                        prev_session_file_mb.insert(pid_u32, current);
+                        prev.and_then(|p| {
+                            let delta_mb = current - p;
+                            // 30 ticks = 60s; extrapolate to MB/hr
+                            let mb_per_hr = delta_mb * 60.0;
+                            if mb_per_hr > 100.0 { Some(mb_per_hr) } else { None }
+                        })
+                    })
+                } else {
+                    None
+                };
+
                 // Zombie child count for this PID specifically.
                 #[cfg(target_os = "linux")]
                 let zombie_child_count: Option<u32> = {
@@ -1209,6 +1266,8 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
                     large_session_file_mb,
                     bun_crash_trajectory,
                     zombie_child_count,
+                    agent_stall_secs,
+                    session_file_growth_mb_per_hr,
                 })
             })
             .collect();
@@ -1232,6 +1291,8 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
         idle_spin_ticks.retain(|pid, _| active_pids.contains(pid));
         prev_child_counts.retain(|pid, _| active_pids.contains(pid));
         prev_io_read_bytes.retain(|pid, _| active_pids.contains(pid));
+        agent_stall_ticks.retain(|pid, _| active_pids.contains(pid));
+        prev_session_file_mb.retain(|pid, _| active_pids.contains(pid));
 
         let stranded_idle_pids: Vec<u32> = agent_idle_ticks
             .iter()
@@ -1415,6 +1476,31 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
             }
         };
 
+        // ── Background bash shell count ──────────────────────────────────
+        // Count running bash/sh/zsh/fish children of any claude process.
+        // Leaked shells accumulate and cause system slowdown (#38927, #32183, #37490).
+        let background_bash_count: Option<u32> = {
+            let mut count: u32 = 0;
+            for &claude_pid in &claude_pids {
+                if let Some(kids) = children_of.get(&claude_pid) {
+                    for &child_pid in kids {
+                        if let Some(proc) = sys.processes().get(&sysinfo::Pid::from(child_pid as usize)) {
+                            let name = proc.name().to_string_lossy().to_lowercase();
+                            if name.starts_with("bash")
+                                || name.starts_with("sh")
+                                || name.starts_with("zsh")
+                                || name.starts_with("fish")
+                                || name.starts_with("dash")
+                            {
+                                count += 1;
+                            }
+                        }
+                    }
+                }
+            }
+            if count > 0 { Some(count) } else { None }
+        };
+
         // Check for agent accumulation — AgentAccumulation now only fires when
         // at least one non-orchestrator claude sub-agent is genuinely idle
         // (stranded after its task completed). This prevents false positives
@@ -1473,6 +1559,7 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
             crashed_agent_pids,
             stale_session_count,
             subagent_orphan_count_total,
+            background_bash_count,
         };
 
         // ── Enrich hw snapshot with post-process fields ──────────────────

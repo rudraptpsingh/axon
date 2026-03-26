@@ -416,6 +416,21 @@ fn hw_narrative(hw: &HwSnapshot) -> String {
         ),
         _ => String::new(),
     };
+    // Fork bomb / process spawn storm detection.
+    let spawn_rate_str = match hw.process_spawn_rate_per_sec {
+        Some(rate) if rate > 200.0 => format!(
+            " [CRITICAL] Process creation rate {:.0}/s — fork bomb or runaway posix_spawn loop \
+             (github.com/anthropics/claude-code/issues/36127, #37490). \
+             Run: pkill -f claude && kill %1 to stop the cascade.",
+            rate
+        ),
+        Some(rate) if rate > 50.0 => format!(
+            " [WARN] Process creation rate {:.0}/s — possible subprocess storm. \
+             Monitor: ps aux | wc -l to check total process count.",
+            rate
+        ),
+        _ => String::new(),
+    };
     // MCP server count: too many simultaneous MCP servers drain commit charge.
     let mcp_str = match hw.mcp_server_count {
         Some(n) if n >= 8 => format!(
@@ -427,7 +442,7 @@ fn hw_narrative(hw: &HwSnapshot) -> String {
         _ => String::new(),
     };
     format!(
-        "CPU {:.0}% {}, die {}{} RAM {:.1}/{:.0}GB {} ({} pressure).{}{}{}{}{}{}{}{}  {} | {}",
+        "CPU {:.0}% {}, die {}{} RAM {:.1}/{:.0}GB {} ({} pressure).{}{}{}{}{}{}{}{}{}  {} | {}",
         hw.cpu_usage_pct,
         hw.cpu_trend,
         temp_str,
@@ -443,6 +458,7 @@ fn hw_narrative(hw: &HwSnapshot) -> String {
         oom_str,
         dot_claude_str,
         tmp_claude_str,
+        spawn_rate_str,
         mcp_str,
         headroom_str,
         hw.one_liner,
@@ -858,6 +874,44 @@ fn blame_narrative(blame: &ProcessBlame) -> String {
                 ));
             }
         }
+
+        // Agent stall: process alive but doing nothing for >2 min.
+        // Detects stalled API calls, hung IPC, frozen tool execution.
+        if let Some(secs) = agent.agent_stall_secs {
+            if secs > 300 {
+                base.push_str(&format!(
+                    " [CRITICAL] PID {} stalled for {:.0} min — near-zero CPU with no I/O or child \
+                     activity. Likely stalled API connection or hung IPC socket \
+                     (github.com/anthropics/claude-code/issues/25979, #37521). \
+                     Kill PID {} and restart the session.",
+                    agent.pid, secs as f64 / 60.0, agent.pid
+                ));
+            } else {
+                base.push_str(&format!(
+                    " [WARN] PID {} idle for {:.0} min with no progress — possible stalled API call \
+                     or hung tool execution (#38258). Monitor; kill if no recovery within 5 min.",
+                    agent.pid, secs as f64 / 60.0
+                ));
+            }
+        }
+
+        // Session file growth rate: infers context window burn.
+        if let Some(rate) = agent.session_file_growth_mb_per_hr {
+            if rate > 500.0 {
+                base.push_str(&format!(
+                    " [CRITICAL] PID {} session file growing at {:.0} MB/hr — unbounded token \
+                     consumption or tool fan-out loop (github.com/anthropics/claude-code/issues/36727). \
+                     Run /compact or /clear NOW to prevent crash.",
+                    agent.pid, rate
+                ));
+            } else {
+                base.push_str(&format!(
+                    " [WARN] PID {} session file growing at {:.0} MB/hr — context burning fast. \
+                     Consider /compact to reduce session size before it causes load hangs (#22265).",
+                    agent.pid, rate
+                ));
+            }
+        }
     }
 
     // Stale session summary (blame-level, not per-agent).
@@ -875,6 +929,24 @@ fn blame_narrative(blame: &ProcessBlame) -> String {
             base.push_str(&format!(
                 " [INFO] {} orphaned claude/bun processes (PPID=1) including idle ones. \
                  Check: ps --ppid 1 -o pid,comm,rss | grep -E 'bun|node|claude'",
+                count
+            ));
+        }
+    }
+
+    // Background bash shell leak detection.
+    if let Some(count) = blame.background_bash_count {
+        if count > 20 {
+            base.push_str(&format!(
+                " [CRITICAL] {} background bash shells owned by claude — shells leaking on process \
+                 death (github.com/anthropics/claude-code/issues/38927, #32183). \
+                 Kill leaked shells: pkill -P $(pgrep claude) bash",
+                count
+            ));
+        } else if count > 10 {
+            base.push_str(&format!(
+                " [WARN] {} background bash shells owned by claude — possible shell leak. \
+                 Check: pstree -p $(pgrep -o claude) | grep bash",
                 count
             ));
         }

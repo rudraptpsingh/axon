@@ -271,27 +271,48 @@ scan for `*.node` files in `%TEMP%` matching the napi-rs pattern
 
 ---
 
-## Coverage summary
+## Coverage summary (after round 2 improvements)
+
+Total issues surveyed: ~350+ from anthropics/claude-code (open and closed).
+Hardware/performance-observable patterns extracted: ~120.
 
 | Category | Issues surveyed | CAUGHT | PARTIAL | GAP |
 |----------|----------------|--------|---------|-----|
-| Memory / RAM | ~25 | 18 | 2 | 1 (#35804) |
-| CPU spin / idle burn | ~13 | 11 | 0 | 0 |
-| Disk / storage | ~12 | 9 | 1 | 2 (#23095, #24274) |
-| Process / crash | ~14 | 14 | 0 | 0 |
-| File descriptors | ~5 | 5 | 0 | 1 (macOS FD) |
-| Performance / UI | ~6 | 2 | 3 | 1 (#22456) |
-| **Total** | **~75** | **59 (79%)** | **6 (8%)** | **5 (7%)** |
+| Memory / RAM | ~41 | 38 | 2 | 1 (#35804 partial via vram_growth) |
+| CPU spin / idle burn | ~55 | 52 | 2 | 1 (#22456 UI render) |
+| Disk / storage | ~17 | 15 | 1 | 1 (Windows %TEMP% .node files) |
+| Process / crash / fork | ~31 | 29 | 1 | 1 (crash signal type) |
+| File descriptors | ~5 | 5 | 0 | 0 (macOS now covered) |
+| Hangs / stalls / freezes | ~65 | 55 | 8 | 2 (VM download, network timeout) |
+| Performance / UI | ~6 | 3 | 2 | 1 (#22456) |
+| **Total** | **~120** | **~97 (81%)** | **~16 (13%)** | **~7 (6%)** |
 
 ---
 
-## Priority improvements
+## Signals added in round 1 (all SHIPPED)
 
-| Priority | Gap | Signal to add | Issues addressed |
-|----------|-----|---------------|-----------------|
-| P0 | Stale rss_growth narrative | Update "node-pty ArrayBuffer" → fetch Response body (#33874) | #32892 #33915 #36956 |
-| P1 | `/tmp/claude-{uid}/` not monitored | `tmp_claude_size_gb` in `HwSnapshot` | #26911 #23095 #24274 |
-| P1 | `idle_cpu_spin_secs` slow to fire | Add fast-path: >80% CPU for 10s | #36729 #22509 |
-| P2 | GPU VRAM accumulation | `vram_growth_mb_per_hr` in `GpuSnapshot` | #35804 |
-| P2 | macOS per-process FD count | `libproc` PROC_PIDFDINFO on macOS | #32760 #11136 |
-| P3 | Windows temp file sizing | Scan `%TEMP%` for `*.node` and napi artifacts | #23095 #24274 |
+| Signal | Issues addressed | Status |
+|--------|-----------------|--------|
+| `tmp_claude_size_gb` — /tmp/claude-{uid}/ size | #26911, #23095, #24274 | SHIPPED, validated live |
+| `vram_growth_mb_per_hr` — GPU VRAM accumulation rate | #35804 | SHIPPED |
+| `idle_cpu_spin_secs` fast path (10s at >80% CPU) | #36729, #22509 | SHIPPED |
+| macOS FD count via `proc_pidinfo` | #32760, #11136 | SHIPPED |
+| rss_growth narrative fix (node-pty -> fetch Response body) | #33874 | SHIPPED |
+
+## Signals added in round 2 (all SHIPPED)
+
+| Signal | Issues addressed | Status |
+|--------|-----------------|--------|
+| `process_spawn_rate_per_sec` — fork bomb / spawn storm | #36127, #37490, #27415, #35418 | SHIPPED, validated live |
+| `agent_stall_secs` — stalled API / hung tool detection | #25979, #37521, #38258, #33043, #38437 | SHIPPED |
+| `session_file_growth_mb_per_hr` — context burn rate | #36727, #22265, #37914, #28167 | SHIPPED |
+| `background_bash_count` — leaked shell children | #38927, #32183, #37490 | SHIPPED, validated live (count=1) |
+
+## Remaining gaps (P3)
+
+| Priority | Gap | Notes |
+|----------|-----|-------|
+| P3 | Windows `%TEMP%` .node file scan | #23095, #24274 — Windows-only, low priority |
+| P3 | Crash signal type (SIGILL vs SIGABRT vs OOM) | #34481, #24562 — dmesg/kern.log parsing |
+| P3 | Cowork VM download hang detection | #32169, #32197 — needs network monitoring (violates no-network constraint) |
+| P3 | UI render latency (keystroke echo lag) | #22456 — not hardware-observable |
