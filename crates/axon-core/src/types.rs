@@ -139,6 +139,17 @@ pub struct ClaudeAgentInfo {
     /// See: github.com/anthropics/claude-code/issues/22275, #36729.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub suspected_spin_loop: Option<bool>,
+    /// GC pressure level based on process RAM: "warn" (>800MB) or "critical" (>1.5GB).
+    /// The Bun/Node runtime accumulates render buffer state over a session; when RAM
+    /// exceeds ~1.5-2GB the GC enters a CPU-thrashing loop. Run /clear to reset.
+    /// See: github.com/anthropics/claude-code/issues/22509, #30807.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gc_pressure: Option<String>,
+    /// Approximate session uptime in seconds (estimated from EWMA sample count × 2s tick).
+    /// None until the EWMA tracker has enough samples. Useful for correlating long sessions
+    /// with GC pressure — CPU thrashing typically appears after 6-8h of uptime.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uptime_s: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

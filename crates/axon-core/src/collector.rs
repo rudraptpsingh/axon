@@ -612,6 +612,21 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
                         None
                     }
                 };
+                // GC pressure: Bun/Node accumulates session render state; high RAM
+                // means GC is thrashing. /clear resets the buffer (2GB → 160MB).
+                // Also flag long-running sessions (>4h) with growing RAM as pre-crisis.
+                let uptime_s = ewma.get(pid_u32).map(|b| b.samples as u64 * 2);
+                let long_running = uptime_s.map_or(false, |s| s > 4 * 3600);
+                let gc_pressure = if current_ram_gb >= 1.5 {
+                    Some("critical".to_string())
+                } else if current_ram_gb >= 0.8 {
+                    Some("warn".to_string())
+                } else if long_running && current_ram_gb >= 0.4 && ram_growth_gb_per_sec.map_or(false, |r| r > 0.0) {
+                    // Long session + RAM growing → pre-warn before hitting 800MB threshold
+                    Some("accumulating".to_string())
+                } else {
+                    None
+                };
                 Some(ClaudeAgentInfo {
                     pid: pid_u32,
                     session_id: meta.session_id,
@@ -620,6 +635,8 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
                     cpu_pct: process.cpu_usage() as f64,
                     ram_growth_gb_per_sec,
                     suspected_spin_loop,
+                    gc_pressure,
+                    uptime_s,
                 })
             })
             .collect();

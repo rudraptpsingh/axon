@@ -447,6 +447,52 @@ fn blame_narrative(blame: &ProcessBlame) -> String {
         ));
     }
 
+    // GC pressure warnings per claude process.
+    // Bun/Node runtime accumulates render buffer state; high RAM → GC thrashing.
+    // Known fix: /clear resets buffer (2GB → 160MB, CPU 98% → 0% instantly).
+    // Browser extension CPU warning: Chrome/Edge extension processes can peg
+    // a single helper at 65% CPU. Detect Browser culprit + high CPU + helper in name.
+    // See: github.com/anthropics/claude-code/issues/37544
+    if matches!(blame.culprit_category, CulpritCategory::Browser) {
+        let high_cpu_browser = blame.culprit.as_ref().map_or(false, |p| p.cpu_pct > 50.0);
+        let is_helper = blame.culprit.as_ref().map_or(false, |p| {
+            let cmd = p.cmd.to_lowercase();
+            cmd.contains("helper") || cmd.contains("renderer") || cmd.contains("worker")
+        });
+        if high_cpu_browser && is_helper {
+            base.push_str(
+                " [WARN] Browser helper process at high CPU — likely a browser extension \
+                 spin-loop. If you have the Claude in Chrome extension installed, \
+                 try disabling it (known 65% CPU bug #37544).",
+            );
+        }
+    }
+
+    for agent in &blame.claude_agents {
+        let uptime_str = agent.uptime_s.map(|s| {
+            if s >= 3600 { format!(" ({}h session)", s / 3600) }
+            else { format!(" ({}m session)", s / 60) }
+        }).unwrap_or_default();
+        match agent.gc_pressure.as_deref() {
+            Some("critical") => base.push_str(&format!(
+                " [CRITICAL] PID {} RAM {:.1}GB{} — Bun GC thrashing imminent. \
+                 Run /clear NOW to drop RAM and stop CPU spin (known fix for issue #22509).",
+                agent.pid, agent.ram_gb, uptime_str
+            )),
+            Some("warn") => base.push_str(&format!(
+                " [WARN] PID {} RAM {:.1}GB{} — session render buffer growing. \
+                 Run /clear if CPU starts climbing (prevents GC thrash at ~2GB).",
+                agent.pid, agent.ram_gb, uptime_str
+            )),
+            Some("accumulating") => base.push_str(&format!(
+                " [INFO] PID {} RAM {:.1}GB{} — long session with growing RAM. \
+                 Consider /clear proactively to avoid GC pressure later.",
+                agent.pid, agent.ram_gb, uptime_str
+            )),
+            _ => {}
+        }
+    }
+
     base
 }
 
