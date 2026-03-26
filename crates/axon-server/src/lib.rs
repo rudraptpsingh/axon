@@ -612,6 +612,34 @@ fn blame_narrative(blame: &ProcessBlame) -> String {
             )),
             _ => {}
         }
+
+        // Compacting-hang hint: very long session + critical GC pressure = likely stuck
+        // context-compaction operation (no timeout, can spin at >100% CPU for hours).
+        // See: github.com/anthropics/claude-code/issues/11377.
+        if agent.gc_pressure.as_deref() == Some("critical")
+            && agent.uptime_s.map_or(false, |s| s > 8 * 3600)
+        {
+            base.push_str(&format!(
+                " [WARN] PID {} has been running {}h with critical RAM — possible compacting \
+                 hang (context compression that never finishes). If unresponsive, use: \
+                 kill -9 {}",
+                agent.pid,
+                agent.uptime_s.unwrap_or(0) / 3600,
+                agent.pid
+            ));
+        }
+
+        // VSZ/RSS ratio anomaly: V8 heap fragmentation or 60Hz mmap/munmap thrash loop.
+        // Manifests as 50-80% CPU while idle, VSZ 73-85 GB with ~600 MB RSS.
+        // See: github.com/anthropics/claude-code/issues/18280.
+        if agent.suspected_alloc_thrash == Some(true) {
+            base.push_str(&format!(
+                " [WARN] PID {} has abnormal VSZ/RSS ratio — V8 heap fragmentation or \
+                 memory-allocation thrashing (60Hz mmap loop). Expect 50-80% idle CPU. \
+                 Restart claude to reset V8 heap layout.",
+                agent.pid
+            ));
+        }
     }
 
     base

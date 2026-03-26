@@ -658,29 +658,50 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
                         None
                     }
                 });
-                // D-state I/O blocking detection: check /proc/<pid>/stat process state.
+                // D-state I/O blocking + VSZ/RSS ratio detection: both read /proc/<pid>/stat.
                 // D = uninterruptible sleep (blocking on disk/network/filesystem).
                 // On WSL2 this causes "thinking" delays of 1-6 minutes (#22855).
                 // Flag after 2 consecutive D-state ticks (~4s) to avoid transient noise.
+                //
+                // VSZ/RSS ratio > 50 indicates V8 heap fragmentation or mmap/munmap
+                // thrashing (60Hz allocation loop, #18280). VSZ field 23 (0-indexed from
+                // state: index 20), RSS field 24 (index 21) per /proc/[pid]/stat layout.
                 #[cfg(target_os = "linux")]
-                let suspected_io_block = {
-                    let is_d_state = std::fs::read_to_string(format!("/proc/{}/stat", pid_u32))
-                        .ok()
-                        .and_then(|s| {
-                            // Format: "pid (name) state ..."
-                            s.rfind(')').map(|i| s[i + 2..].trim_start().starts_with('D'))
-                        })
+                let (suspected_io_block, suspected_alloc_thrash) = {
+                    let stat_content = std::fs::read_to_string(format!("/proc/{}/stat", pid_u32)).ok();
+                    let is_d_state = stat_content
+                        .as_deref()
+                        .and_then(|s| s.rfind(')').map(|i| s[i + 2..].trim_start().starts_with('D')))
                         .unwrap_or(false);
                     let ticks = agent_d_state_ticks.entry(pid_u32).or_insert(0);
-                    if is_d_state {
-                        *ticks += 1;
-                    } else {
-                        *ticks = 0;
-                    }
-                    if *ticks >= 2 { Some(true) } else { None }
+                    if is_d_state { *ticks += 1; } else { *ticks = 0; }
+                    let io_block = if *ticks >= 2 { Some(true) } else { None };
+
+                    // VSZ/RSS ratio: fields at index 20 (vsize bytes) and 21 (rss pages)
+                    // after the closing ')' in /proc/<pid>/stat.
+                    let alloc_thrash = stat_content.as_deref().and_then(|s| {
+                        let after = &s[s.rfind(')')? + 2..];
+                        let fields: Vec<&str> = after.split_whitespace().collect();
+                        if fields.len() > 21 {
+                            let vsize_bytes: u64 = fields[20].parse().ok()?;
+                            let rss_pages: u64 = fields[21].parse().ok()?;
+                            if rss_pages > 0 {
+                                let vsz_pages = vsize_bytes / 4096;
+                                let ratio = vsz_pages / rss_pages;
+                                if ratio > 50 { Some(true) } else { None }
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    });
+                    (io_block, alloc_thrash)
                 };
                 #[cfg(not(target_os = "linux"))]
                 let suspected_io_block: Option<bool> = None;
+                #[cfg(not(target_os = "linux"))]
+                let suspected_alloc_thrash: Option<bool> = None;
                 Some(ClaudeAgentInfo {
                     pid: pid_u32,
                     session_id: meta.session_id,
@@ -693,6 +714,7 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
                     uptime_s,
                     ram_spike,
                     suspected_io_block,
+                    suspected_alloc_thrash,
                 })
             })
             .collect();

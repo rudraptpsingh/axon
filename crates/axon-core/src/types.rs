@@ -162,6 +162,14 @@ pub struct ClaudeAgentInfo {
     /// See: github.com/anthropics/claude-code/issues/22855.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub suspected_io_block: Option<bool>,
+    /// True on Linux when VSZ/RSS page ratio > 50 for this claude process.
+    /// Indicates V8 heap fragmentation or mmap/munmap thrashing (60Hz allocation loop
+    /// introduced in v2.1.7 "terminal rendering optimization"). Manifests as 50-80% CPU
+    /// while apparently idle, abnormally large virtual address space (73-85 GB VSZ with
+    /// only ~600 MB RSS). Distinct from spin-loop: IRQ rate may be moderate.
+    /// See: github.com/anthropics/claude-code/issues/18280.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suspected_alloc_thrash: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
