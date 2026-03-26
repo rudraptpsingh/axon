@@ -170,6 +170,14 @@ pub struct ClaudeAgentInfo {
     /// See: github.com/anthropics/claude-code/issues/18280.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub suspected_alloc_thrash: Option<bool>,
+    /// True on Linux when the FD table size (FDSize from /proc/<pid>/status) exceeds
+    /// 4096. Indicates an fs.watch / inotify watcher leak: Node.js file watchers
+    /// accumulate without being closed. Once the process hits ulimit -n (typically
+    /// 1024–65536), every subsequent open() fails with EMFILE. Observed at 757,812
+    /// open descriptors before crash.
+    /// See: github.com/anthropics/claude-code/issues/11136.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fd_leak: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

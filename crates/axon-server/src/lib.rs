@@ -640,6 +640,18 @@ fn blame_narrative(blame: &ProcessBlame) -> String {
                 agent.pid
             ));
         }
+
+        // File descriptor leak: fs.watch() / inotify watchers not cleaned up.
+        // Grows unboundedly until EMFILE crashes the process.
+        // See: github.com/anthropics/claude-code/issues/11136.
+        if agent.fd_leak == Some(true) {
+            base.push_str(&format!(
+                " [WARN] PID {} has a large open-file-descriptor table (FDSize > 4096) — \
+                 likely fs.watch/inotify watcher leak. Will crash with EMFILE when ulimit \
+                 is reached. Restart claude now to recover; reinstall plugins if recurring.",
+                agent.pid
+            ));
+        }
     }
 
     base

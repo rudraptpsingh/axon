@@ -702,6 +702,27 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
                 let suspected_io_block: Option<bool> = None;
                 #[cfg(not(target_os = "linux"))]
                 let suspected_alloc_thrash: Option<bool> = None;
+
+                // File descriptor leak detection: read FDSize from /proc/<pid>/status.
+                // Node.js fs.watch() watchers accumulate without cleanup → EMFILE crash.
+                // FDSize is the kernel-allocated fd table size (power-of-2 ceiling of max
+                // open fd index), so FDSize > 4096 reliably indicates a leak in progress.
+                // Observed: 757,812 open fds before EMFILE. See issue #11136.
+                #[cfg(target_os = "linux")]
+                let fd_leak: Option<bool> = std::fs::read_to_string(
+                    format!("/proc/{}/status", pid_u32)
+                )
+                .ok()
+                .and_then(|s| {
+                    s.lines()
+                        .find(|l| l.starts_with("FDSize:"))
+                        .and_then(|l| l.split_whitespace().nth(1))
+                        .and_then(|v| v.parse::<u64>().ok())
+                        .and_then(|fd_size| if fd_size > 4096 { Some(true) } else { None })
+                });
+                #[cfg(not(target_os = "linux"))]
+                let fd_leak: Option<bool> = None;
+
                 Some(ClaudeAgentInfo {
                     pid: pid_u32,
                     session_id: meta.session_id,
@@ -715,6 +736,7 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
                     ram_spike,
                     suspected_io_block,
                     suspected_alloc_thrash,
+                    fd_leak,
                 })
             })
             .collect();
