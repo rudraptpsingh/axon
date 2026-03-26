@@ -417,7 +417,9 @@ fn read_tmp_claude_size_gb() -> Option<f64> {
     #[cfg(target_os = "linux")]
     let base = std::path::PathBuf::from(format!("/tmp/claude-{}", uid));
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-    let base = { return None; };
+    let base = {
+        return None;
+    };
 
     if !base.exists() {
         return None;
@@ -443,7 +445,11 @@ fn read_tmp_claude_size_gb() -> Option<f64> {
     }
     // Return None when trivially small (< 100 KB) to suppress noise.
     let gb = total_bytes as f64 / 1_073_741_824.0;
-    if gb > 0.0001 { Some(gb) } else { None }
+    if gb > 0.0001 {
+        Some(gb)
+    } else {
+        None
+    }
 }
 
 /// Return the open file-descriptor count for a process on macOS using proc_pidinfo.
@@ -785,7 +791,11 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
                 let rate = prev_total_process_count.and_then(|prev| {
                     if current_count > prev {
                         let delta = (current_count - prev) as f64 / 2.0; // per-sec (2s tick)
-                        if delta > 5.0 { Some(delta) } else { None }
+                        if delta > 5.0 {
+                            Some(delta)
+                        } else {
+                            None
+                        }
                     } else {
                         None
                     }
@@ -1095,8 +1105,9 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
                                 .and_then(|fd_size| if fd_size > 4096 { Some(true) } else { None })
                         });
                 #[cfg(target_os = "macos")]
-                let fd_leak: Option<bool> = macos_fd_count(pid_u32)
-                    .and_then(|count| if count > 4096 { Some(true) } else { None });
+                let fd_leak: Option<bool> =
+                    macos_fd_count(pid_u32)
+                        .and_then(|count| if count > 4096 { Some(true) } else { None });
                 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
                 let fd_leak: Option<bool> = None;
 
@@ -1159,9 +1170,10 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
                 }
                 // Fast path fires at 5 ticks (10s) for high-burn spins (>80% CPU).
                 // Slow path fires at 30 ticks (60s) for low-burn spins (>30% CPU).
-                let idle_cpu_spin_secs: Option<u64> = if cpu_raw > 80.0 && *idle_spin_ticks_val >= 5 {
-                    Some(*idle_spin_ticks_val as u64 * 2)
-                } else if *idle_spin_ticks_val >= 30 {
+                let idle_cpu_spin_secs: Option<u64> = if (cpu_raw > 80.0
+                    && *idle_spin_ticks_val >= 5)
+                    || *idle_spin_ticks_val >= 30
+                {
                     Some(*idle_spin_ticks_val as u64 * 2)
                 } else {
                     None
@@ -1225,7 +1237,11 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
                             let delta_mb = current - p;
                             // 30 ticks = 60s; extrapolate to MB/hr
                             let mb_per_hr = delta_mb * 60.0;
-                            if mb_per_hr > 100.0 { Some(mb_per_hr) } else { None }
+                            if mb_per_hr > 100.0 {
+                                Some(mb_per_hr)
+                            } else {
+                                None
+                            }
                         })
                     })
                 } else {
@@ -1484,7 +1500,9 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
             for &claude_pid in &claude_pids {
                 if let Some(kids) = children_of.get(&claude_pid) {
                     for &child_pid in kids {
-                        if let Some(proc) = sys.processes().get(&sysinfo::Pid::from(child_pid as usize)) {
+                        if let Some(proc) =
+                            sys.processes().get(&sysinfo::Pid::from(child_pid as usize))
+                        {
                             let name = proc.name().to_string_lossy().to_lowercase();
                             if name.starts_with("bash")
                                 || name.starts_with("sh")
@@ -1498,7 +1516,11 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
                     }
                 }
             }
-            if count > 0 { Some(count) } else { None }
+            if count > 0 {
+                Some(count)
+            } else {
+                None
+            }
         };
 
         // Check for agent accumulation — AgentAccumulation now only fires when
@@ -2293,91 +2315,76 @@ fn detect_platform_info(sys: &System) -> (String, String) {
     (model_id, chip)
 }
 
-// ── Signal detection helpers (extracted for testability) ─────────────────────
-// These replicate the inline logic from the collector loop so that each signal
-// can be exercised in isolation without spinning up the full collector.
-
-/// Compute process spawn rate (processes/sec) from a total process count delta.
-/// Returns None when the delta is <= 10 (5/sec threshold, same as collector).
-fn compute_spawn_rate(prev_count: Option<usize>, current_count: usize) -> Option<f64> {
-    prev_count.and_then(|prev| {
-        if current_count > prev {
-            let delta = (current_count - prev) as f64 / 2.0; // per-sec (2s tick)
-            if delta > 5.0 {
-                Some(delta)
-            } else {
-                None
-            }
-        } else {
-            None
-        }
-    })
-}
-
-/// Determine whether agent_stall_secs should fire given accumulated stall ticks.
-/// Returns the stall duration in seconds, or None if below threshold (60 ticks = 120s).
-fn compute_agent_stall_secs(
-    stall_ticks: u32,
-    cpu_raw: f64,
-    has_child_delta: bool,
-    is_orchestrator: bool,
-) -> (u32, Option<u64>) {
-    let new_ticks = if cpu_raw < 2.0 && !has_child_delta && !is_orchestrator {
-        stall_ticks + 1
-    } else {
-        0
-    };
-    let secs = if new_ticks >= 60 {
-        Some(new_ticks as u64 * 2)
-    } else {
-        None
-    };
-    (new_ticks, secs)
-}
-
-/// Compute session file growth rate in MB/hr from two consecutive samples
-/// taken 30 ticks (60s) apart. Returns None if growth <= 100 MB/hr.
-fn compute_session_file_growth(prev_mb: Option<f64>, current_mb: f64) -> Option<f64> {
-    prev_mb.and_then(|p| {
-        let delta_mb = current_mb - p;
-        // 30 ticks = 60s; extrapolate to MB/hr
-        let mb_per_hr = delta_mb * 60.0;
-        if mb_per_hr > 100.0 {
-            Some(mb_per_hr)
-        } else {
-            None
-        }
-    })
-}
-
-/// Compute idle_cpu_spin_secs using the two-threshold strategy:
-/// - Fast path: CPU > 80% for >= 5 ticks (10s)
-/// - Slow path: CPU > 30% for >= 30 ticks (60s)
-/// Returns (new_tick_count, Option<seconds>).
-fn compute_idle_cpu_spin(
-    spin_ticks: u32,
-    cpu_raw: f64,
-    has_child_delta: bool,
-    has_io_activity: bool,
-) -> (u32, Option<u64>) {
-    let new_ticks = if cpu_raw > 30.0 && !has_child_delta && !has_io_activity {
-        spin_ticks + 1
-    } else {
-        0
-    };
-    let secs = if cpu_raw > 80.0 && new_ticks >= 5 {
-        Some(new_ticks as u64 * 2)
-    } else if new_ticks >= 30 {
-        Some(new_ticks as u64 * 2)
-    } else {
-        None
-    };
-    (new_ticks, secs)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── Signal detection helpers (extracted for testability) ──────────────
+
+    fn compute_spawn_rate(prev_count: Option<usize>, current_count: usize) -> Option<f64> {
+        prev_count.and_then(|prev| {
+            if current_count > prev {
+                let delta = (current_count - prev) as f64 / 2.0;
+                if delta > 5.0 {
+                    Some(delta)
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        })
+    }
+
+    fn compute_agent_stall_secs(
+        stall_ticks: u32,
+        cpu_raw: f64,
+        has_child_delta: bool,
+        is_orchestrator: bool,
+    ) -> (u32, Option<u64>) {
+        let new_ticks = if cpu_raw < 2.0 && !has_child_delta && !is_orchestrator {
+            stall_ticks + 1
+        } else {
+            0
+        };
+        let secs = if new_ticks >= 60 {
+            Some(new_ticks as u64 * 2)
+        } else {
+            None
+        };
+        (new_ticks, secs)
+    }
+
+    fn compute_session_file_growth(prev_mb: Option<f64>, current_mb: f64) -> Option<f64> {
+        prev_mb.and_then(|p| {
+            let delta_mb = current_mb - p;
+            let mb_per_hr = delta_mb * 60.0;
+            if mb_per_hr > 100.0 {
+                Some(mb_per_hr)
+            } else {
+                None
+            }
+        })
+    }
+
+    fn compute_idle_cpu_spin(
+        spin_ticks: u32,
+        cpu_raw: f64,
+        has_child_delta: bool,
+        has_io_activity: bool,
+    ) -> (u32, Option<u64>) {
+        let new_ticks = if cpu_raw > 30.0 && !has_child_delta && !has_io_activity {
+            spin_ticks + 1
+        } else {
+            0
+        };
+        let secs = if (cpu_raw > 80.0 && new_ticks >= 5) || new_ticks >= 30 {
+            Some(new_ticks as u64 * 2)
+        } else {
+            None
+        };
+        (new_ticks, secs)
+    }
 
     // ── Test 1: Fork bomb detection (process_spawn_rate_per_sec) ─────────
 
@@ -2387,11 +2394,7 @@ mod tests {
         let rate = compute_spawn_rate(Some(300), 500);
         assert!(rate.is_some(), "should fire when delta > 10");
         let r = rate.unwrap();
-        assert!(
-            (r - 100.0).abs() < 0.01,
-            "expected 100.0/sec, got {}",
-            r
-        );
+        assert!((r - 100.0).abs() < 0.01, "expected 100.0/sec, got {}", r);
     }
 
     #[test]
@@ -2412,7 +2415,10 @@ mod tests {
     fn spawn_rate_silent_on_first_tick() {
         // No previous count available on the first tick.
         let rate = compute_spawn_rate(None, 500);
-        assert!(rate.is_none(), "should not fire on the first tick (no prev)");
+        assert!(
+            rate.is_none(),
+            "should not fire on the first tick (no prev)"
+        );
     }
 
     #[test]
@@ -2455,7 +2461,10 @@ mod tests {
         }
         let (_, secs) = compute_agent_stall_secs(ticks, 0.5, false, false);
         // After 61 iterations, ticks = 61, secs = 122
-        assert!(secs.is_some(), "should fire after 60+ consecutive idle ticks");
+        assert!(
+            secs.is_some(),
+            "should fire after 60+ consecutive idle ticks"
+        );
         assert_eq!(secs.unwrap(), 61 * 2);
     }
 
@@ -2507,11 +2516,7 @@ mod tests {
         let rate = compute_session_file_growth(Some(10.0), 12.0);
         assert!(rate.is_some(), "should fire at 120 MB/hr (> 100)");
         let r = rate.unwrap();
-        assert!(
-            (r - 120.0).abs() < 0.01,
-            "expected 120.0 MB/hr, got {}",
-            r
-        );
+        assert!((r - 120.0).abs() < 0.01, "expected 120.0 MB/hr, got {}", r);
     }
 
     #[test]
@@ -2548,10 +2553,7 @@ mod tests {
     fn session_growth_silent_when_file_shrinks() {
         // File got smaller (truncation or rotation) — negative delta.
         let rate = compute_session_file_growth(Some(20.0), 15.0);
-        assert!(
-            rate.is_none(),
-            "should not fire when session file shrinks"
-        );
+        assert!(rate.is_none(), "should not fire when session file shrinks");
     }
 
     #[test]
@@ -2574,11 +2576,7 @@ mod tests {
         // CPU > 80% for 5 consecutive ticks (10s) with no children or I/O.
         let (ticks, secs) = compute_idle_cpu_spin(4, 85.0, false, false);
         assert_eq!(ticks, 5);
-        assert_eq!(
-            secs,
-            Some(10),
-            "fast path: 5 ticks * 2s = 10s at >80% CPU"
-        );
+        assert_eq!(secs, Some(10), "fast path: 5 ticks * 2s = 10s at >80% CPU");
     }
 
     #[test]
@@ -2594,11 +2592,7 @@ mod tests {
         // CPU at 60% for 30 ticks (60s). Below 80% so fast path does not apply.
         let (ticks, secs) = compute_idle_cpu_spin(29, 60.0, false, false);
         assert_eq!(ticks, 30);
-        assert_eq!(
-            secs,
-            Some(60),
-            "slow path: 30 ticks * 2s = 60s at 60% CPU"
-        );
+        assert_eq!(secs, Some(60), "slow path: 30 ticks * 2s = 60s at 60% CPU");
     }
 
     #[test]
@@ -2683,10 +2677,7 @@ mod tests {
     fn macos_fd_count_none_for_invalid_pid() {
         // PID 0 is kernel_task, we likely cannot inspect it — or use a bogus PID.
         let count = macos_fd_count(999_999_999);
-        assert!(
-            count.is_none(),
-            "should return None for a non-existent PID"
-        );
+        assert!(count.is_none(), "should return None for a non-existent PID");
     }
 
     #[cfg(target_os = "macos")]
@@ -2696,8 +2687,7 @@ mod tests {
         let pid = std::process::id();
         let count = macos_fd_count(pid);
         // Our test process should NOT have > 4096 FDs open.
-        let fd_leak: Option<bool> =
-            count.and_then(|c| if c > 4096 { Some(true) } else { None });
+        let fd_leak: Option<bool> = count.and_then(|c| if c > 4096 { Some(true) } else { None });
         assert!(
             fd_leak.is_none(),
             "test process should not trigger fd_leak (count = {:?})",
