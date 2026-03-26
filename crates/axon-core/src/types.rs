@@ -219,6 +219,19 @@ pub struct ClaudeAgentInfo {
     /// the PID table fills. See: github.com/anthropics/claude-code/issues/34092.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub zombie_child_count: Option<u32>,
+    /// Consecutive seconds this claude process has been near-idle (CPU < 2%) with
+    /// no child spawns and no I/O. Inverse of idle_cpu_spin_secs (which catches high
+    /// CPU burn). Detects stalled API calls, hung IPC, frozen tool execution.
+    /// Fires at 120s (2 min). None when process is active or within first 60s.
+    /// See: #25979 (API streaming stall), #37521 (subagent freeze), #38258 (no timeout).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_stall_secs: Option<u64>,
+    /// Growth rate of the session JSONL file (MB/hr). Infers context window burn rate
+    /// from disk activity without needing API-level metrics. High values indicate
+    /// unconstrained tool fan-out or token loop. Sampled every 30 ticks (~60s).
+    /// Fires at > 100 MB/hr. See: #36727 (unbounded token consumption), #22265 (growing lag).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_file_growth_mb_per_hr: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -305,6 +318,18 @@ pub struct HwSnapshot {
     /// commit charge; > 8 risks address space exhaustion on 32-bit hosts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mcp_server_count: Option<u32>,
+    /// System-wide process creation rate (processes/sec over last 2s tick).
+    /// Values > 50/s indicate a fork bomb or runaway posix_spawn loop — observed in
+    /// #36127 (fork bomb on startup), #37490 (background task respawn infinite loop),
+    /// #27415 (TaskStop posix_spawn loop). None on first tick or when rate is < 5/s.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub process_spawn_rate_per_sec: Option<f64>,
+    /// Total size of /tmp/claude-{uid}/ directory in GB, sampled every 30 ticks (~60s).
+    /// Task tool .output files, napi-rs temp addons, and cowork VM bundle fragments
+    /// accumulate here with no TTL. Observed: 537 GB from a single research session (#26911).
+    /// Fires [WARN] at 5GB, [CRITICAL] at 50GB.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tmp_claude_size_gb: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -378,6 +403,12 @@ pub struct ProcessBlame {
     /// catch idle orphaned MCP server subprocesses consuming RAM silently.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subagent_orphan_count_total: Option<u32>,
+    /// Count of running bash/sh/zsh/fish child processes owned by claude PIDs.
+    /// Background shells that are not cleaned up accumulate and cause system-wide
+    /// slowdown — observed in #38927 (shell count not decremented on process death),
+    /// #32183 (/exit not terminating child bash.exe). Fires at > 10 [WARN], > 20 [CRITICAL].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub background_bash_count: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -534,6 +565,14 @@ pub struct GpuSnapshot {
     /// all metric fields will be None.
     pub detected: bool,
     pub ts: DateTime<Utc>,
+    /// Rate at which GPU-accessible memory is growing (MB/hr), computed from
+    /// successive vram_used_bytes readings in the collector. None until two
+    /// readings are available or when VRAM is stable. A positive value while
+    /// utilization_pct is near zero indicates IOAccelerator non-reclaimable
+    /// memory accumulation across sessions — observed ~1 GB per idle Claude
+    /// session (#35804). Fires narrative at > 100 MB/hr.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vram_growth_mb_per_hr: Option<f64>,
 }
 
 // ── MCP Response Envelope ─────────────────────────────────────────────────────

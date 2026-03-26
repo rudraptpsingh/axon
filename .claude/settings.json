@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pip3 show:*)",
+      "Bash(python3 -c 'import weasyprint')",
+      "Bash(python3 -c 'import selenium')",
+      "Bash(brew list:*)",
+      "Bash(npm install:*)",
+      "Bash(node export-slides.mjs)",
+      "Bash(grep -c ^/Page$)",
+      "Bash(python3 -c \":*)",
+      "Bash(python3 -:*)"
+    ]
+  }
+}
