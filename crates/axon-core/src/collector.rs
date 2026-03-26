@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+#[cfg(unix)]
 use libc;
 use sysinfo::{Disks, System};
 use tokio::time::{interval, Duration};
@@ -417,7 +418,7 @@ fn read_tmp_claude_size_gb() -> Option<f64> {
     #[cfg(target_os = "linux")]
     let base = std::path::PathBuf::from(format!("/tmp/claude-{}", uid));
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-    let base = {
+    let base: std::path::PathBuf = {
         return None;
     };
 
