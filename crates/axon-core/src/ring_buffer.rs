@@ -246,9 +246,9 @@ impl SnapshotRing {
         } else {
             let mid = buckets.len() / 2;
             let first_avg: f64 =
-                buckets[..mid].iter().map(|b| b.cpu_avg).sum::<f64>() / mid as f64;
+                buckets[..mid].iter().map(|b| b.avg_cpu_pct).sum::<f64>() / mid as f64;
             let second_avg: f64 =
-                buckets[mid..].iter().map(|b| b.cpu_avg).sum::<f64>() / (buckets.len() - mid) as f64;
+                buckets[mid..].iter().map(|b| b.avg_cpu_pct).sum::<f64>() / (buckets.len() - mid) as f64;
             let delta = second_avg - first_avg;
             if delta > 5.0 {
                 "rising".to_string()
@@ -307,16 +307,16 @@ fn compute_bucket(
     crate::types::TrendBucket {
         bucket_start,
         sample_count: entries.len() as u32,
-        cpu_avg: cpu_sum / n,
-        cpu_max,
-        ram_avg: ram_sum / n,
-        ram_max,
-        temp_avg: if temp_count > 0 {
+        avg_cpu_pct: cpu_sum / n,
+        peak_cpu_pct: cpu_max,
+        avg_ram_gb: ram_sum / n,
+        peak_ram_gb: ram_max,
+        avg_temp_celsius: if temp_count > 0 {
             Some(temp_sum / temp_count as f64)
         } else {
             None
         },
-        temp_max,
+        peak_temp_celsius: temp_max,
         anomaly_count,
         throttle_count,
     }

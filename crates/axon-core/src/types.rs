@@ -225,6 +225,11 @@ pub struct ProcessBlame {
     /// These are orphaned tool invocations consuming CPU/RAM with no owner.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub orphan_pids: Vec<u32>,
+    /// PIDs of zombie (Z-state) processes that are descendants of any claude
+    /// process. Zombies indicate the parent is not calling wait() — they hold
+    /// a PID slot and accumulate until the parent exits or reaps them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub zombie_pids: Vec<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -315,12 +320,12 @@ pub struct Alert {
 pub struct TrendBucket {
     pub bucket_start: DateTime<Utc>,
     pub sample_count: u32,
-    pub cpu_avg: f64,
-    pub cpu_max: f64,
-    pub ram_avg: f64,
-    pub ram_max: f64,
-    pub temp_avg: Option<f64>,
-    pub temp_max: Option<f64>,
+    pub avg_cpu_pct: f64,
+    pub peak_cpu_pct: f64,
+    pub avg_ram_gb: f64,
+    pub peak_ram_gb: f64,
+    pub avg_temp_celsius: Option<f64>,
+    pub peak_temp_celsius: Option<f64>,
     pub anomaly_count: u32,
     pub throttle_count: u32,
 }

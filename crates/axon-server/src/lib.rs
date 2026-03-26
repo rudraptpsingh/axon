@@ -421,13 +421,13 @@ fn trend_narrative(trend: &TrendData, range: &str) -> String {
     let cpu_overall: f64 = if trend.buckets.is_empty() {
         0.0
     } else {
-        trend.buckets.iter().map(|b| b.cpu_avg).sum::<f64>() / trend.buckets.len() as f64
+        trend.buckets.iter().map(|b| b.avg_cpu_pct).sum::<f64>() / trend.buckets.len() as f64
     };
 
     let ram_overall: f64 = if trend.buckets.is_empty() {
         0.0
     } else {
-        trend.buckets.iter().map(|b| b.ram_avg).sum::<f64>() / trend.buckets.len() as f64
+        trend.buckets.iter().map(|b| b.avg_ram_gb).sum::<f64>() / trend.buckets.len() as f64
     };
 
     let mut parts = vec![

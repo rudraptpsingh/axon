@@ -577,16 +577,16 @@ pub fn query_trend(db: &DbHandle, range_secs: i64, bucket_secs: i64) -> Result<T
         buckets.push(TrendBucket {
             bucket_start: DateTime::from_timestamp(bucket_start, 0).unwrap_or_else(Utc::now),
             sample_count: bucket_rows.len() as u32,
-            cpu_avg: cpu_vals.iter().sum::<f64>() / n,
-            cpu_max: cpu_vals.iter().cloned().fold(f64::MIN, f64::max),
-            ram_avg: ram_vals.iter().sum::<f64>() / n,
-            ram_max: ram_vals.iter().cloned().fold(f64::MIN, f64::max),
-            temp_avg: if temp_vals.is_empty() {
+            avg_cpu_pct: cpu_vals.iter().sum::<f64>() / n,
+            peak_cpu_pct: cpu_vals.iter().cloned().fold(f64::MIN, f64::max),
+            avg_ram_gb: ram_vals.iter().sum::<f64>() / n,
+            peak_ram_gb: ram_vals.iter().cloned().fold(f64::MIN, f64::max),
+            avg_temp_celsius: if temp_vals.is_empty() {
                 None
             } else {
                 Some(temp_vals.iter().sum::<f64>() / temp_vals.len() as f64)
             },
-            temp_max: if temp_vals.is_empty() {
+            peak_temp_celsius: if temp_vals.is_empty() {
                 None
             } else {
                 Some(temp_vals.iter().cloned().fold(f64::MIN, f64::max))
@@ -601,9 +601,9 @@ pub fn query_trend(db: &DbHandle, range_secs: i64, bucket_secs: i64) -> Result<T
         "stable".to_string()
     } else {
         let mid = buckets.len() / 2;
-        let first_avg: f64 = buckets[..mid].iter().map(|b| b.cpu_avg).sum::<f64>() / mid as f64;
+        let first_avg: f64 = buckets[..mid].iter().map(|b| b.avg_cpu_pct).sum::<f64>() / mid as f64;
         let second_avg: f64 =
-            buckets[mid..].iter().map(|b| b.cpu_avg).sum::<f64>() / (buckets.len() - mid) as f64;
+            buckets[mid..].iter().map(|b| b.avg_cpu_pct).sum::<f64>() / (buckets.len() - mid) as f64;
         let delta = second_avg - first_avg;
         if delta > 5.0 {
             "rising".to_string()
@@ -675,6 +675,7 @@ mod tests {
             claude_agents: Vec::new(),
             stranded_idle_pids: Vec::new(),
             orphan_pids: Vec::new(),
+            zombie_pids: Vec::new(),
         }
     }
 
@@ -759,8 +760,8 @@ mod tests {
         assert!(!trend.buckets.is_empty());
         // All in one bucket since timestamps are nearly identical
         assert_eq!(trend.buckets[0].sample_count, 5);
-        assert!((trend.buckets[0].cpu_avg - 40.0).abs() < 0.1);
-        assert!((trend.buckets[0].cpu_max - 60.0).abs() < 0.1);
+        assert!((trend.buckets[0].avg_cpu_pct - 40.0).abs() < 0.1);
+        assert!((trend.buckets[0].peak_cpu_pct - 60.0).abs() < 0.1);
     }
 
     #[test]
@@ -770,8 +771,8 @@ mod tests {
         insert_snapshot(&db, &hw, &sample_blame());
 
         let trend = query_trend(&db, 3600, 900).unwrap();
-        assert!(trend.buckets[0].temp_avg.is_none());
-        assert!(trend.buckets[0].temp_max.is_none());
+        assert!(trend.buckets[0].avg_temp_celsius.is_none());
+        assert!(trend.buckets[0].peak_temp_celsius.is_none());
     }
 
     #[test]

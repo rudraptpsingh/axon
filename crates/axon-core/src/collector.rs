@@ -138,6 +138,7 @@ impl AppState {
                 claude_agents: Vec::new(),
                 stranded_idle_pids: Vec::new(),
                 orphan_pids: Vec::new(),
+                zombie_pids: Vec::new(),
             },
             battery: None,
             profile,
@@ -427,8 +428,17 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
             above_threshold_count = above_threshold_count.saturating_sub(1);
         }
 
-        let impact_level =
-            impact::score_to_level_with_context(score, above_threshold_count, cpu_pct, ram_pct);
+        let top_process_cpu_pct = process_infos
+            .iter()
+            .map(|p| p.cpu_pct)
+            .fold(0.0_f64, f64::max);
+        let impact_level = impact::score_to_level_with_context(
+            score,
+            above_threshold_count,
+            cpu_pct,
+            ram_pct,
+            top_process_cpu_pct,
+        );
         let culprit = process_infos.first().cloned();
         let groups = grouping::build_groups(&process_infos);
 
@@ -529,6 +539,42 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
         orphan_pids.sort_unstable();
         prev_claude_descendants = claude_descendants;
 
+        // ── Zombie process detection ──────────────────────────────────────
+        // Detect Z-state processes that are descendants of any claude process.
+        // Zombies hold a PID slot and indicate the parent is not reaping them.
+        #[cfg(target_os = "linux")]
+        let zombie_pids: Vec<u32> = {
+            let all_claude_and_descendants: std::collections::HashSet<u32> = claude_pids
+                .iter()
+                .chain(prev_claude_descendants.iter())
+                .copied()
+                .collect();
+            let mut zs: Vec<u32> = Vec::new();
+            for pid in &all_claude_and_descendants {
+                // A process is a zombie if any of its children are in Z state.
+                // Check /proc/<child>/stat field 3 == 'Z'.
+                if let Some(kids) = children_of.get(pid) {
+                    for &child in kids {
+                        let stat_path = format!("/proc/{}/stat", child);
+                        if let Ok(stat) = std::fs::read_to_string(&stat_path) {
+                            // stat format: pid (name) state ...
+                            // State is the 3rd token after the closing paren of name
+                            if let Some(after_paren) = stat.rfind(')') {
+                                let rest = stat[after_paren + 2..].trim_start();
+                                if rest.starts_with('Z') {
+                                    zs.push(child);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            zs.sort_unstable();
+            zs
+        };
+        #[cfg(not(target_os = "linux"))]
+        let zombie_pids: Vec<u32> = Vec::new();
+
         // Check for agent accumulation — AgentAccumulation now only fires when
         // at least one non-orchestrator claude sub-agent is genuinely idle
         // (stranded after its task completed). This prevents false positives
@@ -586,6 +632,7 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
             claude_agents,
             stranded_idle_pids,
             orphan_pids,
+            zombie_pids,
         };
 
         // ── Enrich hw snapshot with post-process fields ──────────────────
