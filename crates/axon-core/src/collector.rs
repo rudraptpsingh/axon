@@ -1255,24 +1255,44 @@ fn build_battery_status(
 // ── One-Liner Builder ────────────────────────────────────────────────────────
 
 fn build_one_liner(hw: &HwSnapshot, blame: &ProcessBlame) -> String {
-    let mut parts: Vec<String> = Vec::with_capacity(4);
+    let mut parts: Vec<String> = Vec::with_capacity(5);
 
     // CPU with trend
     parts.push(format!("CPU {:.0}% {}", hw.cpu_usage_pct, hw.cpu_trend));
 
-    // RAM with trend
+    // RAM with trend and pressure tag if elevated
+    let ram_pressure_tag = match hw.ram_pressure {
+        RamPressure::Warn => " [warn]",
+        RamPressure::Critical => " [critical]",
+        RamPressure::Normal => "",
+    };
     parts.push(format!(
-        "RAM {:.1}/{:.0}GB {}",
-        hw.ram_used_gb, hw.ram_total_gb, hw.ram_trend
+        "RAM {:.1}/{:.0}GB {}{}",
+        hw.ram_used_gb, hw.ram_total_gb, hw.ram_trend, ram_pressure_tag
     ));
 
-    // Temp if available
+    // Disk pressure if elevated
+    match hw.disk_pressure {
+        DiskPressure::Warn => parts.push(format!(
+            "disk {:.0}/{:.0}GB [warn]",
+            hw.disk_used_gb, hw.disk_total_gb
+        )),
+        DiskPressure::Critical => parts.push(format!(
+            "disk {:.0}/{:.0}GB [critical]",
+            hw.disk_used_gb, hw.disk_total_gb
+        )),
+        DiskPressure::Normal => {}
+    }
+
+    // Temp / throttle
     if let Some(t) = hw.die_temp_celsius {
         if hw.throttling {
             parts.push(format!("{:.0}C [THROTTLING]", t));
         } else if t > 70.0 {
             parts.push(format!("{:.0}C {}", t, hw.temp_trend));
         }
+    } else if hw.throttling {
+        parts.push("[THROTTLING]".to_string());
     }
 
     // Top culprit if present
