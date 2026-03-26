@@ -2292,3 +2292,444 @@ fn detect_platform_info(sys: &System) -> (String, String) {
     let model_id = sysinfo::System::host_name().unwrap_or_else(|| "Unknown Machine".to_string());
     (model_id, chip)
 }
+
+// ── Signal detection helpers (extracted for testability) ─────────────────────
+// These replicate the inline logic from the collector loop so that each signal
+// can be exercised in isolation without spinning up the full collector.
+
+/// Compute process spawn rate (processes/sec) from a total process count delta.
+/// Returns None when the delta is <= 10 (5/sec threshold, same as collector).
+fn compute_spawn_rate(prev_count: Option<usize>, current_count: usize) -> Option<f64> {
+    prev_count.and_then(|prev| {
+        if current_count > prev {
+            let delta = (current_count - prev) as f64 / 2.0; // per-sec (2s tick)
+            if delta > 5.0 {
+                Some(delta)
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    })
+}
+
+/// Determine whether agent_stall_secs should fire given accumulated stall ticks.
+/// Returns the stall duration in seconds, or None if below threshold (60 ticks = 120s).
+fn compute_agent_stall_secs(
+    stall_ticks: u32,
+    cpu_raw: f64,
+    has_child_delta: bool,
+    is_orchestrator: bool,
+) -> (u32, Option<u64>) {
+    let new_ticks = if cpu_raw < 2.0 && !has_child_delta && !is_orchestrator {
+        stall_ticks + 1
+    } else {
+        0
+    };
+    let secs = if new_ticks >= 60 {
+        Some(new_ticks as u64 * 2)
+    } else {
+        None
+    };
+    (new_ticks, secs)
+}
+
+/// Compute session file growth rate in MB/hr from two consecutive samples
+/// taken 30 ticks (60s) apart. Returns None if growth <= 100 MB/hr.
+fn compute_session_file_growth(prev_mb: Option<f64>, current_mb: f64) -> Option<f64> {
+    prev_mb.and_then(|p| {
+        let delta_mb = current_mb - p;
+        // 30 ticks = 60s; extrapolate to MB/hr
+        let mb_per_hr = delta_mb * 60.0;
+        if mb_per_hr > 100.0 {
+            Some(mb_per_hr)
+        } else {
+            None
+        }
+    })
+}
+
+/// Compute idle_cpu_spin_secs using the two-threshold strategy:
+/// - Fast path: CPU > 80% for >= 5 ticks (10s)
+/// - Slow path: CPU > 30% for >= 30 ticks (60s)
+/// Returns (new_tick_count, Option<seconds>).
+fn compute_idle_cpu_spin(
+    spin_ticks: u32,
+    cpu_raw: f64,
+    has_child_delta: bool,
+    has_io_activity: bool,
+) -> (u32, Option<u64>) {
+    let new_ticks = if cpu_raw > 30.0 && !has_child_delta && !has_io_activity {
+        spin_ticks + 1
+    } else {
+        0
+    };
+    let secs = if cpu_raw > 80.0 && new_ticks >= 5 {
+        Some(new_ticks as u64 * 2)
+    } else if new_ticks >= 30 {
+        Some(new_ticks as u64 * 2)
+    } else {
+        None
+    };
+    (new_ticks, secs)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── Test 1: Fork bomb detection (process_spawn_rate_per_sec) ─────────
+
+    #[test]
+    fn spawn_rate_fires_on_large_delta() {
+        // 200 new processes in one 2s tick = 100/sec, well above 5/sec threshold.
+        let rate = compute_spawn_rate(Some(300), 500);
+        assert!(rate.is_some(), "should fire when delta > 10");
+        let r = rate.unwrap();
+        assert!(
+            (r - 100.0).abs() < 0.01,
+            "expected 100.0/sec, got {}",
+            r
+        );
+    }
+
+    #[test]
+    fn spawn_rate_fires_at_boundary() {
+        // Exactly 12 new processes = 6/sec, just above 5/sec threshold.
+        let rate = compute_spawn_rate(Some(100), 112);
+        assert!(rate.is_some(), "should fire at delta=12 (6/sec > 5/sec)");
+    }
+
+    #[test]
+    fn spawn_rate_silent_at_normal_counts() {
+        // 8 new processes = 4/sec, below 5/sec threshold.
+        let rate = compute_spawn_rate(Some(300), 308);
+        assert!(rate.is_none(), "should not fire when delta <= 10 (4/sec)");
+    }
+
+    #[test]
+    fn spawn_rate_silent_on_first_tick() {
+        // No previous count available on the first tick.
+        let rate = compute_spawn_rate(None, 500);
+        assert!(rate.is_none(), "should not fire on the first tick (no prev)");
+    }
+
+    #[test]
+    fn spawn_rate_silent_when_count_decreases() {
+        // Process count went down (processes exited).
+        let rate = compute_spawn_rate(Some(500), 400);
+        assert!(
+            rate.is_none(),
+            "should not fire when process count decreases"
+        );
+    }
+
+    #[test]
+    fn spawn_rate_boundary_exact_threshold() {
+        // Exactly 10 new processes = 5/sec, threshold is > 5.0 (not >=).
+        let rate = compute_spawn_rate(Some(100), 110);
+        assert!(
+            rate.is_none(),
+            "should not fire at exactly 5.0/sec (threshold is strictly >5.0)"
+        );
+    }
+
+    // ── Test 2: Agent stall detection (agent_stall_secs) ────────────────
+
+    #[test]
+    fn agent_stall_fires_at_60_ticks() {
+        // 60 consecutive idle ticks (CPU < 2%, no children, not orchestrator).
+        let (ticks, secs) = compute_agent_stall_secs(59, 1.0, false, false);
+        assert_eq!(ticks, 60);
+        assert_eq!(secs, Some(120), "60 ticks * 2s = 120s stall");
+    }
+
+    #[test]
+    fn agent_stall_accumulates_over_time() {
+        // Simulate 60 ticks of stalling (CPU=0.5%, no children, non-orchestrator).
+        let mut ticks: u32 = 0;
+        for _ in 0..60 {
+            let (new_ticks, _) = compute_agent_stall_secs(ticks, 0.5, false, false);
+            ticks = new_ticks;
+        }
+        let (_, secs) = compute_agent_stall_secs(ticks, 0.5, false, false);
+        // After 61 iterations, ticks = 61, secs = 122
+        assert!(secs.is_some(), "should fire after 60+ consecutive idle ticks");
+        assert_eq!(secs.unwrap(), 61 * 2);
+    }
+
+    #[test]
+    fn agent_stall_does_not_fire_below_threshold() {
+        // 59 ticks is below the 60-tick threshold.
+        let (ticks, secs) = compute_agent_stall_secs(58, 1.0, false, false);
+        assert_eq!(ticks, 59);
+        assert!(secs.is_none(), "should not fire at 59 ticks");
+    }
+
+    #[test]
+    fn agent_stall_resets_on_cpu_activity() {
+        // After 50 ticks of stalling, CPU jumps to 15% — counter resets.
+        let (ticks, secs) = compute_agent_stall_secs(50, 15.0, false, false);
+        assert_eq!(ticks, 0, "should reset on CPU > 2%");
+        assert!(secs.is_none(), "should not fire after reset");
+    }
+
+    #[test]
+    fn agent_stall_resets_on_child_spawn() {
+        // After 50 ticks, a child process spawns — counter resets.
+        let (ticks, secs) = compute_agent_stall_secs(50, 0.5, true, false);
+        assert_eq!(ticks, 0, "should reset when children spawn");
+        assert!(secs.is_none());
+    }
+
+    #[test]
+    fn agent_stall_skips_orchestrator() {
+        // Orchestrators legitimately sit idle waiting for tool responses.
+        let (ticks, secs) = compute_agent_stall_secs(59, 0.5, false, true);
+        assert_eq!(ticks, 0, "should not accumulate for orchestrator");
+        assert!(secs.is_none(), "should never fire for orchestrator");
+    }
+
+    #[test]
+    fn agent_stall_at_boundary_cpu() {
+        // CPU exactly at 2.0 is NOT < 2.0, so should reset.
+        let (ticks, _) = compute_agent_stall_secs(50, 2.0, false, false);
+        assert_eq!(ticks, 0, "CPU == 2.0 is not < 2.0, should reset");
+    }
+
+    // ── Test 3: Session file growth rate (session_file_growth_mb_per_hr) ─
+
+    #[test]
+    fn session_growth_fires_above_100_mb_per_hr() {
+        // Session file grew from 10 MB to 12 MB over 60 seconds.
+        // delta = 2 MB, extrapolated: 2 * 60 = 120 MB/hr.
+        let rate = compute_session_file_growth(Some(10.0), 12.0);
+        assert!(rate.is_some(), "should fire at 120 MB/hr (> 100)");
+        let r = rate.unwrap();
+        assert!(
+            (r - 120.0).abs() < 0.01,
+            "expected 120.0 MB/hr, got {}",
+            r
+        );
+    }
+
+    #[test]
+    fn session_growth_silent_at_normal_rate() {
+        // Session file grew from 10 MB to 10.5 MB over 60 seconds.
+        // delta = 0.5 MB, extrapolated: 0.5 * 60 = 30 MB/hr (below 100).
+        let rate = compute_session_file_growth(Some(10.0), 10.5);
+        assert!(
+            rate.is_none(),
+            "should not fire at 30 MB/hr (below 100 threshold)"
+        );
+    }
+
+    #[test]
+    fn session_growth_at_exact_boundary() {
+        // delta that gives exactly 100 MB/hr: delta = 100/60 = 1.6667 MB
+        // threshold is > 100.0, not >=
+        let delta = 100.0 / 60.0;
+        let rate = compute_session_file_growth(Some(10.0), 10.0 + delta);
+        assert!(
+            rate.is_none(),
+            "should not fire at exactly 100.0 MB/hr (threshold is strictly >100)"
+        );
+    }
+
+    #[test]
+    fn session_growth_silent_on_first_sample() {
+        // No previous sample means we cannot compute a delta.
+        let rate = compute_session_file_growth(None, 50.0);
+        assert!(rate.is_none(), "should not fire without a previous sample");
+    }
+
+    #[test]
+    fn session_growth_silent_when_file_shrinks() {
+        // File got smaller (truncation or rotation) — negative delta.
+        let rate = compute_session_file_growth(Some(20.0), 15.0);
+        assert!(
+            rate.is_none(),
+            "should not fire when session file shrinks"
+        );
+    }
+
+    #[test]
+    fn session_growth_fires_on_extreme_burn() {
+        // 50 MB growth in 60s = 3000 MB/hr (token loop, unbounded tool fan-out).
+        let rate = compute_session_file_growth(Some(100.0), 150.0);
+        assert!(rate.is_some());
+        let r = rate.unwrap();
+        assert!(
+            (r - 3000.0).abs() < 0.01,
+            "expected 3000.0 MB/hr, got {}",
+            r
+        );
+    }
+
+    // ── Test 5: idle_cpu_spin_secs (fast and slow paths) ────────────────
+
+    #[test]
+    fn idle_spin_fast_path_fires_at_5_ticks_high_cpu() {
+        // CPU > 80% for 5 consecutive ticks (10s) with no children or I/O.
+        let (ticks, secs) = compute_idle_cpu_spin(4, 85.0, false, false);
+        assert_eq!(ticks, 5);
+        assert_eq!(
+            secs,
+            Some(10),
+            "fast path: 5 ticks * 2s = 10s at >80% CPU"
+        );
+    }
+
+    #[test]
+    fn idle_spin_fast_path_does_not_fire_at_4_ticks() {
+        // Only 4 accumulated ticks of high CPU — not enough for fast path.
+        let (ticks, secs) = compute_idle_cpu_spin(3, 85.0, false, false);
+        assert_eq!(ticks, 4);
+        assert!(secs.is_none(), "fast path needs 5 ticks, only have 4");
+    }
+
+    #[test]
+    fn idle_spin_slow_path_fires_at_30_ticks_medium_cpu() {
+        // CPU at 60% for 30 ticks (60s). Below 80% so fast path does not apply.
+        let (ticks, secs) = compute_idle_cpu_spin(29, 60.0, false, false);
+        assert_eq!(ticks, 30);
+        assert_eq!(
+            secs,
+            Some(60),
+            "slow path: 30 ticks * 2s = 60s at 60% CPU"
+        );
+    }
+
+    #[test]
+    fn idle_spin_slow_path_does_not_fire_at_29_ticks() {
+        // 29 ticks of 60% CPU — not enough for slow path.
+        let (ticks, secs) = compute_idle_cpu_spin(28, 60.0, false, false);
+        assert_eq!(ticks, 29);
+        assert!(secs.is_none(), "slow path needs 30 ticks, only have 29");
+    }
+
+    #[test]
+    fn idle_spin_resets_on_child_delta() {
+        // Even at 100% CPU, if children are spawning it is doing real work.
+        let (ticks, secs) = compute_idle_cpu_spin(20, 100.0, true, false);
+        assert_eq!(ticks, 0, "should reset when has_child_delta is true");
+        assert!(secs.is_none());
+    }
+
+    #[test]
+    fn idle_spin_resets_on_io_activity() {
+        // High CPU with I/O activity is real work, not a spin loop.
+        let (ticks, secs) = compute_idle_cpu_spin(20, 100.0, false, true);
+        assert_eq!(ticks, 0, "should reset when has_io_activity is true");
+        assert!(secs.is_none());
+    }
+
+    #[test]
+    fn idle_spin_resets_on_low_cpu() {
+        // CPU drops below 30% — no longer qualifies as a spin.
+        let (ticks, secs) = compute_idle_cpu_spin(20, 25.0, false, false);
+        assert_eq!(ticks, 0, "should reset when CPU <= 30%");
+        assert!(secs.is_none());
+    }
+
+    #[test]
+    fn idle_spin_boundary_cpu_30_does_not_increment() {
+        // CPU exactly at 30.0 is NOT > 30.0 — should reset.
+        let (ticks, _) = compute_idle_cpu_spin(10, 30.0, false, false);
+        assert_eq!(ticks, 0, "CPU == 30.0 is not > 30.0, should reset");
+    }
+
+    #[test]
+    fn idle_spin_boundary_cpu_80_fast_path_not_eligible() {
+        // CPU exactly 80.0 is NOT > 80.0, so fast path does not apply.
+        // But it IS > 30.0, so ticks still accumulate toward slow path.
+        let (ticks, secs) = compute_idle_cpu_spin(4, 80.0, false, false);
+        assert_eq!(ticks, 5);
+        // cpu_raw is 80.0 which is not > 80.0, so fast path check fails.
+        // slow path check: 5 < 30, so also fails.
+        assert!(
+            secs.is_none(),
+            "CPU == 80.0 misses fast path (> 80 needed), slow path needs 30 ticks"
+        );
+    }
+
+    #[test]
+    fn idle_spin_fast_path_at_extreme_cpu() {
+        // 100% CPU for 5 ticks — clear fast path trigger.
+        let (ticks, secs) = compute_idle_cpu_spin(4, 100.0, false, false);
+        assert_eq!(ticks, 5);
+        assert_eq!(secs, Some(10));
+    }
+
+    // ── Test: macos_fd_count (macOS-only) ──────────────────────────────
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_fd_count_returns_value_for_self() {
+        // Our own process should have at least a few open FDs (stdin, stdout, stderr).
+        let pid = std::process::id();
+        let count = macos_fd_count(pid);
+        assert!(count.is_some(), "should return FD count for own process");
+        assert!(
+            count.unwrap() >= 3,
+            "expected at least 3 FDs (stdio), got {}",
+            count.unwrap()
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_fd_count_none_for_invalid_pid() {
+        // PID 0 is kernel_task, we likely cannot inspect it — or use a bogus PID.
+        let count = macos_fd_count(999_999_999);
+        assert!(
+            count.is_none(),
+            "should return None for a non-existent PID"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn fd_leak_threshold_logic() {
+        // Replicate the fd_leak detection logic: fire when FD count > 4096.
+        let pid = std::process::id();
+        let count = macos_fd_count(pid);
+        // Our test process should NOT have > 4096 FDs open.
+        let fd_leak: Option<bool> =
+            count.and_then(|c| if c > 4096 { Some(true) } else { None });
+        assert!(
+            fd_leak.is_none(),
+            "test process should not trigger fd_leak (count = {:?})",
+            count
+        );
+    }
+
+    // ── Test: tmp_claude_size_gb (filesystem, macOS and Linux) ───────────
+
+    #[cfg(unix)]
+    #[test]
+    fn tmp_claude_size_returns_none_when_dir_missing() {
+        // The /tmp/claude-{uid}/ directory may or may not exist. If it does not,
+        // the function should return None. If it does, it should return Some.
+        // This is a smoke test — the important thing is no panic.
+        let result = read_tmp_claude_size_gb();
+        // Either None (dir absent or tiny) or Some(>=0) — just verify no crash.
+        if let Some(gb) = result {
+            assert!(gb >= 0.0, "size should be non-negative");
+        }
+    }
+
+    // ── Test: spawn rate + stall combined scenario ──────────────────────
+
+    #[test]
+    fn spawn_rate_and_stall_independent() {
+        // A system can have high spawn rate AND stalled agents simultaneously.
+        let spawn = compute_spawn_rate(Some(100), 300);
+        let (_, stall) = compute_agent_stall_secs(59, 0.5, false, false);
+
+        assert!(spawn.is_some(), "spawn rate should fire");
+        assert!(stall.is_some(), "stall should fire");
+        // These are independent signals on different entities.
+    }
+}
