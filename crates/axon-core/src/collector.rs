@@ -196,6 +196,7 @@ impl AppState {
                 irq_per_sec: None,
                 swap_used_gb: None,
                 swap_total_gb: None,
+                disk_fill_rate_gb_per_sec: None,
             },
             blame: ProcessBlame {
                 anomaly_type: AnomalyType::None,
@@ -342,6 +343,10 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
     // D-state I/O blocking: consecutive ticks where /proc/<pid>/stat shows 'D' state.
     let mut agent_d_state_ticks: HashMap<u32, u32> = HashMap::new();
 
+    // Disk growth rate: track previous tick's disk usage to detect runaway fill.
+    // Catches infinite debug-log loops (#16093) and task .output accumulation (#26911).
+    let mut prev_disk_used_gb: Option<f64> = None;
+
     // Orphan detection: all PIDs that were descendants of any claude process
     // last tick. Any survivor this tick with PPID=1 is an orphan.
     let mut prev_claude_descendants: std::collections::HashSet<u32> = std::collections::HashSet::new();
@@ -458,7 +463,13 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
                 let total = sys.total_swap();
                 if total > 0 { Some(total as f64 / 1_073_741_824.0) } else { None }
             },
+            disk_fill_rate_gb_per_sec: prev_disk_used_gb.and_then(|prev| {
+                // tick interval is ~2s; only report if growth > 50MB to avoid noise.
+                let delta = disk_used_gb - prev;
+                if delta > 0.05 { Some(delta / 2.0) } else { None }
+            }),
         };
+        prev_disk_used_gb = Some(disk_used_gb);
         let (headroom, headroom_reason) = impact::compute_headroom(&hw);
         hw.headroom = headroom;
         hw.headroom_reason = headroom_reason;

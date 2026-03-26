@@ -234,6 +234,12 @@ pub struct HwSnapshot {
     /// Total swap space available (GB). None when no swap is configured.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub swap_total_gb: Option<f64>,
+    /// Rate at which disk usage is growing (GB/sec). None on first tick or if stable.
+    /// Positive values indicate active disk fill — can signal runaway debug-log loops
+    /// (200 GB+ in ~hours, #16093) or task .output file accumulation (537 GB, #26911).
+    /// Fires when delta between ticks exceeds 50 MB (0.05 GB) over 2 seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disk_fill_rate_gb_per_sec: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

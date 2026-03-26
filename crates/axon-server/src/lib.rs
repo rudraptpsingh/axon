@@ -308,9 +308,25 @@ fn hw_narrative(hw: &HwSnapshot) -> String {
             DiskPressure::Warn => "warn",
             DiskPressure::Critical => "critical",
         };
+        // Disk fill rate warning: runaway debug-log loop (#16093) or task .output
+        // accumulation (#26911, 537GB from one session). Rate >0.1 GB/s = crisis.
+        let fill_rate_str = match hw.disk_fill_rate_gb_per_sec {
+            Some(r) if r >= 0.5 => format!(
+                " [CRITICAL] Disk filling at {:.1} GB/s — runaway write loop likely. \
+                 Check: du -sh ~/.claude/debug/ /tmp/claude-*/ and kill the process \
+                 writing. This matches infinite logging loop pattern (#16093).",
+                r
+            ),
+            Some(r) if r >= 0.05 => format!(
+                " [WARN] Disk filling at {:.0} MB/s — possible task .output accumulation \
+                 or debug log growth. Check: du -sh ~/.claude/debug/ /tmp/claude-*/",
+                r * 1024.0
+            ),
+            _ => String::new(),
+        };
         format!(
-            " Disk {:.1}/{:.0}GB ({:.0}%, {} pressure).",
-            hw.disk_used_gb, hw.disk_total_gb, disk_pct, disk_pressure_str
+            " Disk {:.1}/{:.0}GB ({:.0}%, {} pressure).{}",
+            hw.disk_used_gb, hw.disk_total_gb, disk_pct, disk_pressure_str, fill_rate_str
         )
     } else {
         String::new()

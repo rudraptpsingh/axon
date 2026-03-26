@@ -658,6 +658,7 @@ mod tests {
             ai_agent_ram_gb: 0.0,
                 swap_used_gb: None,
                 swap_total_gb: None,
+                disk_fill_rate_gb_per_sec: None,
             irq_per_sec: None,
         }
     }
