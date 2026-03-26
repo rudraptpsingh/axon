@@ -302,6 +302,38 @@ pub fn score_to_level(score: f64, above_threshold_count: u32) -> ImpactLevel {
     }
 }
 
+/// Score → ImpactLevel with an extreme-signal fast path.
+///
+/// Identical to `score_to_level` except that when cpu_pct > 90 or ram_pct > 85
+/// the persistence requirement is reduced to 1 tick instead of
+/// `IMPACT_PERSISTENCE_SAMPLES`. This prevents the 2-tick (4-second) lag that
+/// occurs in one-shot `axon query` mode where the collector starts fresh and
+/// would otherwise report `Healthy` on the very first tick while CPU is at 100%.
+pub fn score_to_level_with_context(
+    score: f64,
+    above_threshold_count: u32,
+    cpu_pct: f64,
+    ram_pct: f64,
+) -> ImpactLevel {
+    let required = if cpu_pct > 90.0 || ram_pct > 85.0 {
+        1
+    } else {
+        thresholds::IMPACT_PERSISTENCE_SAMPLES
+    };
+    if above_threshold_count < required {
+        return ImpactLevel::Healthy;
+    }
+    if score < thresholds::IMPACT_LEVEL_HEALTHY_BELOW {
+        ImpactLevel::Healthy
+    } else if score < thresholds::IMPACT_LEVEL_DEGRADING_BELOW {
+        ImpactLevel::Degrading
+    } else if score < thresholds::IMPACT_LEVEL_STRAINED_BELOW {
+        ImpactLevel::Strained
+    } else {
+        ImpactLevel::Critical
+    }
+}
+
 // ── Human-Readable Impact Messages ───────────────────────────────────────────
 
 pub fn impact_message(level: &ImpactLevel, anomaly: &AnomalyType) -> String {
@@ -904,6 +936,8 @@ mod tests {
             impact_level: ImpactLevel::Healthy,
             impact_duration_s: 0,
             one_liner: String::new(),
+            ai_agent_count: 0,
+            ai_agent_ram_gb: 0.0,
         }
     }
 
@@ -1098,6 +1132,80 @@ mod tests {
         assert!(msg.contains("agent"), "msg: {}", msg);
     }
 
+    // ── Gap 4: impact lag fix tests ──────────────────────────────────────
+
+    #[test]
+    fn test_score_to_level_with_context_extreme_cpu_bypasses_persistence() {
+        // At CPU 100%, above_count=1 should NOT return Healthy (old behavior would)
+        let level = score_to_level_with_context(0.65, 1, 100.0, 5.0);
+        assert_ne!(
+            level,
+            ImpactLevel::Healthy,
+            "extreme CPU should bypass the 2-tick persistence requirement"
+        );
+        assert_eq!(level, ImpactLevel::Critical);
+    }
+
+    #[test]
+    fn test_score_to_level_with_context_extreme_ram_bypasses_persistence() {
+        let level = score_to_level_with_context(0.45, 1, 20.0, 90.0);
+        assert_ne!(level, ImpactLevel::Healthy);
+        assert_eq!(level, ImpactLevel::Strained);
+    }
+
+    #[test]
+    fn test_score_to_level_with_context_normal_load_still_requires_persistence() {
+        // Normal CPU/RAM: 1 sample is not enough — should still return Healthy
+        let level = score_to_level_with_context(0.35, 1, 50.0, 60.0);
+        assert_eq!(
+            level,
+            ImpactLevel::Healthy,
+            "non-extreme signals still require 2 ticks"
+        );
+    }
+
+    #[test]
+    fn test_score_to_level_with_context_zero_count_always_healthy() {
+        // Even extreme signals return Healthy on tick 0 (before any samples)
+        let level = score_to_level_with_context(0.9, 0, 100.0, 5.0);
+        assert_eq!(level, ImpactLevel::Healthy);
+    }
+
+    // ── Stranded idle threshold tests ────────────────────────────────────
+
+    #[test]
+    fn test_stranded_idle_threshold_constant() {
+        // 30 ticks * 2s = 60s — a sub-agent must be idle for a full minute
+        assert_eq!(crate::thresholds::AGENT_IDLE_STRANDED_TICKS, 30);
+    }
+
+    #[test]
+    fn test_stranded_idle_accumulation_logic() {
+        // Simulate 30 ticks of idle followed by 1 active tick — should clear
+        let mut idle_ticks: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
+        let pid = 9999_u32;
+
+        // 30 idle ticks (just below threshold)
+        for _ in 0..30 {
+            *idle_ticks.entry(pid).or_insert(0) += 1;
+        }
+        let stranded: Vec<u32> = idle_ticks
+            .iter()
+            .filter(|(_, &t)| t >= crate::thresholds::AGENT_IDLE_STRANDED_TICKS)
+            .map(|(p, _)| *p)
+            .collect();
+        assert_eq!(stranded, vec![pid], "30 ticks should reach stranded threshold");
+
+        // One active tick resets the counter
+        idle_ticks.insert(pid, 0);
+        let stranded_after_reset: Vec<u32> = idle_ticks
+            .iter()
+            .filter(|(_, &t)| t >= crate::thresholds::AGENT_IDLE_STRANDED_TICKS)
+            .map(|(p, _)| *p)
+            .collect();
+        assert!(stranded_after_reset.is_empty(), "active tick should clear stranded state");
+    }
+
     // ── Culprit Category Tests ────────────────────────────────────────────
 
     #[test]
@@ -1127,6 +1235,69 @@ mod tests {
     fn test_classify_culprit_ai_agents() {
         assert_eq!(classify_culprit("claude"), CulpritCategory::AiAgent);
         assert_eq!(classify_culprit("ollama"), CulpritCategory::AiAgent);
+    }
+
+    // ── Gap 6: classify_culprit_from_blame returns AiAgent for claude groups ──
+
+    #[test]
+    fn test_classify_culprit_from_blame_claude_group_is_ai_agent() {
+        // This is the production path: process_blame culprit_group is a ProcessGroup
+        // named "claude". classify_culprit_from_blame must return AiAgent, not Unknown.
+        let group = ProcessGroup {
+            name: "claude".to_string(),
+            process_count: 3,
+            total_cpu_pct: 200.0,
+            total_ram_gb: 1.5,
+            blame_score: 0.8,
+            top_pid: 100,
+            pids: vec![100, 101, 102],
+        };
+        assert_eq!(
+            classify_culprit_from_blame(Some(&group), None),
+            CulpritCategory::AiAgent,
+            "a claude ProcessGroup must classify as AiAgent, not Unknown"
+        );
+    }
+
+    #[test]
+    fn test_classify_culprit_from_blame_group_takes_priority_over_culprit() {
+        // When both group and culprit are present, the group name wins.
+        let group = ProcessGroup {
+            name: "claude".to_string(),
+            process_count: 2,
+            total_cpu_pct: 50.0,
+            total_ram_gb: 0.8,
+            blame_score: 0.5,
+            top_pid: 200,
+            pids: vec![200, 201],
+        };
+        let culprit = ProcessInfo {
+            pid: 999,
+            cmd: "cargo".to_string(), // would be BuildTool if group were absent
+            cpu_pct: 90.0,
+            ram_gb: 2.0,
+            blame_score: 0.9,
+        };
+        assert_eq!(
+            classify_culprit_from_blame(Some(&group), Some(&culprit)),
+            CulpritCategory::AiAgent,
+            "group name wins over culprit cmd"
+        );
+    }
+
+    #[test]
+    fn test_classify_culprit_from_blame_no_group_falls_back_to_culprit() {
+        let culprit = ProcessInfo {
+            pid: 42,
+            cmd: "claude".to_string(),
+            cpu_pct: 80.0,
+            ram_gb: 0.5,
+            blame_score: 0.6,
+        };
+        assert_eq!(
+            classify_culprit_from_blame(None, Some(&culprit)),
+            CulpritCategory::AiAgent
+        );
     }
 
     #[test]

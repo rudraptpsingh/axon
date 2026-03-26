@@ -114,6 +114,15 @@ pub const FLAP_THRESHOLD: u32 = 3;
 /// Recovery (Resolved) alerts bypass rate limiting.
 pub const ALERT_RATE_LIMIT_TICKS: u32 = 15;
 
+// ── Agent idle / stranded detection ─────────────────────────────────────────
+
+/// Consecutive 2-second ticks a non-orchestrator claude process must sit at
+/// near-zero CPU before it is classified as stranded-idle (60 seconds).
+pub const AGENT_IDLE_STRANDED_TICKS: u32 = 30;
+
+/// CPU percentage below which a process counts as idle for stranded detection.
+pub const AGENT_IDLE_CPU_THRESHOLD_PCT: f64 = 1.0;
+
 // ── Anomaly type classification (`detect_anomaly_type`, priority order) ───────
 
 pub const ANOMALY_TEMP_C: f64 = 85.0;

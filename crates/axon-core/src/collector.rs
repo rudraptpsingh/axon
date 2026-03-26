@@ -120,6 +120,8 @@ impl AppState {
                 impact_level: ImpactLevel::Healthy,
                 impact_duration_s: 0,
                 one_liner: "System idle.".to_string(),
+                ai_agent_count: 0,
+                ai_agent_ram_gb: 0.0,
             },
             blame: ProcessBlame {
                 anomaly_type: AnomalyType::None,
@@ -133,6 +135,8 @@ impl AppState {
                 stale_axon_pids: Vec::new(),
                 urgency: Urgency::Monitor,
                 culprit_category: CulpritCategory::Unknown,
+                claude_agents: Vec::new(),
+                stranded_idle_pids: Vec::new(),
             },
             battery: None,
             profile,
@@ -210,6 +214,10 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
 
     // Rate limiting: last tick each alert type fired
     let mut last_alert_tick: HashMap<AlertType, u32> = HashMap::new();
+
+    // Per-PID consecutive idle tick counter for non-orchestrator claude processes.
+    // Only processes where is_orchestrator=false are tracked here.
+    let mut agent_idle_ticks: HashMap<u32, u32> = HashMap::new();
 
     let self_pid = std::process::id();
 
@@ -305,6 +313,8 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
             impact_level: ImpactLevel::Healthy, // filled after impact computation
             impact_duration_s: 0, // filled after impact computation
             one_liner: String::new(), // filled after all fields are known
+            ai_agent_count: 0,    // filled after process collection
+            ai_agent_ram_gb: 0.0, // filled after process collection
         };
         let (headroom, headroom_reason) = impact::compute_headroom(&hw);
         hw.headroom = headroom;
@@ -412,34 +422,88 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
             above_threshold_count = above_threshold_count.saturating_sub(1);
         }
 
-        let impact_level = impact::score_to_level(score, above_threshold_count);
+        let impact_level =
+            impact::score_to_level_with_context(score, above_threshold_count, cpu_pct, ram_pct);
         let culprit = process_infos.first().cloned();
         let groups = grouping::build_groups(&process_infos);
 
-        // Check for agent accumulation — only override anomaly_type when the
-        // agent group is actually the top blame group (highest blame_score).
-        // Otherwise a 2-process claude sitting idle would mask a `yes` process
-        // burning 400% CPU.
-        let (anomaly_type, culprit_group) =
-            if let Some(agent_group) = impact::detect_agent_accumulation(&groups) {
-                let top_group = groups.first();
-                let agents_are_top = top_group
-                    .map(|g| g.name == agent_group.name)
-                    .unwrap_or(false);
-                // Also check raw CPU: if any non-agent group uses 3x+ more CPU
-                // than agents, they're the real hog (EWMA may have stabilized
-                // on the hog, flattening its blame_score).
-                let non_agent_cpu_hog = groups.iter().find(|g| {
-                    g.name != agent_group.name && g.total_cpu_pct > agent_group.total_cpu_pct * 3.0
-                });
-                if agents_are_top && non_agent_cpu_hog.is_none() {
-                    (AnomalyType::AgentAccumulation, Some(agent_group.clone()))
-                } else if let Some(hog) = non_agent_cpu_hog {
-                    (anomaly_type, Some(hog.clone()))
-                } else if !agents_are_top {
-                    (anomaly_type, top_group.cloned())
+        // ── Claude sub-agent breakdown ────────────────────────────────────
+        // Scan sys.processes() directly so idle sub-agents below the
+        // blame_score filter threshold are still visible.
+        let claude_agents: Vec<ClaudeAgentInfo> = sys
+            .processes()
+            .iter()
+            .filter_map(|(pid, process)| {
+                let name =
+                    grouping::normalize_process_name(&process.name().to_string_lossy());
+                if !name.to_lowercase().contains("claude") {
+                    return None;
+                }
+                let pid_u32 = usize::from(*pid) as u32;
+                let meta = grouping::read_claude_cmdline(pid_u32)
+                    .unwrap_or_default();
+                Some(ClaudeAgentInfo {
+                    pid: pid_u32,
+                    session_id: meta.session_id,
+                    is_orchestrator: meta.is_orchestrator,
+                    ram_gb: process.memory() as f64 / 1_073_741_824.0,
+                    cpu_pct: process.cpu_usage() as f64,
+                })
+            })
+            .collect();
+
+        // ── Stranded idle agent detection ────────────────────────────────
+        // Update per-PID idle tick counters for non-orchestrator claude processes.
+        // Only sub-agents (is_orchestrator=false) are tracked; the orchestrator
+        // legitimately idles while waiting for tool responses.
+        for agent in &claude_agents {
+            if !agent.is_orchestrator {
+                if agent.cpu_pct < crate::thresholds::AGENT_IDLE_CPU_THRESHOLD_PCT {
+                    *agent_idle_ticks.entry(agent.pid).or_insert(0) += 1;
                 } else {
-                    (AnomalyType::AgentAccumulation, Some(agent_group.clone()))
+                    agent_idle_ticks.insert(agent.pid, 0);
+                }
+            }
+        }
+        // Evict PIDs that no longer exist
+        agent_idle_ticks.retain(|pid, _| active_pids.contains(pid));
+
+        let stranded_idle_pids: Vec<u32> = agent_idle_ticks
+            .iter()
+            .filter(|(_, &ticks)| ticks >= crate::thresholds::AGENT_IDLE_STRANDED_TICKS)
+            .map(|(pid, _)| *pid)
+            .collect();
+
+        // Check for agent accumulation — AgentAccumulation now only fires when
+        // at least one non-orchestrator claude sub-agent is genuinely idle
+        // (stranded after its task completed). This prevents false positives
+        // when multiple agents are all actively working in parallel.
+        let (anomaly_type, culprit_group) =
+            if !stranded_idle_pids.is_empty() {
+                // Confirmed stranded agents: fire AgentAccumulation on the agent group
+                if let Some(agent_group) = impact::detect_agent_accumulation(&groups) {
+                    let non_agent_cpu_hog = groups.iter().find(|g| {
+                        g.name != agent_group.name
+                            && g.total_cpu_pct > agent_group.total_cpu_pct * 3.0
+                    });
+                    if let Some(hog) = non_agent_cpu_hog {
+                        (anomaly_type, Some(hog.clone()))
+                    } else {
+                        (AnomalyType::AgentAccumulation, Some(agent_group.clone()))
+                    }
+                } else {
+                    (anomaly_type, groups.first().cloned())
+                }
+            } else if let Some(agent_group) = impact::detect_agent_accumulation(&groups) {
+                // Agents exist but none are stranded — use regular blame, not AgentAccumulation
+                let non_agent_cpu_hog = groups.iter().find(|g| {
+                    g.name != agent_group.name
+                        && g.total_cpu_pct > agent_group.total_cpu_pct * 3.0
+                });
+                if let Some(hog) = non_agent_cpu_hog {
+                    (anomaly_type, Some(hog.clone()))
+                } else {
+                    (anomaly_type, groups.first().cloned())
                 }
             } else {
                 (anomaly_type, groups.first().cloned())
@@ -464,6 +528,8 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
             stale_axon_pids,
             urgency,
             culprit_category,
+            claude_agents,
+            stranded_idle_pids,
         };
 
         // ── Enrich hw snapshot with post-process fields ──────────────────
@@ -494,6 +560,16 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
         };
 
         hw.impact_level = impact_level.clone();
+
+        // Populate AI agent aggregate counts from groups
+        let (agent_count, agent_ram) = groups
+            .iter()
+            .filter(|g| impact::is_known_agent(&g.name))
+            .fold((0u32, 0.0f64), |(cnt, ram), g| {
+                (cnt + g.process_count as u32, ram + g.total_ram_gb)
+            });
+        hw.ai_agent_count = agent_count;
+        hw.ai_agent_ram_gb = agent_ram;
 
         // Track impact duration
         if impact_level != current_impact_for_duration {

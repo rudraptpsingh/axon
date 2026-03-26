@@ -69,6 +69,63 @@ pub fn build_groups(processes: &[ProcessInfo]) -> Vec<ProcessGroup> {
     groups
 }
 
+// ── Claude Sub-Agent Cmdline Parsing ─────────────────────────────────────────
+
+/// Metadata extracted from a claude process's command-line arguments.
+#[derive(Debug, Clone, Default)]
+pub struct ClaudeCmdlineMeta {
+    /// Session ID from --session <value> or --session=<value>.
+    pub session_id: Option<String>,
+    /// True when --init, --replay-user-messages, or --resume= flags are present
+    /// (these only appear on the orchestrator, not sub-agents).
+    pub is_orchestrator: bool,
+}
+
+/// Parse claude process metadata from raw cmdline bytes.
+/// On Linux /proc/<pid>/cmdline uses null bytes as argument delimiters.
+pub fn parse_claude_cmdline(cmdline_bytes: &[u8]) -> ClaudeCmdlineMeta {
+    let args: Vec<&str> = cmdline_bytes
+        .split(|&b| b == 0)
+        .filter(|s| !s.is_empty())
+        .filter_map(|s| std::str::from_utf8(s).ok())
+        .collect();
+
+    let mut meta = ClaudeCmdlineMeta::default();
+    let mut i = 0;
+    while i < args.len() {
+        let arg = args[i];
+        if arg == "--init" || arg == "--replay-user-messages" {
+            meta.is_orchestrator = true;
+        } else if arg.starts_with("--resume=") {
+            meta.is_orchestrator = true;
+        } else if arg == "--session" {
+            if i + 1 < args.len() {
+                meta.session_id = Some(args[i + 1].to_string());
+                i += 1;
+            }
+        } else if let Some(val) = arg.strip_prefix("--session=") {
+            meta.session_id = Some(val.to_string());
+        }
+        i += 1;
+    }
+    meta
+}
+
+/// Read and parse cmdline for a given PID.
+/// Returns None on non-Linux platforms or if /proc/<pid>/cmdline is unreadable.
+pub fn read_claude_cmdline(pid: u32) -> Option<ClaudeCmdlineMeta> {
+    #[cfg(target_os = "linux")]
+    {
+        let bytes = std::fs::read(format!("/proc/{}/cmdline", pid)).ok()?;
+        Some(parse_claude_cmdline(&bytes))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = pid;
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -395,5 +452,81 @@ mod tests {
     fn test_empty_processes() {
         let groups = build_groups(&[]);
         assert!(groups.is_empty());
+    }
+
+    // ── Cmdline parsing tests ─────────────────────────────────────────────────
+
+    fn null_join(args: &[&str]) -> Vec<u8> {
+        let mut out = Vec::new();
+        for arg in args {
+            out.extend_from_slice(arg.as_bytes());
+            out.push(0);
+        }
+        out
+    }
+
+    #[test]
+    fn test_parse_cmdline_orchestrator_init_flag() {
+        let raw = null_join(&[
+            "/opt/claude-code/bin/claude",
+            "--output-format=stream-json",
+            "--init",
+            "--session",
+            "cse_abc123",
+        ]);
+        let meta = parse_claude_cmdline(&raw);
+        assert!(meta.is_orchestrator, "should detect --init as orchestrator");
+        assert_eq!(meta.session_id.as_deref(), Some("cse_abc123"));
+    }
+
+    #[test]
+    fn test_parse_cmdline_orchestrator_resume_flag() {
+        let raw = null_join(&[
+            "claude",
+            "--replay-user-messages",
+            "--resume=https://api.example.com/sessions/abc",
+            "--session",
+            "cse_xyz789",
+        ]);
+        let meta = parse_claude_cmdline(&raw);
+        assert!(meta.is_orchestrator, "--resume= marks orchestrator");
+        assert_eq!(meta.session_id.as_deref(), Some("cse_xyz789"));
+    }
+
+    #[test]
+    fn test_parse_cmdline_sub_agent_no_init() {
+        let raw = null_join(&[
+            "/opt/claude-code/bin/claude",
+            "--output-format=stream-json",
+            "--session",
+            "cse_subagent456",
+            "--model",
+            "claude-sonnet-4-6",
+        ]);
+        let meta = parse_claude_cmdline(&raw);
+        assert!(!meta.is_orchestrator, "sub-agent has no --init or --resume");
+        assert_eq!(meta.session_id.as_deref(), Some("cse_subagent456"));
+    }
+
+    #[test]
+    fn test_parse_cmdline_session_equals_form() {
+        let raw = null_join(&["claude", "--session=cse_eq_form"]);
+        let meta = parse_claude_cmdline(&raw);
+        assert_eq!(meta.session_id.as_deref(), Some("cse_eq_form"));
+    }
+
+    #[test]
+    fn test_parse_cmdline_no_session() {
+        let raw = null_join(&["claude", "--help"]);
+        let meta = parse_claude_cmdline(&raw);
+        assert!(meta.session_id.is_none());
+        assert!(!meta.is_orchestrator);
+    }
+
+    #[test]
+    fn test_parse_cmdline_replay_user_messages_is_orchestrator() {
+        let raw = null_join(&["claude", "--replay-user-messages", "--session", "s1"]);
+        let meta = parse_claude_cmdline(&raw);
+        assert!(meta.is_orchestrator);
     }
 }

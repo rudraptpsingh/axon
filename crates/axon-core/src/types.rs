@@ -119,6 +119,18 @@ impl std::fmt::Display for CulpritCategory {
 
 // ── Core Data Types ───────────────────────────────────────────────────────────
 
+/// Metadata about a single running claude process (orchestrator or sub-agent).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClaudeAgentInfo {
+    pub pid: u32,
+    /// Session ID extracted from --session argument, if present.
+    pub session_id: Option<String>,
+    /// True when this process carries --init or --resume flags (the orchestrator).
+    pub is_orchestrator: bool,
+    pub ram_gb: f64,
+    pub cpu_pct: f64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HwSnapshot {
     pub die_temp_celsius: Option<f64>,
@@ -153,6 +165,13 @@ pub struct HwSnapshot {
     pub impact_duration_s: u64,
     /// Ultra-compact one-line summary for token-constrained agents.
     pub one_liner: String,
+    /// Total number of AI agent processes (claude, cursor, windsurf) visible right now.
+    /// Useful for a pre-spawn check before starting a heavy sub-agent task.
+    #[serde(default)]
+    pub ai_agent_count: u32,
+    /// Combined RAM used by all AI agent processes (GB).
+    #[serde(default)]
+    pub ai_agent_ram_gb: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -192,6 +211,15 @@ pub struct ProcessBlame {
     pub urgency: Urgency,
     /// What kind of process is the culprit: build_tool, browser, ide, ai_agent, system, unknown.
     pub culprit_category: CulpritCategory,
+    /// Per-process breakdown of running claude instances (orchestrator + sub-agents).
+    /// Empty when no claude processes are visible.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub claude_agents: Vec<ClaudeAgentInfo>,
+    /// PIDs of non-orchestrator claude processes that have been CPU-idle for
+    /// more than AGENT_IDLE_STRANDED_TICKS consecutive ticks. These are
+    /// the processes that trigger AgentAccumulation anomaly type.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stranded_idle_pids: Vec<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -315,6 +343,12 @@ pub struct SessionHealth {
     pub peak_ram_gb: f64,
     pub peak_temp_celsius: Option<f64>,
     pub throttle_event_count: u32,
+    /// Number of snapshots where anomaly_type was agent_accumulation (stranded idle sub-agents).
+    #[serde(default)]
+    pub agent_accumulation_events: u32,
+    /// Peak number of AI agent processes seen at any single snapshot during the session.
+    #[serde(default)]
+    pub peak_ai_agent_count: u32,
 }
 
 // ── GPU Types ─────────────────────────────────────────────────────────────────

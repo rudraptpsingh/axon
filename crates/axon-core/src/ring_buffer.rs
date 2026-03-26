@@ -185,6 +185,15 @@ impl SnapshotRing {
             peak_ram_gb: ram_max,
             peak_temp_celsius: temp_max,
             throttle_event_count: throttle_count,
+            agent_accumulation_events: entries
+                .iter()
+                .filter(|e| e.anomaly_type == crate::types::AnomalyType::AgentAccumulation)
+                .count() as u32,
+            peak_ai_agent_count: entries
+                .iter()
+                .map(|e| e.hw.ai_agent_count)
+                .max()
+                .unwrap_or(0),
         })
     }
 
@@ -370,6 +379,8 @@ mod tests {
                 impact_level: ImpactLevel::Healthy,
                 impact_duration_s: 0,
                 one_liner: String::new(),
+                ai_agent_count: 0,
+                ai_agent_ram_gb: 0.0,
             },
             anomaly_type: AnomalyType::None,
             impact_level: ImpactLevel::Healthy,
@@ -401,6 +412,8 @@ mod tests {
                 impact_level: ImpactLevel::Healthy,
                 impact_duration_s: 0,
                 one_liner: String::new(),
+                ai_agent_count: 0,
+                ai_agent_ram_gb: 0.0,
             },
             anomaly_type: AnomalyType::None,
             impact_level: ImpactLevel::Healthy,

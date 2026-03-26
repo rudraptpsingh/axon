@@ -33,6 +33,7 @@ pub fn open(path: PathBuf) -> Result<DbHandle> {
     init_schema(&conn)?;
     migrate_disk_columns(&conn)?;
     migrate_disk_pressure_column(&conn)?;
+    migrate_ai_agent_count_column(&conn)?;
     prune_old_rows(&conn)?;
     Ok(Arc::new(Mutex::new(conn)))
 }
@@ -101,6 +102,18 @@ fn migrate_disk_pressure_column(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+fn migrate_ai_agent_count_column(conn: &Connection) -> Result<()> {
+    let has_col: bool = conn
+        .prepare("PRAGMA table_info(snapshots)")?
+        .query_map([], |row| row.get::<_, String>(1))?
+        .filter_map(|r| r.ok())
+        .any(|name| name == "ai_agent_count");
+    if !has_col {
+        conn.execute_batch("ALTER TABLE snapshots ADD COLUMN ai_agent_count INTEGER;")?;
+    }
+    Ok(())
+}
+
 fn prune_old_rows(conn: &Connection) -> Result<()> {
     let cutoff = Utc::now() - chrono::Duration::days(30);
     let cutoff_str = cutoff.to_rfc3339();
@@ -140,8 +153,8 @@ pub fn insert_snapshot(db: &DbHandle, hw: &HwSnapshot, blame: &ProcessBlame) {
     let impact_str = format!("{:?}", blame.impact_level).to_lowercase();
 
     if let Err(e) = conn.execute(
-        "INSERT INTO snapshots (ts, cpu_pct, ram_used_gb, die_temp_c, throttling, ram_pressure, anomaly_type, impact_level, anomaly_score, culprit_group_name, disk_used_gb, disk_total_gb, disk_pressure)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+        "INSERT INTO snapshots (ts, cpu_pct, ram_used_gb, die_temp_c, throttling, ram_pressure, anomaly_type, impact_level, anomaly_score, culprit_group_name, disk_used_gb, disk_total_gb, disk_pressure, ai_agent_count)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
         params![
             hw.ts.to_rfc3339(),
             hw.cpu_usage_pct,
@@ -156,6 +169,7 @@ pub fn insert_snapshot(db: &DbHandle, hw: &HwSnapshot, blame: &ProcessBlame) {
             hw.disk_used_gb,
             hw.disk_total_gb,
             disk_pressure_str,
+            hw.ai_agent_count as i32,
         ],
     ) {
         tracing::warn!("failed to insert snapshot: {}", e);
@@ -301,7 +315,7 @@ pub fn query_session_health(db: &DbHandle, since: DateTime<Utc>) -> Result<Sessi
 
     // Query snapshots
     let mut stmt = conn.prepare(
-        "SELECT cpu_pct, ram_used_gb, die_temp_c, throttling, anomaly_type, impact_level, anomaly_score
+        "SELECT cpu_pct, ram_used_gb, die_temp_c, throttling, anomaly_type, impact_level, anomaly_score, ai_agent_count
          FROM snapshots WHERE ts >= ?1",
     )?;
 
@@ -313,6 +327,7 @@ pub fn query_session_health(db: &DbHandle, since: DateTime<Utc>) -> Result<Sessi
         anomaly_type: String,
         impact_level: String,
         anomaly_score: f64,
+        ai_agent_count: u32,
     }
 
     let rows: Vec<SnapRow> = stmt
@@ -325,6 +340,9 @@ pub fn query_session_health(db: &DbHandle, since: DateTime<Utc>) -> Result<Sessi
                 anomaly_type: row.get::<_, String>(4).unwrap_or_default(),
                 impact_level: row.get::<_, String>(5).unwrap_or_default(),
                 anomaly_score: row.get::<_, f64>(6).unwrap_or(0.0),
+                ai_agent_count: row.get::<_, Option<i32>>(7)
+                    .unwrap_or(None)
+                    .unwrap_or(0) as u32,
             })
         })?
         .filter_map(|r| r.ok())
@@ -353,6 +371,8 @@ pub fn query_session_health(db: &DbHandle, since: DateTime<Utc>) -> Result<Sessi
             peak_ram_gb: 0.0,
             peak_temp_celsius: None,
             throttle_event_count: 0,
+            agent_accumulation_events: 0,
+            peak_ai_agent_count: 0,
         });
     }
 
@@ -366,6 +386,8 @@ pub fn query_session_health(db: &DbHandle, since: DateTime<Utc>) -> Result<Sessi
     let mut throttle_count = 0_u32;
     let mut worst_impact = 0_u8; // 0=Healthy, 1=Degrading, 2=Strained, 3=Critical
     let mut worst_anomaly = AnomalyType::None;
+    let mut agent_accumulation_events = 0_u32;
+    let mut peak_ai_agent_count = 0_u32;
 
     for row in &rows {
         sum_cpu += row.cpu_pct;
@@ -382,6 +404,13 @@ pub fn query_session_health(db: &DbHandle, since: DateTime<Utc>) -> Result<Sessi
         }
         if row.throttling {
             throttle_count += 1;
+        }
+
+        if matches!(row.anomaly_type.as_str(), "agent_accumulation" | "agentaccumulation") {
+            agent_accumulation_events += 1;
+        }
+        if row.ai_agent_count > peak_ai_agent_count {
+            peak_ai_agent_count = row.ai_agent_count;
         }
 
         let level_ord = match row.impact_level.as_str() {
@@ -442,6 +471,8 @@ pub fn query_session_health(db: &DbHandle, since: DateTime<Utc>) -> Result<Sessi
         peak_ram_gb: peak_ram,
         peak_temp_celsius: peak_temp,
         throttle_event_count: throttle_count,
+        agent_accumulation_events,
+        peak_ai_agent_count,
     })
 }
 
@@ -623,6 +654,8 @@ mod tests {
             impact_level: ImpactLevel::Healthy,
             impact_duration_s: 0,
             one_liner: String::new(),
+            ai_agent_count: 0,
+            ai_agent_ram_gb: 0.0,
         }
     }
 
@@ -639,6 +672,8 @@ mod tests {
             stale_axon_pids: Vec::new(),
             urgency: Urgency::Monitor,
             culprit_category: CulpritCategory::Unknown,
+            claude_agents: Vec::new(),
+            stranded_idle_pids: Vec::new(),
         }
     }
 
