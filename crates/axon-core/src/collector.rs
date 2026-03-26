@@ -815,6 +815,7 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
         #[cfg(target_os = "linux")]
         let mut zombie_child_counts_map: HashMap<u32, u32> = HashMap::new();
         for (pid, process) in sys.processes() {
+            #[cfg(target_os = "linux")]
             let pid_u32 = usize::from(*pid) as u32;
             if let Some(parent) = process.parent() {
                 let parent_u32 = usize::from(parent) as u32;
