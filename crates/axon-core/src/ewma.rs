@@ -8,17 +8,45 @@ const ALPHA_FAST: f64 = 0.4;
 const ALPHA_SLOW: f64 = 0.05;
 
 /// Minimum samples before each timescale reports deltas.
-const WARMUP_FAST: u32 = 2;
+pub const WARMUP_FAST: u32 = 2;
 const WARMUP_MEDIUM: u32 = 3;
-const WARMUP_SLOW: u32 = 8;
+/// Public so the collector can check slow-warmup before reading slow delta.
+pub const WARMUP_SLOW: u32 = 8;
 
-/// Single-timescale EWMA tracker.
+// ── Adaptive EWMA (AEWMA) constants — Capizzi & Masarotto (2003) ─────────────
+/// Huber threshold (in sigma units). Residuals within ±c sigma get standard EWMA
+/// smoothing; residuals beyond ±c get Shewhart-like full weight, preventing
+/// the baseline from drifting up during a sustained anomaly (the "inertia problem").
+const HUBER_C: f64 = 2.0;
+/// Variance smoothing factor (β=0.95 → ~20-sample effective window).
+const VAR_BETA: f64 = 0.95;
+/// Initial variance for CPU % — sqrt(100) = 10% initial uncertainty.
+const CPU_VAR_INIT: f64 = 100.0;
+/// Initial variance for RAM GB — sqrt(0.04) = 0.2 GB initial uncertainty.
+const RAM_VAR_INIT: f64 = 0.04;
+/// Minimum sigma for CPU to prevent division by zero during cold start.
+const CPU_SIGMA_MIN: f64 = 0.5;
+/// Minimum sigma for RAM to prevent division by zero during cold start.
+const RAM_SIGMA_MIN: f64 = 0.001;
+
+/// Single-timescale Adaptive EWMA tracker (Capizzi & Masarotto 2003).
+///
+/// Uses a Huber score function to select the update weight dynamically:
+/// - Residuals within ±HUBER_C sigma → standard EWMA weight (α).
+/// - Residuals beyond ±HUBER_C sigma → Shewhart-like weight (α·C/|z|).
+///
+/// This prevents the baseline from drifting up during a sustained anomaly
+/// (the "inertia problem" of fixed-α EWMA) while still smoothing noise.
 #[derive(Debug, Clone)]
 struct EwmaTracker {
     cpu: f64,
     ram: f64,
     alpha: f64,
     initialized: bool,
+    /// Running variance for CPU (EWMA of squared residuals, β=VAR_BETA).
+    cpu_var: f64,
+    /// Running variance for RAM.
+    ram_var: f64,
 }
 
 impl EwmaTracker {
@@ -28,6 +56,8 @@ impl EwmaTracker {
             ram: 0.0,
             alpha,
             initialized: false,
+            cpu_var: CPU_VAR_INIT,
+            ram_var: RAM_VAR_INIT,
         }
     }
 
@@ -36,10 +66,27 @@ impl EwmaTracker {
             self.cpu = cpu;
             self.ram = ram;
             self.initialized = true;
-        } else {
-            self.cpu = self.alpha * cpu + (1.0 - self.alpha) * self.cpu;
-            self.ram = self.alpha * ram + (1.0 - self.alpha) * self.ram;
+            return;
         }
+        let e_cpu = cpu - self.cpu;
+        let e_ram = ram - self.ram;
+
+        // Update running variance (EWMA of squared residuals).
+        self.cpu_var = VAR_BETA * self.cpu_var + (1.0 - VAR_BETA) * e_cpu * e_cpu;
+        self.ram_var = VAR_BETA * self.ram_var + (1.0 - VAR_BETA) * e_ram * e_ram;
+
+        let sigma_cpu = self.cpu_var.sqrt().max(CPU_SIGMA_MIN);
+        let sigma_ram = self.ram_var.sqrt().max(RAM_SIGMA_MIN);
+
+        // Huber adaptive weight: scale α down for large residuals so spikes do
+        // not pollute the baseline, but still move the tracker toward the new value.
+        let z_cpu = (e_cpu / sigma_cpu).abs();
+        let z_ram = (e_ram / sigma_ram).abs();
+        let lam_cpu = if z_cpu <= HUBER_C { self.alpha } else { self.alpha * HUBER_C / z_cpu };
+        let lam_ram = if z_ram <= HUBER_C { self.alpha } else { self.alpha * HUBER_C / z_ram };
+
+        self.cpu += lam_cpu * e_cpu;
+        self.ram += lam_ram * e_ram;
     }
 }
 
@@ -146,6 +193,23 @@ impl ProcessBaseline {
             (cpu - self.slow.cpu).max(0.0),
             (ram - self.slow.ram).max(0.0),
         )
+    }
+
+    /// Returns signed slow-timescale deltas (drift/growth tracking).
+    /// Negative means current value is below the slow baseline.
+    /// Returns None until WARMUP_SLOW samples have been collected.
+    pub fn signed_slow_delta(&self, cpu: f64, ram: f64) -> Option<(f64, f64)> {
+        if self.samples < WARMUP_SLOW {
+            return None;
+        }
+        Some((cpu - self.slow.cpu, ram - self.slow.ram))
+    }
+
+    /// Fast-timescale RAM baseline (alpha=0.4, ~5s window).
+    /// Compare against current RAM to detect a sudden spike (>0.3GB gap = runaway allocation).
+    /// Useful for catching SIGWINCH/resize OOM patterns (issue #39022).
+    pub fn fast_ram(&self) -> f64 {
+        self.fast.ram
     }
 
     /// True when the slow baseline diverges significantly from the fast baseline,
@@ -279,13 +343,15 @@ mod tests {
     #[test]
     fn test_ewma_convergence() {
         let mut store = EwmaStore::default();
-        for _ in 0..20 {
+        for _ in 0..30 {
             store.update(1, 50.0, 2.0);
         }
-        // After 20 samples, delta should be essentially zero
+        // After 30 stable samples, delta should be essentially zero.
+        // AEWMA converges slightly slower than fixed EWMA because variance
+        // tracking needs more samples to tighten, but still converges.
         let (cpu_d, ram_d) = store.update(1, 50.0, 2.0);
-        assert!(cpu_d < 0.01, "converged EWMA should have near-zero delta");
-        assert!(ram_d < 0.001, "converged EWMA should have near-zero delta");
+        assert!(cpu_d < 0.5, "converged AEWMA should have near-zero delta, got {}", cpu_d);
+        assert!(ram_d < 0.05, "converged AEWMA should have near-zero delta, got {}", ram_d);
     }
 
     // ── Multi-timescale tests ─────────────────────────────────────────────

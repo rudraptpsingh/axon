@@ -308,9 +308,25 @@ fn hw_narrative(hw: &HwSnapshot) -> String {
             DiskPressure::Warn => "warn",
             DiskPressure::Critical => "critical",
         };
+        // Disk fill rate warning: runaway debug-log loop (#16093) or task .output
+        // accumulation (#26911, 537GB from one session). Rate >0.1 GB/s = crisis.
+        let fill_rate_str = match hw.disk_fill_rate_gb_per_sec {
+            Some(r) if r >= 0.5 => format!(
+                " [CRITICAL] Disk filling at {:.1} GB/s — runaway write loop likely. \
+                 Check: du -sh ~/.claude/debug/ /tmp/claude-*/ and kill the process \
+                 writing. This matches infinite logging loop pattern (#16093).",
+                r
+            ),
+            Some(r) if r >= 0.05 => format!(
+                " [WARN] Disk filling at {:.0} MB/s — possible task .output accumulation \
+                 or debug log growth. Check: du -sh ~/.claude/debug/ /tmp/claude-*/",
+                r * 1024.0
+            ),
+            _ => String::new(),
+        };
         format!(
-            " Disk {:.1}/{:.0}GB ({:.0}%, {} pressure).",
-            hw.disk_used_gb, hw.disk_total_gb, disk_pct, disk_pressure_str
+            " Disk {:.1}/{:.0}GB ({:.0}%, {} pressure).{}",
+            hw.disk_used_gb, hw.disk_total_gb, disk_pct, disk_pressure_str, fill_rate_str
         )
     } else {
         String::new()
@@ -327,8 +343,30 @@ fn hw_narrative(hw: &HwSnapshot) -> String {
             )
         }
     };
+    // Swap pressure: high swap = RAM exhaustion, forces paging (Cowork VM bundle #22543).
+    let swap_str = match (hw.swap_used_gb, hw.swap_total_gb) {
+        (Some(used), Some(total)) if total > 0.1 => {
+            let pct = used / total * 100.0;
+            if pct > 50.0 {
+                format!(" Swap {:.1}/{:.0}GB ({:.0}%, HIGH — system paging heavily; systemd-oomd may kill processes if sustained >20s).", used, total, pct)
+            } else if pct > 10.0 {
+                format!(" Swap {:.1}/{:.0}GB ({:.0}%).", used, total, pct)
+            } else {
+                String::new()
+            }
+        }
+        _ => String::new(),
+    };
+    // IRQ rate hint: high IRQ with moderate CPU → real I/O; near-zero IRQ with high CPU → spin-loop.
+    let irq_str = match hw.irq_per_sec {
+        Some(irq) if irq > 50_000 => format!(" IRQ {}/s (I/O-heavy).", irq),
+        Some(irq) if hw.cpu_usage_pct > 60.0 && irq < 5_000 => {
+            format!(" IRQ {}/s (low — possible spin-loop).", irq)
+        }
+        _ => String::new(),
+    };
     format!(
-        "CPU {:.0}% {}, die {}{} RAM {:.1}/{:.0}GB {} ({} pressure).{} {} | {}",
+        "CPU {:.0}% {}, die {}{} RAM {:.1}/{:.0}GB {} ({} pressure).{}{}{} {} | {}",
         hw.cpu_usage_pct,
         hw.cpu_trend,
         temp_str,
@@ -338,6 +376,8 @@ fn hw_narrative(hw: &HwSnapshot) -> String {
         hw.ram_trend,
         pressure,
         disk_str,
+        swap_str,
+        irq_str,
         headroom_str,
         hw.one_liner,
     )
@@ -381,6 +421,275 @@ fn blame_narrative(blame: &ProcessBlame) -> String {
         ));
     }
 
+    // Orphaned subprocesses (ex-claude descendants reparented to init, or high-CPU MCP plugins).
+    // Common cause: claude exited ungracefully, bun/node MCP servers left pegging CPU.
+    // See: github.com/anthropics/claude-code/issues/39170
+    if !blame.orphan_pids.is_empty() {
+        let pids = blame
+            .orphan_pids
+            .iter()
+            .map(|p| p.to_string())
+            .collect::<Vec<_>>()
+            .join(" ");
+        base.push_str(&format!(
+            " [WARN] {} orphaned subprocess(es) consuming CPU (PIDs: {}). \
+             Likely MCP plugins from a crashed session. Kill: kill -9 {}",
+            blame.orphan_pids.len(),
+            pids,
+            pids
+        ));
+    }
+
+    // Crashed claude processes: PIDs tracked last tick that have disappeared.
+    // Likely causes: Bun segfault (#21875), OOM kill (#39022), SIGKILL.
+    if !blame.crashed_agent_pids.is_empty() {
+        let pids = blame.crashed_agent_pids.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(" ");
+        base.push_str(&format!(
+            " [WARN] Claude PID(s) {} disappeared unexpectedly — likely crashed \
+             (Bun segfault, OOM kill, or SIGKILL). Check system logs: journalctl -k | grep -E 'Killed|OOM'",
+            pids
+        ));
+    }
+
+    // Zombie subprocesses: un-reaped children of claude, holding PID slots.
+    if !blame.zombie_pids.is_empty() {
+        let pids = blame
+            .zombie_pids
+            .iter()
+            .map(|p| p.to_string())
+            .collect::<Vec<_>>()
+            .join(" ");
+        base.push_str(&format!(
+            " [WARN] {} zombie subprocess(es) not reaped by parent (PIDs: {}).",
+            blame.zombie_pids.len(),
+            pids
+        ));
+    }
+
+    // Parallel agent storm: too many concurrent claude subagents can saturate disk I/O
+    // and CPU on resource-constrained machines, causing system lockups before OOM triggers.
+    // Observed: 24 agents in 2 min → 17x disk I/O spike → system freeze (#15487).
+    {
+        let non_orch_count = blame.claude_agents.iter().filter(|a| !a.is_orchestrator).count();
+        if non_orch_count >= 8 {
+            let pids: Vec<String> = blame.claude_agents.iter()
+                .filter(|a| !a.is_orchestrator)
+                .map(|a| a.pid.to_string())
+                .collect();
+            base.push_str(&format!(
+                " [WARN] {} parallel claude subagents running simultaneously — disk I/O storm risk \
+                 (#15487). On limited systems (VPS, low-RAM) this can cause system freeze before OOM. \
+                 Consider reducing parallel tasks. PIDs: {}",
+                non_orch_count,
+                pids.join(" ")
+            ));
+        }
+    }
+
+    // Fast RAM spike detection: runaway allocation from terminal resize (SIGWINCH burst).
+    // Seen as 1GB→21GB in 6s in issue #39022 — OOM kill risk within seconds.
+    let spiking: Vec<String> = blame
+        .claude_agents
+        .iter()
+        .filter(|a| a.ram_spike == Some(true))
+        .map(|a| format!("PID {} ({:.1}GB)", a.pid, a.ram_gb))
+        .collect();
+    if !spiking.is_empty() {
+        base.push_str(&format!(
+            " [CRITICAL] Runaway RAM allocation on {} — OOM kill imminent. \
+             Stop resizing terminal NOW. If in tmux, stop dragging pane divider. \
+             Emergency kill: kill -9 {}",
+            spiking.join(", "),
+            blame
+                .claude_agents
+                .iter()
+                .filter(|a| a.ram_spike == Some(true))
+                .map(|a| a.pid.to_string())
+                .collect::<Vec<_>>()
+                .join(" ")
+        ));
+    }
+
+    // Orchestrator stall detection (#38932): orchestrator idle for >10min while
+    // subagents are still running = Ink render loop throttled, inbox poller starved.
+    // Manual keystroke is the only known workaround; axon alerts the agent.
+    let orchestrator_idle_min = blame
+        .claude_agents
+        .iter()
+        .find(|a| a.is_orchestrator)
+        .and_then(|orch| {
+            let idle_secs = orch.uptime_s?;
+            // Rough heuristic: if orchestrator cpu < 2% but has been running >5min
+            // and there are active subagents, it may be stalled.
+            let has_subagents = blame.claude_agents.iter().any(|a| !a.is_orchestrator);
+            let low_cpu = orch.cpu_pct < 2.0;
+            let long_lived = idle_secs > 300; // 5 min
+            if has_subagents && low_cpu && long_lived {
+                Some((orch.pid, idle_secs / 60))
+            } else {
+                None
+            }
+        });
+    if let Some((orch_pid, idle_min)) = orchestrator_idle_min {
+        base.push_str(&format!(
+            " [WARN] Orchestrator PID {} idle for ~{}min with active subagents — \
+             possible Ink render loop stall (#38932). \
+             Send a keystroke to the terminal to wake the inbox poller.",
+            orch_pid, idle_min
+        ));
+    }
+
+    // I/O block detection: D-state (uninterruptible wait) for 2+ ticks — WSL2 filesystem
+    // bridging, NFS hang, or overlapping heavy I/O causing 1-6min thinking delays (#22855).
+    let io_blocked: Vec<String> = blame
+        .claude_agents
+        .iter()
+        .filter(|a| a.suspected_io_block == Some(true))
+        .map(|a| format!("PID {} ({:.0}%CPU)", a.pid, a.cpu_pct))
+        .collect();
+    if !io_blocked.is_empty() {
+        base.push_str(&format!(
+            " [WARN] Claude {} in D-state (I/O blocking) — filesystem or network stall. \
+             On WSL2 this causes 1-6min thinking delays. \
+             Check: cat /proc/{}/wchan to see what it's waiting on.",
+            io_blocked.join(", "),
+            blame.claude_agents.iter()
+                .filter(|a| a.suspected_io_block == Some(true))
+                .map(|a| a.pid.to_string()).next().unwrap_or_default()
+        ));
+    }
+
+    // Spin-loop detection for individual claude agents
+    let spinning: Vec<String> = blame
+        .claude_agents
+        .iter()
+        .filter(|a| a.suspected_spin_loop == Some(true))
+        .map(|a| format!("PID {} ({:.0}% CPU)", a.pid, a.cpu_pct))
+        .collect();
+    if !spinning.is_empty() {
+        base.push_str(&format!(
+            " [WARN] Claude spin-loop suspected on {} — high CPU with near-zero IRQ. \
+             May be V8 GC runaway or stuck after MCP response. \
+             Consider: kill -9 {} and restart.",
+            spinning.join(", "),
+            blame
+                .claude_agents
+                .iter()
+                .filter(|a| a.suspected_spin_loop == Some(true))
+                .map(|a| a.pid.to_string())
+                .collect::<Vec<_>>()
+                .join(" ")
+        ));
+    }
+
+    // GC pressure warnings per claude process.
+    // Bun/Node runtime accumulates render buffer state; high RAM → GC thrashing.
+    // Known fix: /clear resets buffer (2GB → 160MB, CPU 98% → 0% instantly).
+    // Duplicate session ID detection (#39151): multiple claude instances resuming
+    // the same session file causes interleaved writes, context corruption, data loss.
+    {
+        let mut seen: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
+        for agent in &blame.claude_agents {
+            if let Some(sid) = agent.session_id.as_deref() {
+                if let Some(&other_pid) = seen.get(sid) {
+                    base.push_str(&format!(
+                        " [WARN] Session {} open in multiple claude instances (PIDs: {} and {}). \
+                         Concurrent access corrupts session JSONL — kill one: kill {}",
+                        &sid[..sid.len().min(12)],
+                        other_pid,
+                        agent.pid,
+                        agent.pid
+                    ));
+                } else {
+                    seen.insert(sid, agent.pid);
+                }
+            }
+        }
+    }
+
+    // Browser extension CPU warning: Chrome/Edge extension processes can peg
+    // a single helper at 65% CPU. Detect Browser culprit + high CPU + helper in name.
+    // See: github.com/anthropics/claude-code/issues/37544
+    if matches!(blame.culprit_category, CulpritCategory::Browser) {
+        let high_cpu_browser = blame.culprit.as_ref().map_or(false, |p| p.cpu_pct > 50.0);
+        let is_helper = blame.culprit.as_ref().map_or(false, |p| {
+            let cmd = p.cmd.to_lowercase();
+            cmd.contains("helper") || cmd.contains("renderer") || cmd.contains("worker")
+        });
+        if high_cpu_browser && is_helper {
+            base.push_str(
+                " [WARN] Browser helper process at high CPU — likely a browser extension \
+                 spin-loop. If you have the Claude in Chrome extension installed, \
+                 try disabling it (known 65% CPU bug #37544).",
+            );
+        }
+    }
+
+    for agent in &blame.claude_agents {
+        let uptime_str = agent.uptime_s.map(|s| {
+            if s >= 3600 { format!(" ({}h session)", s / 3600) }
+            else { format!(" ({}m session)", s / 60) }
+        }).unwrap_or_default();
+        match agent.gc_pressure.as_deref() {
+            Some("critical") => base.push_str(&format!(
+                " [CRITICAL] PID {} RAM {:.1}GB{} — Bun GC thrashing imminent. \
+                 Run /clear NOW to drop RAM and stop CPU spin (known fix for issue #22509).",
+                agent.pid, agent.ram_gb, uptime_str
+            )),
+            Some("warn") => base.push_str(&format!(
+                " [WARN] PID {} RAM {:.1}GB{} — session render buffer growing. \
+                 Run /clear if CPU starts climbing (prevents GC thrash at ~2GB).",
+                agent.pid, agent.ram_gb, uptime_str
+            )),
+            Some("accumulating") => base.push_str(&format!(
+                " [INFO] PID {} RAM {:.1}GB{} — long session with growing RAM. \
+                 Consider /clear proactively to avoid GC pressure later.",
+                agent.pid, agent.ram_gb, uptime_str
+            )),
+            _ => {}
+        }
+
+        // Compacting-hang hint: very long session + critical GC pressure = likely stuck
+        // context-compaction operation (no timeout, can spin at >100% CPU for hours).
+        // See: github.com/anthropics/claude-code/issues/11377.
+        if agent.gc_pressure.as_deref() == Some("critical")
+            && agent.uptime_s.map_or(false, |s| s > 8 * 3600)
+        {
+            base.push_str(&format!(
+                " [WARN] PID {} has been running {}h with critical RAM — possible compacting \
+                 hang (context compression that never finishes). If unresponsive, use: \
+                 kill -9 {}",
+                agent.pid,
+                agent.uptime_s.unwrap_or(0) / 3600,
+                agent.pid
+            ));
+        }
+
+        // VSZ/RSS ratio anomaly: V8 heap fragmentation or 60Hz mmap/munmap thrash loop.
+        // Manifests as 50-80% CPU while idle, VSZ 73-85 GB with ~600 MB RSS.
+        // See: github.com/anthropics/claude-code/issues/18280.
+        if agent.suspected_alloc_thrash == Some(true) {
+            base.push_str(&format!(
+                " [WARN] PID {} has abnormal VSZ/RSS ratio — V8 heap fragmentation or \
+                 memory-allocation thrashing (60Hz mmap loop). Expect 50-80% idle CPU. \
+                 Restart claude to reset V8 heap layout.",
+                agent.pid
+            ));
+        }
+
+        // File descriptor leak: fs.watch() / inotify watchers not cleaned up.
+        // Grows unboundedly until EMFILE crashes the process.
+        // See: github.com/anthropics/claude-code/issues/11136.
+        if agent.fd_leak == Some(true) {
+            base.push_str(&format!(
+                " [WARN] PID {} has a large open-file-descriptor table (FDSize > 4096) — \
+                 likely fs.watch/inotify watcher leak. Will crash with EMFILE when ulimit \
+                 is reached. Restart claude now to recover; reinstall plugins if recurring.",
+                agent.pid
+            ));
+        }
+    }
+
     base
 }
 
@@ -421,13 +730,13 @@ fn trend_narrative(trend: &TrendData, range: &str) -> String {
     let cpu_overall: f64 = if trend.buckets.is_empty() {
         0.0
     } else {
-        trend.buckets.iter().map(|b| b.cpu_avg).sum::<f64>() / trend.buckets.len() as f64
+        trend.buckets.iter().map(|b| b.avg_cpu_pct).sum::<f64>() / trend.buckets.len() as f64
     };
 
     let ram_overall: f64 = if trend.buckets.is_empty() {
         0.0
     } else {
-        trend.buckets.iter().map(|b| b.ram_avg).sum::<f64>() / trend.buckets.len() as f64
+        trend.buckets.iter().map(|b| b.avg_ram_gb).sum::<f64>() / trend.buckets.len() as f64
     };
 
     let mut parts = vec![

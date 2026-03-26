@@ -119,6 +119,67 @@ impl std::fmt::Display for CulpritCategory {
 
 // ── Core Data Types ───────────────────────────────────────────────────────────
 
+/// Metadata about a single running claude process (orchestrator or sub-agent).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClaudeAgentInfo {
+    pub pid: u32,
+    /// Session ID extracted from --session argument, if present.
+    pub session_id: Option<String>,
+    /// True when this process carries --init or --resume flags (the orchestrator).
+    pub is_orchestrator: bool,
+    pub ram_gb: f64,
+    pub cpu_pct: f64,
+    /// RAM growth rate over the last ~40 seconds (GB/sec, positive = growing).
+    /// None until the slow EWMA baseline has accumulated enough history (~16s).
+    /// Use to anticipate context exhaustion before OOM: >0.01 GB/sec is notable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ram_growth_gb_per_sec: Option<f64>,
+    /// True when this claude PID has high CPU but system IRQ rate is low, indicating
+    /// a spin loop rather than real work (V8 GC runaway, infinite loop after MCP response).
+    /// See: github.com/anthropics/claude-code/issues/22275, #36729.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suspected_spin_loop: Option<bool>,
+    /// GC pressure level based on process RAM: "warn" (>800MB) or "critical" (>1.5GB).
+    /// The Bun/Node runtime accumulates render buffer state over a session; when RAM
+    /// exceeds ~1.5-2GB the GC enters a CPU-thrashing loop. Run /clear to reset.
+    /// See: github.com/anthropics/claude-code/issues/22509, #30807.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gc_pressure: Option<String>,
+    /// Approximate session uptime in seconds (estimated from EWMA sample count × 2s tick).
+    /// None until the EWMA tracker has enough samples. Useful for correlating long sessions
+    /// with GC pressure — CPU thrashing typically appears after 6-8h of uptime.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uptime_s: Option<u64>,
+    /// True when this claude PID's RAM jumped >300MB above its fast EWMA baseline in a single
+    /// tick (~2s). Indicates runaway memory allocation — likely triggered by rapid terminal
+    /// resize (SIGWINCH burst) on a large session. OOM kill risk within seconds.
+    /// See: github.com/anthropics/claude-code/issues/39022.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ram_spike: Option<bool>,
+    /// True when this claude process is in D-state (uninterruptible I/O wait) for 2+
+    /// consecutive ticks (~4s). Indicates filesystem/network blocking — common on WSL2
+    /// where filesystem bridging is slow, causing 1-6 minute "thinking" delays.
+    /// See: github.com/anthropics/claude-code/issues/22855.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suspected_io_block: Option<bool>,
+    /// True on Linux when VSZ/RSS page ratio > 50 for this claude process.
+    /// Indicates V8 heap fragmentation or mmap/munmap thrashing (60Hz allocation loop
+    /// introduced in v2.1.7 "terminal rendering optimization"). Manifests as 50-80% CPU
+    /// while apparently idle, abnormally large virtual address space (73-85 GB VSZ with
+    /// only ~600 MB RSS). Distinct from spin-loop: IRQ rate may be moderate.
+    /// See: github.com/anthropics/claude-code/issues/18280.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suspected_alloc_thrash: Option<bool>,
+    /// True on Linux when the FD table size (FDSize from /proc/<pid>/status) exceeds
+    /// 4096. Indicates an fs.watch / inotify watcher leak: Node.js file watchers
+    /// accumulate without being closed. Once the process hits ulimit -n (typically
+    /// 1024–65536), every subsequent open() fails with EMFILE. Observed at 757,812
+    /// open descriptors before crash.
+    /// See: github.com/anthropics/claude-code/issues/11136.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fd_leak: Option<bool>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HwSnapshot {
     pub die_temp_celsius: Option<f64>,
@@ -153,6 +214,32 @@ pub struct HwSnapshot {
     pub impact_duration_s: u64,
     /// Ultra-compact one-line summary for token-constrained agents.
     pub one_liner: String,
+    /// Total number of AI agent processes (claude, cursor, windsurf) visible right now.
+    /// Useful for a pre-spawn check before starting a heavy sub-agent task.
+    #[serde(default)]
+    pub ai_agent_count: u32,
+    /// Combined RAM used by all AI agent processes (GB).
+    #[serde(default)]
+    pub ai_agent_ram_gb: f64,
+    /// Per-second total hardware interrupt rate (Linux only). None on other platforms.
+    /// High IRQ rate with moderate CPU% → real I/O work (disk/net).
+    /// Near-zero IRQ with high CPU% → spin-loop or pure compute (e.g. yes, tight loop).
+    /// Useful for distinguishing cargo build (high IRQ) from runaway agent (low IRQ).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub irq_per_sec: Option<u64>,
+    /// Swap space currently in use (GB). High swap indicates RAM exhaustion forcing paging.
+    /// Relevant for Cowork VM bundle memory pressure (#22543) and general OOM risk.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub swap_used_gb: Option<f64>,
+    /// Total swap space available (GB). None when no swap is configured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub swap_total_gb: Option<f64>,
+    /// Rate at which disk usage is growing (GB/sec). None on first tick or if stable.
+    /// Positive values indicate active disk fill — can signal runaway debug-log loops
+    /// (200 GB+ in ~hours, #16093) or task .output file accumulation (537 GB, #26911).
+    /// Fires when delta between ticks exceeds 50 MB (0.05 GB) over 2 seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disk_fill_rate_gb_per_sec: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -192,6 +279,30 @@ pub struct ProcessBlame {
     pub urgency: Urgency,
     /// What kind of process is the culprit: build_tool, browser, ide, ai_agent, system, unknown.
     pub culprit_category: CulpritCategory,
+    /// Per-process breakdown of running claude instances (orchestrator + sub-agents).
+    /// Empty when no claude processes are visible.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub claude_agents: Vec<ClaudeAgentInfo>,
+    /// PIDs of non-orchestrator claude processes that have been CPU-idle for
+    /// more than AGENT_IDLE_STRANDED_TICKS consecutive ticks. These are
+    /// the processes that trigger AgentAccumulation anomaly type.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stranded_idle_pids: Vec<u32>,
+    /// PIDs of processes that were descendants of a claude process but whose
+    /// parent has since exited, leaving them reparented to init (PPID=1).
+    /// These are orphaned tool invocations consuming CPU/RAM with no owner.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub orphan_pids: Vec<u32>,
+    /// PIDs of zombie (Z-state) processes that are descendants of any claude
+    /// process. Zombies indicate the parent is not calling wait() — they hold
+    /// a PID slot and accumulate until the parent exits or reaps them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub zombie_pids: Vec<u32>,
+    /// PIDs of claude processes that were tracked last tick but have now disappeared
+    /// without a graceful exit — likely crashed (Bun segfault, OOM kill, SIGKILL).
+    /// See: github.com/anthropics/claude-code/issues/21875 (Bun segfaults).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub crashed_agent_pids: Vec<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -282,12 +393,12 @@ pub struct Alert {
 pub struct TrendBucket {
     pub bucket_start: DateTime<Utc>,
     pub sample_count: u32,
-    pub cpu_avg: f64,
-    pub cpu_max: f64,
-    pub ram_avg: f64,
-    pub ram_max: f64,
-    pub temp_avg: Option<f64>,
-    pub temp_max: Option<f64>,
+    pub avg_cpu_pct: f64,
+    pub peak_cpu_pct: f64,
+    pub avg_ram_gb: f64,
+    pub peak_ram_gb: f64,
+    pub avg_temp_celsius: Option<f64>,
+    pub peak_temp_celsius: Option<f64>,
     pub anomaly_count: u32,
     pub throttle_count: u32,
 }
@@ -315,6 +426,12 @@ pub struct SessionHealth {
     pub peak_ram_gb: f64,
     pub peak_temp_celsius: Option<f64>,
     pub throttle_event_count: u32,
+    /// Number of snapshots where anomaly_type was agent_accumulation (stranded idle sub-agents).
+    #[serde(default)]
+    pub agent_accumulation_events: u32,
+    /// Peak number of AI agent processes seen at any single snapshot during the session.
+    #[serde(default)]
+    pub peak_ai_agent_count: u32,
 }
 
 // ── GPU Types ─────────────────────────────────────────────────────────────────

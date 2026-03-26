@@ -14,6 +14,77 @@ use crate::{
     types::*,
 };
 
+// ── CUSUM state for system-level impact scoring ───────────────────────────────
+// Replaces the old `above_threshold_count` counter. CUSUM (Cumulative Sum,
+// Page 1954) is optimal for detecting step changes: it accumulates evidence
+// that the score has shifted above the idle baseline, and does NOT re-adapt
+// to sustained anomalies the way EWMA does (no "inertia problem").
+//
+// Initialisation uses Lucas & Crosier (1982) FIR headstart (s_pos = h/2) so
+// the detector responds faster to an anomaly that exists at startup.
+// The reference mean μ is estimated from the first CUSUM_WARMUP_TICKS ticks.
+
+const CUSUM_WARMUP_TICKS: usize = 3;
+/// Fixed noise floor for normalised score (empirically ~0.04 on an idle machine).
+const CUSUM_SIGMA: f64 = 0.04;
+/// Allowance: detect shifts > 0.5σ above μ (standard k=0.5 default).
+const CUSUM_K: f64 = 0.5;
+/// Alert threshold (4σ → ~1 false alarm per 370 ticks ≈ 12 min at 2s ticks).
+const CUSUM_H: f64 = 4.0;
+/// After this many consecutive alert ticks (~60s), slowly adapt μ to acknowledge
+/// a genuine new baseline (e.g. user started a long compile job).
+const CUSUM_ADAPT_TICKS: u32 = 30;
+
+struct CusumState {
+    s_pos: f64,
+    mu: f64,
+    warmup_scores: Vec<f64>,
+    ticks_since_alert: u32,
+}
+
+impl CusumState {
+    fn new() -> Self {
+        Self {
+            s_pos: 0.0,
+            mu: 0.0,
+            warmup_scores: Vec::with_capacity(CUSUM_WARMUP_TICKS),
+            ticks_since_alert: 0,
+        }
+    }
+
+    /// Feed a new score. Returns true when CUSUM signals a sustained anomaly.
+    fn update(&mut self, score: f64) -> bool {
+        // Collect first N scores to estimate the idle baseline μ.
+        if self.warmup_scores.len() < CUSUM_WARMUP_TICKS {
+            self.warmup_scores.push(score);
+            if self.warmup_scores.len() == CUSUM_WARMUP_TICKS {
+                self.mu = self.warmup_scores.iter().sum::<f64>() / CUSUM_WARMUP_TICKS as f64;
+                // FIR headstart: begin at h/2 so startup anomalies are caught faster.
+                self.s_pos = CUSUM_H / 2.0;
+            }
+            return false;
+        }
+
+        let z = (score - self.mu) / CUSUM_SIGMA;
+        self.s_pos = (self.s_pos + z - CUSUM_K).max(0.0);
+
+        let triggered = self.s_pos >= CUSUM_H;
+        if triggered {
+            self.ticks_since_alert += 1;
+            if self.ticks_since_alert >= CUSUM_ADAPT_TICKS {
+                // Slowly shift μ toward the current level (deliberate baseline adaptation
+                // after 60 s of sustained alert, not automatic drift like EWMA).
+                self.mu = self.mu * 0.9 + score * 0.1;
+                self.s_pos = CUSUM_H / 2.0; // partial reset, stay sensitive
+                self.ticks_since_alert = 0;
+            }
+        } else {
+            self.ticks_since_alert = 0;
+        }
+        triggered
+    }
+}
+
 struct TestPrevStateConfig {
     ram_pressure: Option<RamPressure>,
     throttling: Option<bool>,
@@ -120,6 +191,12 @@ impl AppState {
                 impact_level: ImpactLevel::Healthy,
                 impact_duration_s: 0,
                 one_liner: "System idle.".to_string(),
+                ai_agent_count: 0,
+                ai_agent_ram_gb: 0.0,
+                irq_per_sec: None,
+                swap_used_gb: None,
+                swap_total_gb: None,
+                disk_fill_rate_gb_per_sec: None,
             },
             blame: ProcessBlame {
                 anomaly_type: AnomalyType::None,
@@ -133,6 +210,11 @@ impl AppState {
                 stale_axon_pids: Vec::new(),
                 urgency: Urgency::Monitor,
                 culprit_category: CulpritCategory::Unknown,
+                claude_agents: Vec::new(),
+                stranded_idle_pids: Vec::new(),
+                orphan_pids: Vec::new(),
+                zombie_pids: Vec::new(),
+                crashed_agent_pids: Vec::new(),
             },
             battery: None,
             profile,
@@ -189,13 +271,57 @@ impl DebounceState {
     }
 }
 
+// ── IRQ rate reader (Linux only) ──────────────────────────────────────────────
+
+#[cfg(target_os = "linux")]
+static PREV_IRQ_STATE: std::sync::Mutex<Option<(u64, std::time::Instant)>> =
+    std::sync::Mutex::new(None);
+
+/// Read total hardware interrupt rate (interrupts/sec) by diffing /proc/interrupts.
+/// Returns None on first call (no delta available yet) or on parse error.
+#[cfg(target_os = "linux")]
+fn read_irq_per_sec() -> Option<u64> {
+    let content = std::fs::read_to_string("/proc/interrupts").ok()?;
+    // Sum all numeric values on each line after the first colon-delimited IRQ label.
+    // Header line (first) has no colon — skip naturally via splitn.
+    let total: u64 = content
+        .lines()
+        .skip(1) // skip the CPU0 CPU1 ... header
+        .filter_map(|line| {
+            let after_colon = line.splitn(2, ':').nth(1)?;
+            Some(
+                after_colon
+                    .split_whitespace()
+                    .filter_map(|s| s.parse::<u64>().ok())
+                    .sum::<u64>(),
+            )
+        })
+        .sum();
+
+    let now = std::time::Instant::now();
+    let mut prev_guard = PREV_IRQ_STATE.lock().ok()?;
+    let result = match *prev_guard {
+        Some((prev_total, prev_time)) => {
+            let elapsed = now.duration_since(prev_time).as_secs_f64();
+            if elapsed > 0.1 {
+                Some(((total.saturating_sub(prev_total)) as f64 / elapsed) as u64)
+            } else {
+                None
+            }
+        }
+        None => None,
+    };
+    *prev_guard = Some((total, now));
+    result
+}
+
 /// Spawns a background Tokio task that refreshes hardware state every 2 seconds.
 /// Updates the SharedState in place for the MCP server to read.
 pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring: SnapshotRing) {
     let mut sys = System::new_all();
     let mut ewma = EwmaStore::default();
     let mut tick_count: u32 = 0;
-    let mut above_threshold_count: u32 = 0;
+    let mut cusum = CusumState::new();
     let test_prev = TestPrevStateConfig::from_env();
 
     // Confirmed (debounced) state for transition detection
@@ -210,6 +336,22 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
 
     // Rate limiting: last tick each alert type fired
     let mut last_alert_tick: HashMap<AlertType, u32> = HashMap::new();
+
+    // Per-PID consecutive idle tick counter for non-orchestrator claude processes.
+    // Only processes where is_orchestrator=false are tracked here.
+    let mut agent_idle_ticks: HashMap<u32, u32> = HashMap::new();
+    // D-state I/O blocking: consecutive ticks where /proc/<pid>/stat shows 'D' state.
+    let mut agent_d_state_ticks: HashMap<u32, u32> = HashMap::new();
+
+    // Disk growth rate: track previous tick's disk usage to detect runaway fill.
+    // Catches infinite debug-log loops (#16093) and task .output accumulation (#26911).
+    let mut prev_disk_used_gb: Option<f64> = None;
+
+    // Orphan detection: all PIDs that were descendants of any claude process
+    // last tick. Any survivor this tick with PPID=1 is an orphan.
+    let mut prev_claude_descendants: std::collections::HashSet<u32> = std::collections::HashSet::new();
+    // Crash detection: track claude PIDs seen last tick; disappearances = crashes.
+    let mut prev_claude_agent_pids: std::collections::HashSet<u32> = std::collections::HashSet::new();
 
     let self_pid = std::process::id();
 
@@ -283,6 +425,11 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
         let cpu_delta_pct = cpu_pct - prev_cpu_pct;
         let ram_delta_gb = ram_used_gb - prev_ram_used_gb;
 
+        #[cfg(target_os = "linux")]
+        let irq_per_sec = read_irq_per_sec();
+        #[cfg(not(target_os = "linux"))]
+        let irq_per_sec: Option<u64> = None;
+
         let mut hw = HwSnapshot {
             die_temp_celsius: die_temp,
             throttling,
@@ -305,7 +452,24 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
             impact_level: ImpactLevel::Healthy, // filled after impact computation
             impact_duration_s: 0, // filled after impact computation
             one_liner: String::new(), // filled after all fields are known
+            ai_agent_count: 0,    // filled after process collection
+            ai_agent_ram_gb: 0.0, // filled after process collection
+            irq_per_sec,
+            swap_used_gb: {
+                let used = sys.used_swap();
+                if used > 0 { Some(used as f64 / 1_073_741_824.0) } else { None }
+            },
+            swap_total_gb: {
+                let total = sys.total_swap();
+                if total > 0 { Some(total as f64 / 1_073_741_824.0) } else { None }
+            },
+            disk_fill_rate_gb_per_sec: prev_disk_used_gb.and_then(|prev| {
+                // tick interval is ~2s; only report if growth > 50MB to avoid noise.
+                let delta = disk_used_gb - prev;
+                if delta > 0.05 { Some(delta / 2.0) } else { None }
+            }),
         };
+        prev_disk_used_gb = Some(disk_used_gb);
         let (headroom, headroom_reason) = impact::compute_headroom(&hw);
         hw.headroom = headroom;
         hw.headroom_reason = headroom_reason;
@@ -347,18 +511,24 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
                 (cpu_delta, ram_delta)
             };
 
+            // Dominant-resource weighting: the bottleneck resource drives the score.
+            // 70% weight on the anomaly-type primary resource, 30% on secondary.
+            // In the balanced case, the higher of cpu/ram gets 65%, lower gets 35%.
+            // This prevents a process using only one resource heavily from scoring
+            // lower than a process using both resources moderately.
+            let cpu_norm = (eff_cpu / 100.0).min(1.0);
+            let ram_norm = (eff_ram / ram_total_gb.max(1.0)).min(1.0);
             let blame_score = match anomaly_type {
                 AnomalyType::ThermalThrottle | AnomalyType::CpuSaturation => {
-                    0.6 * (eff_cpu / 100.0).min(1.0)
-                        + 0.4 * (eff_ram / ram_total_gb.max(1.0)).min(1.0)
+                    0.70 * cpu_norm + 0.30 * ram_norm
                 }
                 AnomalyType::MemoryPressure => {
-                    0.25 * (eff_cpu / 100.0).min(1.0)
-                        + 0.75 * (eff_ram / ram_total_gb.max(1.0)).min(1.0)
+                    0.30 * cpu_norm + 0.70 * ram_norm
                 }
                 _ => {
-                    0.5 * (eff_cpu / 100.0).min(1.0)
-                        + 0.5 * (eff_ram / ram_total_gb.max(1.0)).min(1.0)
+                    let dominant = cpu_norm.max(ram_norm);
+                    let recessive = cpu_norm.min(ram_norm);
+                    0.65 * dominant + 0.35 * recessive
                 }
             };
 
@@ -406,40 +576,360 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
         let io_wait_pct = impact::read_io_wait_pct();
         let score = impact::compute_score_with_io(ram_pct, cpu_pct, swap_gb, io_wait_pct);
 
-        if score > crate::thresholds::IMPACT_SCORE_ELEVATED {
-            above_threshold_count = above_threshold_count.saturating_add(1);
-        } else {
-            above_threshold_count = above_threshold_count.saturating_sub(1);
-        }
+        let cusum_triggered = cusum.update(score);
 
-        let impact_level = impact::score_to_level(score, above_threshold_count);
+        let top_process_cpu_pct = process_infos
+            .iter()
+            .map(|p| p.cpu_pct)
+            .fold(0.0_f64, f64::max);
+        let impact_level = impact::score_to_level_with_context(
+            score,
+            cusum_triggered,
+            cpu_pct,
+            ram_pct,
+            top_process_cpu_pct,
+        );
         let culprit = process_infos.first().cloned();
         let groups = grouping::build_groups(&process_infos);
 
-        // Check for agent accumulation — only override anomaly_type when the
-        // agent group is actually the top blame group (highest blame_score).
-        // Otherwise a 2-process claude sitting idle would mask a `yes` process
-        // burning 400% CPU.
-        let (anomaly_type, culprit_group) =
-            if let Some(agent_group) = impact::detect_agent_accumulation(&groups) {
-                let top_group = groups.first();
-                let agents_are_top = top_group
-                    .map(|g| g.name == agent_group.name)
-                    .unwrap_or(false);
-                // Also check raw CPU: if any non-agent group uses 3x+ more CPU
-                // than agents, they're the real hog (EWMA may have stabilized
-                // on the hog, flattening its blame_score).
-                let non_agent_cpu_hog = groups.iter().find(|g| {
-                    g.name != agent_group.name && g.total_cpu_pct > agent_group.total_cpu_pct * 3.0
+        // ── Claude sub-agent breakdown ────────────────────────────────────
+        // Scan sys.processes() directly so idle sub-agents below the
+        // blame_score filter threshold are still visible.
+        let claude_agents: Vec<ClaudeAgentInfo> = sys
+            .processes()
+            .iter()
+            .filter_map(|(pid, process)| {
+                let name =
+                    grouping::normalize_process_name(&process.name().to_string_lossy());
+                if !name.to_lowercase().contains("claude") {
+                    return None;
+                }
+                let pid_u32 = usize::from(*pid) as u32;
+                // Skip SDK memory-monitor subprocess (watches another claude's statm).
+                if grouping::is_memory_monitor_process(pid_u32) {
+                    return None;
+                }
+                let meta = grouping::read_claude_cmdline(pid_u32)
+                    .unwrap_or_default();
+                let current_ram_gb = process.memory() as f64 / 1_073_741_824.0;
+                let current_cpu_norm = process.cpu_usage() as f64 / cpu_count;
+                // RAM growth rate: signed slow-EWMA delta / slow time constant (~40s).
+                // Positive = context/heap growing; negative = shrinking after task.
+                let ram_growth_gb_per_sec = ewma.get(pid_u32).and_then(|b| {
+                    let (_, ram_delta) = b.signed_slow_delta(current_cpu_norm, current_ram_gb)?;
+                    if ram_delta.abs() > 0.005 {
+                        // Slow EWMA time constant: 1/alpha_slow = 1/0.05 = 20 ticks = 40s
+                        Some(ram_delta / 40.0)
+                    } else {
+                        None
+                    }
                 });
-                if agents_are_top && non_agent_cpu_hog.is_none() {
-                    (AnomalyType::AgentAccumulation, Some(agent_group.clone()))
-                } else if let Some(hog) = non_agent_cpu_hog {
-                    (anomaly_type, Some(hog.clone()))
-                } else if !agents_are_top {
-                    (anomaly_type, top_group.cloned())
+                // Spin-loop detection: high per-process CPU with low system IRQ rate
+                // signals a CPU-bound busy-wait rather than real I/O work.
+                // Catches V8 GC runaway (#22275) and post-MCP-response CPU spin (#36729).
+                // Threshold: >40% CPU on this process AND system IRQ < 5000/s AND
+                // system-wide CPU confirms this process is the dominant consumer.
+                let suspected_spin_loop = {
+                    let this_cpu = process.cpu_usage() as f64;
+                    let low_irq = hw.irq_per_sec.map_or(false, |irq| irq < 5_000);
+                    if this_cpu >= 40.0 && low_irq && hw.cpu_usage_pct >= 35.0 {
+                        Some(true)
+                    } else {
+                        None
+                    }
+                };
+                // GC pressure: Bun/Node accumulates session render state; high RAM
+                // means GC is thrashing. /clear resets the buffer (2GB → 160MB).
+                // Also flag long-running sessions (>4h) with growing RAM as pre-crisis.
+                let uptime_s = ewma.get(pid_u32).map(|b| b.samples as u64 * 2);
+                let long_running = uptime_s.map_or(false, |s| s > 4 * 3600);
+                let gc_pressure = if current_ram_gb >= 1.5 {
+                    Some("critical".to_string())
+                } else if current_ram_gb >= 0.8 {
+                    Some("warn".to_string())
+                } else if long_running && current_ram_gb >= 0.4 && ram_growth_gb_per_sec.map_or(false, |r| r > 0.0) {
+                    // Long session + RAM growing → pre-warn before hitting 800MB threshold
+                    Some("accumulating".to_string())
                 } else {
-                    (AnomalyType::AgentAccumulation, Some(agent_group.clone()))
+                    None
+                };
+                // Fast RAM spike detection: compare current RAM against fast EWMA baseline.
+                // A >300MB gap in a single tick indicates runaway allocation — SIGWINCH/resize
+                // OOM pattern (1GB→21GB in 6s observed). Uses fast EWMA (α=0.4, ~5s window)
+                // as baseline; needs at least WARMUP_FAST samples to avoid false positives.
+                let ram_spike = ewma.get(pid_u32).and_then(|b| {
+                    if b.samples >= crate::ewma::WARMUP_FAST + 1 {
+                        let fast_ram = b.fast_ram();
+                        if fast_ram > 0.05 && current_ram_gb - fast_ram > 0.3 {
+                            Some(true)
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                });
+                // D-state I/O blocking + VSZ/RSS ratio detection: both read /proc/<pid>/stat.
+                // D = uninterruptible sleep (blocking on disk/network/filesystem).
+                // On WSL2 this causes "thinking" delays of 1-6 minutes (#22855).
+                // Flag after 2 consecutive D-state ticks (~4s) to avoid transient noise.
+                //
+                // VSZ/RSS ratio > 50 indicates V8 heap fragmentation or mmap/munmap
+                // thrashing (60Hz allocation loop, #18280). VSZ field 23 (0-indexed from
+                // state: index 20), RSS field 24 (index 21) per /proc/[pid]/stat layout.
+                #[cfg(target_os = "linux")]
+                let (suspected_io_block, suspected_alloc_thrash) = {
+                    let stat_content = std::fs::read_to_string(format!("/proc/{}/stat", pid_u32)).ok();
+                    let is_d_state = stat_content
+                        .as_deref()
+                        .and_then(|s| s.rfind(')').map(|i| s[i + 2..].trim_start().starts_with('D')))
+                        .unwrap_or(false);
+                    let ticks = agent_d_state_ticks.entry(pid_u32).or_insert(0);
+                    if is_d_state { *ticks += 1; } else { *ticks = 0; }
+                    let io_block = if *ticks >= 2 { Some(true) } else { None };
+
+                    // VSZ/RSS ratio: fields at index 20 (vsize bytes) and 21 (rss pages)
+                    // after the closing ')' in /proc/<pid>/stat.
+                    let alloc_thrash = stat_content.as_deref().and_then(|s| {
+                        let after = &s[s.rfind(')')? + 2..];
+                        let fields: Vec<&str> = after.split_whitespace().collect();
+                        if fields.len() > 21 {
+                            let vsize_bytes: u64 = fields[20].parse().ok()?;
+                            let rss_pages: u64 = fields[21].parse().ok()?;
+                            if rss_pages > 0 {
+                                let vsz_pages = vsize_bytes / 4096;
+                                let ratio = vsz_pages / rss_pages;
+                                if ratio > 50 { Some(true) } else { None }
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    });
+                    (io_block, alloc_thrash)
+                };
+                #[cfg(not(target_os = "linux"))]
+                let suspected_io_block: Option<bool> = None;
+                #[cfg(not(target_os = "linux"))]
+                let suspected_alloc_thrash: Option<bool> = None;
+
+                // File descriptor leak detection: read FDSize from /proc/<pid>/status.
+                // Node.js fs.watch() watchers accumulate without cleanup → EMFILE crash.
+                // FDSize is the kernel-allocated fd table size (power-of-2 ceiling of max
+                // open fd index), so FDSize > 4096 reliably indicates a leak in progress.
+                // Observed: 757,812 open fds before EMFILE. See issue #11136.
+                #[cfg(target_os = "linux")]
+                let fd_leak: Option<bool> = std::fs::read_to_string(
+                    format!("/proc/{}/status", pid_u32)
+                )
+                .ok()
+                .and_then(|s| {
+                    s.lines()
+                        .find(|l| l.starts_with("FDSize:"))
+                        .and_then(|l| l.split_whitespace().nth(1))
+                        .and_then(|v| v.parse::<u64>().ok())
+                        .and_then(|fd_size| if fd_size > 4096 { Some(true) } else { None })
+                });
+                #[cfg(not(target_os = "linux"))]
+                let fd_leak: Option<bool> = None;
+
+                Some(ClaudeAgentInfo {
+                    pid: pid_u32,
+                    session_id: meta.session_id,
+                    is_orchestrator: meta.is_orchestrator,
+                    ram_gb: current_ram_gb,
+                    cpu_pct: process.cpu_usage() as f64,
+                    ram_growth_gb_per_sec,
+                    suspected_spin_loop,
+                    gc_pressure,
+                    uptime_s,
+                    ram_spike,
+                    suspected_io_block,
+                    suspected_alloc_thrash,
+                    fd_leak,
+                })
+            })
+            .collect();
+
+        // ── Stranded idle agent detection ────────────────────────────────
+        // Update per-PID idle tick counters for non-orchestrator claude processes.
+        // Only sub-agents (is_orchestrator=false) are tracked; the orchestrator
+        // legitimately idles while waiting for tool responses.
+        for agent in &claude_agents {
+            if !agent.is_orchestrator {
+                if agent.cpu_pct < crate::thresholds::AGENT_IDLE_CPU_THRESHOLD_PCT {
+                    *agent_idle_ticks.entry(agent.pid).or_insert(0) += 1;
+                } else {
+                    agent_idle_ticks.insert(agent.pid, 0);
+                }
+            }
+        }
+        // Evict PIDs that no longer exist
+        agent_idle_ticks.retain(|pid, _| active_pids.contains(pid));
+        agent_d_state_ticks.retain(|pid, _| active_pids.contains(pid));
+
+        let stranded_idle_pids: Vec<u32> = agent_idle_ticks
+            .iter()
+            .filter(|(_, &ticks)| ticks >= crate::thresholds::AGENT_IDLE_STRANDED_TICKS)
+            .map(|(pid, _)| *pid)
+            .collect();
+
+        // ── Orphan process detection ──────────────────────────────────────
+        // Build parent→children map for all live processes.
+        let mut children_of: HashMap<u32, Vec<u32>> = HashMap::new();
+        for (pid, process) in sys.processes() {
+            let pid_u32 = usize::from(*pid) as u32;
+            if let Some(parent) = process.parent() {
+                children_of
+                    .entry(usize::from(parent) as u32)
+                    .or_default()
+                    .push(pid_u32);
+            }
+        }
+        // BFS: collect all living descendants of each claude PID.
+        let claude_pids: std::collections::HashSet<u32> =
+            claude_agents.iter().map(|a| a.pid).collect();
+        let mut claude_descendants: std::collections::HashSet<u32> =
+            std::collections::HashSet::new();
+        let mut queue: Vec<u32> = claude_pids.iter().copied().collect();
+        while let Some(pid) = queue.pop() {
+            if let Some(kids) = children_of.get(&pid) {
+                for &child in kids {
+                    if claude_descendants.insert(child) {
+                        queue.push(child);
+                    }
+                }
+            }
+        }
+        // Orphans: previously tracked claude descendants that are still alive
+        // but now have PPID=1 (reparented to init after their parent exited).
+        let init_pid: u32 = 1;
+        let mut orphan_pids: Vec<u32> = prev_claude_descendants
+            .iter()
+            .filter(|&&pid| {
+                // Still alive this tick
+                sys.processes()
+                    .contains_key(&sysinfo::Pid::from(pid as usize))
+                    // Reparented to init (orphaned)
+                    && children_of
+                        .get(&init_pid)
+                        .map_or(false, |v| v.contains(&pid))
+            })
+            .copied()
+            .collect();
+        orphan_pids.sort_unstable();
+
+        // Cold-start MCP orphan detection: scan for bun/node processes that are
+        // children of init (PPID=1) and pegging CPU. These are likely MCP plugin
+        // subprocesses from a previous Claude session that exited ungracefully.
+        // Catches issue github.com/anthropics/claude-code/issues/39170.
+        // Excluded: processes already tracked as active claude descendants.
+        if let Some(init_children) = children_of.get(&init_pid) {
+            for &pid in init_children {
+                if claude_descendants.contains(&pid) || orphan_pids.contains(&pid) {
+                    continue;
+                }
+                if let Some(proc) = sys.processes().get(&sysinfo::Pid::from(pid as usize)) {
+                    let name = proc.name().to_string_lossy().to_lowercase();
+                    let is_mcp_candidate = name.starts_with("bun")
+                        || name.starts_with("node")
+                        || name.starts_with("deno")
+                        || name.starts_with("python");
+                    let high_cpu = proc.cpu_usage() as f64 > 50.0;
+                    if is_mcp_candidate && high_cpu {
+                        orphan_pids.push(pid);
+                    }
+                }
+            }
+            orphan_pids.sort_unstable();
+            orphan_pids.dedup();
+        }
+
+        prev_claude_descendants = claude_descendants;
+
+        // ── Zombie process detection ──────────────────────────────────────
+        // Detect Z-state processes that are descendants of any claude process.
+        // Zombies hold a PID slot and indicate the parent is not reaping them.
+        #[cfg(target_os = "linux")]
+        let zombie_pids: Vec<u32> = {
+            let all_claude_and_descendants: std::collections::HashSet<u32> = claude_pids
+                .iter()
+                .chain(prev_claude_descendants.iter())
+                .copied()
+                .collect();
+            let mut zs: Vec<u32> = Vec::new();
+            for pid in &all_claude_and_descendants {
+                // A process is a zombie if any of its children are in Z state.
+                // Check /proc/<child>/stat field 3 == 'Z'.
+                if let Some(kids) = children_of.get(pid) {
+                    for &child in kids {
+                        let stat_path = format!("/proc/{}/stat", child);
+                        if let Ok(stat) = std::fs::read_to_string(&stat_path) {
+                            // stat format: pid (name) state ...
+                            // State is the 3rd token after the closing paren of name
+                            if let Some(after_paren) = stat.rfind(')') {
+                                let rest = stat[after_paren + 2..].trim_start();
+                                if rest.starts_with('Z') {
+                                    zs.push(child);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            zs.sort_unstable();
+            zs
+        };
+        #[cfg(not(target_os = "linux"))]
+        let zombie_pids: Vec<u32> = Vec::new();
+
+        // ── Claude crash detection ────────────────────────────────────────────
+        // PIDs tracked last tick that no longer appear in the process list.
+        // These likely crashed (Bun segfault, OOM kill) rather than exiting cleanly.
+        // First tick prev_claude_agent_pids is empty, so no false positives.
+        let current_claude_pid_set: std::collections::HashSet<u32> =
+            claude_agents.iter().map(|a| a.pid).collect();
+        let mut crashed_agent_pids: Vec<u32> = prev_claude_agent_pids
+            .iter()
+            .filter(|&&pid| !current_claude_pid_set.contains(&pid)
+                // Exclude PIDs that are now orphans (already reported separately)
+                && !orphan_pids.contains(&pid))
+            .copied()
+            .collect();
+        crashed_agent_pids.sort_unstable();
+        prev_claude_agent_pids = current_claude_pid_set;
+
+        // Check for agent accumulation — AgentAccumulation now only fires when
+        // at least one non-orchestrator claude sub-agent is genuinely idle
+        // (stranded after its task completed). This prevents false positives
+        // when multiple agents are all actively working in parallel.
+        let (anomaly_type, culprit_group) =
+            if !stranded_idle_pids.is_empty() {
+                // Confirmed stranded agents: fire AgentAccumulation on the agent group
+                if let Some(agent_group) = impact::detect_agent_accumulation(&groups) {
+                    let non_agent_cpu_hog = groups.iter().find(|g| {
+                        g.name != agent_group.name
+                            && g.total_cpu_pct > agent_group.total_cpu_pct * 3.0
+                    });
+                    if let Some(hog) = non_agent_cpu_hog {
+                        (anomaly_type, Some(hog.clone()))
+                    } else {
+                        (AnomalyType::AgentAccumulation, Some(agent_group.clone()))
+                    }
+                } else {
+                    (anomaly_type, groups.first().cloned())
+                }
+            } else if let Some(agent_group) = impact::detect_agent_accumulation(&groups) {
+                // Agents exist but none are stranded — use regular blame, not AgentAccumulation
+                let non_agent_cpu_hog = groups.iter().find(|g| {
+                    g.name != agent_group.name
+                        && g.total_cpu_pct > agent_group.total_cpu_pct * 3.0
+                });
+                if let Some(hog) = non_agent_cpu_hog {
+                    (anomaly_type, Some(hog.clone()))
+                } else {
+                    (anomaly_type, groups.first().cloned())
                 }
             } else {
                 (anomaly_type, groups.first().cloned())
@@ -464,6 +954,11 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
             stale_axon_pids,
             urgency,
             culprit_category,
+            claude_agents,
+            stranded_idle_pids,
+            orphan_pids,
+            zombie_pids,
+            crashed_agent_pids,
         };
 
         // ── Enrich hw snapshot with post-process fields ──────────────────
@@ -494,6 +989,16 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
         };
 
         hw.impact_level = impact_level.clone();
+
+        // Populate AI agent aggregate counts from groups
+        let (agent_count, agent_ram) = groups
+            .iter()
+            .filter(|g| impact::is_known_agent(&g.name))
+            .fold((0u32, 0.0f64), |(cnt, ram), g| {
+                (cnt + g.process_count as u32, ram + g.total_ram_gb)
+            });
+        hw.ai_agent_count = agent_count;
+        hw.ai_agent_ram_gb = agent_ram;
 
         // Track impact duration
         if impact_level != current_impact_for_duration {
@@ -938,24 +1443,44 @@ fn build_battery_status(
 // ── One-Liner Builder ────────────────────────────────────────────────────────
 
 fn build_one_liner(hw: &HwSnapshot, blame: &ProcessBlame) -> String {
-    let mut parts: Vec<String> = Vec::with_capacity(4);
+    let mut parts: Vec<String> = Vec::with_capacity(5);
 
     // CPU with trend
     parts.push(format!("CPU {:.0}% {}", hw.cpu_usage_pct, hw.cpu_trend));
 
-    // RAM with trend
+    // RAM with trend and pressure tag if elevated
+    let ram_pressure_tag = match hw.ram_pressure {
+        RamPressure::Warn => " [warn]",
+        RamPressure::Critical => " [critical]",
+        RamPressure::Normal => "",
+    };
     parts.push(format!(
-        "RAM {:.1}/{:.0}GB {}",
-        hw.ram_used_gb, hw.ram_total_gb, hw.ram_trend
+        "RAM {:.1}/{:.0}GB {}{}",
+        hw.ram_used_gb, hw.ram_total_gb, hw.ram_trend, ram_pressure_tag
     ));
 
-    // Temp if available
+    // Disk pressure if elevated
+    match hw.disk_pressure {
+        DiskPressure::Warn => parts.push(format!(
+            "disk {:.0}/{:.0}GB [warn]",
+            hw.disk_used_gb, hw.disk_total_gb
+        )),
+        DiskPressure::Critical => parts.push(format!(
+            "disk {:.0}/{:.0}GB [critical]",
+            hw.disk_used_gb, hw.disk_total_gb
+        )),
+        DiskPressure::Normal => {}
+    }
+
+    // Temp / throttle
     if let Some(t) = hw.die_temp_celsius {
         if hw.throttling {
             parts.push(format!("{:.0}C [THROTTLING]", t));
         } else if t > 70.0 {
             parts.push(format!("{:.0}C {}", t, hw.temp_trend));
         }
+    } else if hw.throttling {
+        parts.push("[THROTTLING]".to_string());
     }
 
     // Top culprit if present
