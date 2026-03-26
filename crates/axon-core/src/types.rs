@@ -220,6 +220,11 @@ pub struct ProcessBlame {
     /// the processes that trigger AgentAccumulation anomaly type.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub stranded_idle_pids: Vec<u32>,
+    /// PIDs of processes that were descendants of a claude process but whose
+    /// parent has since exited, leaving them reparented to init (PPID=1).
+    /// These are orphaned tool invocations consuming CPU/RAM with no owner.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub orphan_pids: Vec<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

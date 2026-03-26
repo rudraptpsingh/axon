@@ -137,6 +137,7 @@ impl AppState {
                 culprit_category: CulpritCategory::Unknown,
                 claude_agents: Vec::new(),
                 stranded_idle_pids: Vec::new(),
+                orphan_pids: Vec::new(),
             },
             battery: None,
             profile,
@@ -218,6 +219,10 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
     // Per-PID consecutive idle tick counter for non-orchestrator claude processes.
     // Only processes where is_orchestrator=false are tracked here.
     let mut agent_idle_ticks: HashMap<u32, u32> = HashMap::new();
+
+    // Orphan detection: all PIDs that were descendants of any claude process
+    // last tick. Any survivor this tick with PPID=1 is an orphan.
+    let mut prev_claude_descendants: std::collections::HashSet<u32> = std::collections::HashSet::new();
 
     let self_pid = std::process::id();
 
@@ -478,6 +483,52 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
             .map(|(pid, _)| *pid)
             .collect();
 
+        // ── Orphan process detection ──────────────────────────────────────
+        // Build parent→children map for all live processes.
+        let mut children_of: HashMap<u32, Vec<u32>> = HashMap::new();
+        for (pid, process) in sys.processes() {
+            let pid_u32 = usize::from(*pid) as u32;
+            if let Some(parent) = process.parent() {
+                children_of
+                    .entry(usize::from(parent) as u32)
+                    .or_default()
+                    .push(pid_u32);
+            }
+        }
+        // BFS: collect all living descendants of each claude PID.
+        let claude_pids: std::collections::HashSet<u32> =
+            claude_agents.iter().map(|a| a.pid).collect();
+        let mut claude_descendants: std::collections::HashSet<u32> =
+            std::collections::HashSet::new();
+        let mut queue: Vec<u32> = claude_pids.iter().copied().collect();
+        while let Some(pid) = queue.pop() {
+            if let Some(kids) = children_of.get(&pid) {
+                for &child in kids {
+                    if claude_descendants.insert(child) {
+                        queue.push(child);
+                    }
+                }
+            }
+        }
+        // Orphans: previously tracked claude descendants that are still alive
+        // but now have PPID=1 (reparented to init after their parent exited).
+        let init_pid: u32 = 1;
+        let mut orphan_pids: Vec<u32> = prev_claude_descendants
+            .iter()
+            .filter(|&&pid| {
+                // Still alive this tick
+                sys.processes()
+                    .contains_key(&sysinfo::Pid::from(pid as usize))
+                    // Reparented to init (orphaned)
+                    && children_of
+                        .get(&init_pid)
+                        .map_or(false, |v| v.contains(&pid))
+            })
+            .copied()
+            .collect();
+        orphan_pids.sort_unstable();
+        prev_claude_descendants = claude_descendants;
+
         // Check for agent accumulation — AgentAccumulation now only fires when
         // at least one non-orchestrator claude sub-agent is genuinely idle
         // (stranded after its task completed). This prevents false positives
@@ -534,6 +585,7 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
             culprit_category,
             claude_agents,
             stranded_idle_pids,
+            orphan_pids,
         };
 
         // ── Enrich hw snapshot with post-process fields ──────────────────

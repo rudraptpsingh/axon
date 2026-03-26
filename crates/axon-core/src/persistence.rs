@@ -674,6 +674,7 @@ mod tests {
             culprit_category: CulpritCategory::Unknown,
             claude_agents: Vec::new(),
             stranded_idle_pids: Vec::new(),
+            orphan_pids: Vec::new(),
         }
     }
 
