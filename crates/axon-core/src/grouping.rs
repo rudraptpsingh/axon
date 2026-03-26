@@ -81,6 +81,27 @@ pub struct ClaudeCmdlineMeta {
     pub is_orchestrator: bool,
 }
 
+/// Extract a `cse_...` session ID embedded in a URL like
+/// `https://api.anthropic.com/v1/code/sessions/cse_xxx` or from a
+/// mcp-config filename like `/tmp/mcp-config-cse_xxx.json`.
+fn extract_session_from_url(s: &str) -> Option<String> {
+    // URL pattern: .../sessions/<id>
+    if let Some(after) = s.split("/sessions/").nth(1) {
+        let id = after.split(|c: char| !c.is_alphanumeric() && c != '_' && c != '-').next()?;
+        if !id.is_empty() {
+            return Some(id.to_string());
+        }
+    }
+    // mcp-config filename pattern: mcp-config-<id>.json
+    if let Some(after) = s.strip_prefix("mcp-config-") {
+        let id = after.trim_end_matches(".json");
+        if !id.is_empty() {
+            return Some(id.to_string());
+        }
+    }
+    None
+}
+
 /// Parse claude process metadata from raw cmdline bytes.
 /// On Linux /proc/<pid>/cmdline uses null bytes as argument delimiters.
 pub fn parse_claude_cmdline(cmdline_bytes: &[u8]) -> ClaudeCmdlineMeta {
@@ -96,8 +117,11 @@ pub fn parse_claude_cmdline(cmdline_bytes: &[u8]) -> ClaudeCmdlineMeta {
         let arg = args[i];
         if arg == "--init" || arg == "--replay-user-messages" {
             meta.is_orchestrator = true;
-        } else if arg.starts_with("--resume=") {
+        } else if let Some(url) = arg.strip_prefix("--resume=") {
             meta.is_orchestrator = true;
+            if meta.session_id.is_none() {
+                meta.session_id = extract_session_from_url(url);
+            }
         } else if arg == "--session" {
             if i + 1 < args.len() {
                 meta.session_id = Some(args[i + 1].to_string());
@@ -105,10 +129,57 @@ pub fn parse_claude_cmdline(cmdline_bytes: &[u8]) -> ClaudeCmdlineMeta {
             }
         } else if let Some(val) = arg.strip_prefix("--session=") {
             meta.session_id = Some(val.to_string());
+        } else if arg == "--sdk-url" {
+            if i + 1 < args.len() {
+                if meta.session_id.is_none() {
+                    meta.session_id = extract_session_from_url(args[i + 1]);
+                }
+                i += 1;
+            }
+        } else if arg == "--mcp-config" {
+            if i + 1 < args.len() {
+                let path = args[i + 1];
+                // Extract basename, then session id from "mcp-config-<id>.json"
+                let basename = path.rsplit('/').next().unwrap_or(path);
+                if meta.session_id.is_none() {
+                    meta.session_id = extract_session_from_url(basename);
+                }
+                i += 1;
+            }
         }
         i += 1;
     }
     meta
+}
+
+/// Returns true if the process at `pid` has any file descriptor pointing to
+/// `/proc/<other_pid>/statm` for a PID that is not `pid` itself.
+/// This identifies the SDK memory-monitor subprocess that watches another
+/// claude process's memory usage — it is NOT a user-facing sub-agent.
+pub fn is_memory_monitor_process(pid: u32) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        let fd_dir = format!("/proc/{}/fd", pid);
+        let entries = match std::fs::read_dir(&fd_dir) {
+            Ok(e) => e,
+            Err(_) => return false,
+        };
+        let statm_suffix_self = format!("/proc/{}/statm", pid);
+        for entry in entries.flatten() {
+            if let Ok(target) = std::fs::read_link(entry.path()) {
+                let t = target.to_string_lossy();
+                if t.starts_with("/proc/") && t.ends_with("/statm") && t != statm_suffix_self {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = pid;
+        false
+    }
 }
 
 /// Read and parse cmdline for a given PID.
@@ -528,5 +599,76 @@ mod tests {
         let raw = null_join(&["claude", "--replay-user-messages", "--session", "s1"]);
         let meta = parse_claude_cmdline(&raw);
         assert!(meta.is_orchestrator);
+    }
+
+    #[test]
+    fn test_parse_cmdline_session_from_sdk_url() {
+        let raw = null_join(&[
+            "claude",
+            "--init",
+            "--sdk-url",
+            "https://api.anthropic.com/v1/code/sessions/cse_011r3prb9N2MbmUbvbGg1qif",
+        ]);
+        let meta = parse_claude_cmdline(&raw);
+        assert!(meta.is_orchestrator);
+        assert_eq!(
+            meta.session_id.as_deref(),
+            Some("cse_011r3prb9N2MbmUbvbGg1qif")
+        );
+    }
+
+    #[test]
+    fn test_parse_cmdline_session_from_resume_url() {
+        let raw = null_join(&[
+            "claude",
+            "--replay-user-messages",
+            "--resume=https://api.anthropic.com/v1/code/sessions/cse_abc999def",
+        ]);
+        let meta = parse_claude_cmdline(&raw);
+        assert!(meta.is_orchestrator);
+        assert_eq!(meta.session_id.as_deref(), Some("cse_abc999def"));
+    }
+
+    #[test]
+    fn test_parse_cmdline_session_from_mcp_config() {
+        let raw = null_join(&[
+            "claude",
+            "--init",
+            "--mcp-config",
+            "/tmp/mcp-config-cse_mymcpsession.json",
+        ]);
+        let meta = parse_claude_cmdline(&raw);
+        assert!(meta.is_orchestrator);
+        assert_eq!(meta.session_id.as_deref(), Some("cse_mymcpsession"));
+    }
+
+    #[test]
+    fn test_parse_cmdline_explicit_session_takes_priority_over_url() {
+        // --session explicit value should win over URL-embedded one
+        let raw = null_join(&[
+            "claude",
+            "--init",
+            "--session",
+            "cse_explicit",
+            "--sdk-url",
+            "https://api.anthropic.com/v1/code/sessions/cse_url_embedded",
+        ]);
+        let meta = parse_claude_cmdline(&raw);
+        assert_eq!(meta.session_id.as_deref(), Some("cse_explicit"));
+    }
+
+    #[test]
+    fn test_extract_session_from_url_helper() {
+        assert_eq!(
+            extract_session_from_url(
+                "https://api.anthropic.com/v1/code/sessions/cse_test123"
+            ),
+            Some("cse_test123".to_string())
+        );
+        assert_eq!(
+            extract_session_from_url("mcp-config-cse_filetest.json"),
+            Some("cse_filetest".to_string())
+        );
+        assert_eq!(extract_session_from_url("--no-session-here"), None);
     }
 }

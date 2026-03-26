@@ -440,6 +440,10 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
                     return None;
                 }
                 let pid_u32 = usize::from(*pid) as u32;
+                // Skip SDK memory-monitor subprocess (watches another claude's statm).
+                if grouping::is_memory_monitor_process(pid_u32) {
+                    return None;
+                }
                 let meta = grouping::read_claude_cmdline(pid_u32)
                     .unwrap_or_default();
                 Some(ClaudeAgentInfo {
