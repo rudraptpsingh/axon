@@ -134,6 +134,11 @@ pub struct ClaudeAgentInfo {
     /// Use to anticipate context exhaustion before OOM: >0.01 GB/sec is notable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ram_growth_gb_per_sec: Option<f64>,
+    /// True when this claude PID has high CPU but system IRQ rate is low, indicating
+    /// a spin loop rather than real work (V8 GC runaway, infinite loop after MCP response).
+    /// See: github.com/anthropics/claude-code/issues/22275, #36729.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suspected_spin_loop: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

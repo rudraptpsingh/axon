@@ -598,6 +598,20 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
                         None
                     }
                 });
+                // Spin-loop detection: high per-process CPU with low system IRQ rate
+                // signals a CPU-bound busy-wait rather than real I/O work.
+                // Catches V8 GC runaway (#22275) and post-MCP-response CPU spin (#36729).
+                // Threshold: >40% CPU on this process AND system IRQ < 5000/s AND
+                // system-wide CPU confirms this process is the dominant consumer.
+                let suspected_spin_loop = {
+                    let this_cpu = process.cpu_usage() as f64;
+                    let low_irq = hw.irq_per_sec.map_or(false, |irq| irq < 5_000);
+                    if this_cpu >= 40.0 && low_irq && hw.cpu_usage_pct >= 35.0 {
+                        Some(true)
+                    } else {
+                        None
+                    }
+                };
                 Some(ClaudeAgentInfo {
                     pid: pid_u32,
                     session_id: meta.session_id,
@@ -605,6 +619,7 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
                     ram_gb: current_ram_gb,
                     cpu_pct: process.cpu_usage() as f64,
                     ram_growth_gb_per_sec,
+                    suspected_spin_loop,
                 })
             })
             .collect();
@@ -675,6 +690,33 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
             .copied()
             .collect();
         orphan_pids.sort_unstable();
+
+        // Cold-start MCP orphan detection: scan for bun/node processes that are
+        // children of init (PPID=1) and pegging CPU. These are likely MCP plugin
+        // subprocesses from a previous Claude session that exited ungracefully.
+        // Catches issue github.com/anthropics/claude-code/issues/39170.
+        // Excluded: processes already tracked as active claude descendants.
+        if let Some(init_children) = children_of.get(&init_pid) {
+            for &pid in init_children {
+                if claude_descendants.contains(&pid) || orphan_pids.contains(&pid) {
+                    continue;
+                }
+                if let Some(proc) = sys.processes().get(&sysinfo::Pid::from(pid as usize)) {
+                    let name = proc.name().to_string_lossy().to_lowercase();
+                    let is_mcp_candidate = name.starts_with("bun")
+                        || name.starts_with("node")
+                        || name.starts_with("deno")
+                        || name.starts_with("python");
+                    let high_cpu = proc.cpu_usage() as f64 > 50.0;
+                    if is_mcp_candidate && high_cpu {
+                        orphan_pids.push(pid);
+                    }
+                }
+            }
+            orphan_pids.sort_unstable();
+            orphan_pids.dedup();
+        }
+
         prev_claude_descendants = claude_descendants;
 
         // ── Zombie process detection ──────────────────────────────────────

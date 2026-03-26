@@ -390,6 +390,63 @@ fn blame_narrative(blame: &ProcessBlame) -> String {
         ));
     }
 
+    // Orphaned subprocesses (ex-claude descendants reparented to init, or high-CPU MCP plugins).
+    // Common cause: claude exited ungracefully, bun/node MCP servers left pegging CPU.
+    // See: github.com/anthropics/claude-code/issues/39170
+    if !blame.orphan_pids.is_empty() {
+        let pids = blame
+            .orphan_pids
+            .iter()
+            .map(|p| p.to_string())
+            .collect::<Vec<_>>()
+            .join(" ");
+        base.push_str(&format!(
+            " [WARN] {} orphaned subprocess(es) consuming CPU (PIDs: {}). \
+             Likely MCP plugins from a crashed session. Kill: kill -9 {}",
+            blame.orphan_pids.len(),
+            pids,
+            pids
+        ));
+    }
+
+    // Zombie subprocesses: un-reaped children of claude, holding PID slots.
+    if !blame.zombie_pids.is_empty() {
+        let pids = blame
+            .zombie_pids
+            .iter()
+            .map(|p| p.to_string())
+            .collect::<Vec<_>>()
+            .join(" ");
+        base.push_str(&format!(
+            " [WARN] {} zombie subprocess(es) not reaped by parent (PIDs: {}).",
+            blame.zombie_pids.len(),
+            pids
+        ));
+    }
+
+    // Spin-loop detection for individual claude agents
+    let spinning: Vec<String> = blame
+        .claude_agents
+        .iter()
+        .filter(|a| a.suspected_spin_loop == Some(true))
+        .map(|a| format!("PID {} ({:.0}% CPU)", a.pid, a.cpu_pct))
+        .collect();
+    if !spinning.is_empty() {
+        base.push_str(&format!(
+            " [WARN] Claude spin-loop suspected on {} — high CPU with near-zero IRQ. \
+             May be V8 GC runaway or stuck after MCP response. \
+             Consider: kill -9 {} and restart.",
+            spinning.join(", "),
+            blame
+                .claude_agents
+                .iter()
+                .filter(|a| a.suspected_spin_loop == Some(true))
+                .map(|a| a.pid.to_string())
+                .collect::<Vec<_>>()
+                .join(" ")
+        ));
+    }
+
     base
 }
 
