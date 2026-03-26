@@ -210,7 +210,7 @@ pub struct ClaudeAgentInfo {
     pub large_session_file_mb: Option<f64>,
     /// True when this bun/node process has uptime > 4h AND rss_growth_rate_mb_per_hr
     /// > 300. Predicts a mimalloc OOM crash within the next 1-2h — matches the
-    /// bun memory leak trajectory (#21875, #29192, #33118). Act before the crash.
+    /// >      bun memory leak trajectory (#21875, #29192, #33118). Act before the crash.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bun_crash_trajectory: Option<bool>,
     /// Instantaneous count of zombie children for this claude PID (complement to

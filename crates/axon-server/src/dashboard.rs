@@ -340,7 +340,7 @@ async fn run_claude_agent(
         .stderr(std::process::Stdio::piped())
         .spawn();
 
-    let mut child = match result {
+    let child = match result {
         Ok(c) => c,
         Err(e) => {
             tracing::error!("failed to spawn claude CLI: {}", e);
@@ -457,8 +457,14 @@ async fn parse_claude_output(
 
         // Extract token usage from the response
         if let Some(usage) = parsed.get("usage") {
-            let input = usage.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-            let output = usage.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+            let input = usage
+                .get("input_tokens")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let output = usage
+                .get("output_tokens")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
 
             let mut agents = spawned_agents.write().await;
             if let Some(a) = agents.iter_mut().find(|a| a.id == agent_id) {
@@ -473,7 +479,10 @@ async fn parse_claude_output(
                 let block_type = block.get("type").and_then(|t| t.as_str()).unwrap_or("");
 
                 if block_type == "tool_use" {
-                    let tool_name = block.get("name").and_then(|n| n.as_str()).unwrap_or("unknown");
+                    let tool_name = block
+                        .get("name")
+                        .and_then(|n| n.as_str())
+                        .unwrap_or("unknown");
                     let input_json = block
                         .get("input")
                         .map(|v| serde_json::to_string(v).unwrap_or_default())
@@ -495,7 +504,10 @@ async fn parse_claude_output(
                 }
 
                 if block_type == "tool_result" {
-                    let tool_id = block.get("tool_use_id").and_then(|t| t.as_str()).unwrap_or("");
+                    let tool_id = block
+                        .get("tool_use_id")
+                        .and_then(|t| t.as_str())
+                        .unwrap_or("");
                     let result_content = block
                         .get("content")
                         .map(|v| {
@@ -656,10 +668,7 @@ fn scan_registered_agents() -> Vec<AgentInfo> {
     ));
 
     let cursor_path = home.join(".cursor/mcp.json");
-    agents.push(check_agent_config(
-        "Cursor",
-        &cursor_path.to_string_lossy(),
-    ));
+    agents.push(check_agent_config("Cursor", &cursor_path.to_string_lossy()));
 
     let vscode_path = home.join(".vscode/mcp.json");
     agents.push(check_agent_config(
@@ -721,30 +730,56 @@ async fn api_bench_start(State(state): State<DashboardState>) -> Json<serde_json
     }
     let bench = state.bench.clone();
     let hw = state.hw_state.clone();
-    tokio::spawn(async move { run_benchmark(bench, hw).await; });
+    tokio::spawn(async move {
+        run_benchmark(bench, hw).await;
+    });
     Json(serde_json::json!({"started": true}))
 }
 
 async fn api_bench_status(State(state): State<DashboardState>) -> Json<BenchStatus> {
     let b = state.bench.read().await;
-    Json(BenchStatus { naive: b.1.clone(), axon_aware: b.2.clone(), phase: b.0.clone() })
+    Json(BenchStatus {
+        naive: b.1.clone(),
+        axon_aware: b.2.clone(),
+        phase: b.0.clone(),
+    })
 }
 
 async fn run_benchmark(bench: Arc<RwLock<(String, BenchRun, BenchRun)>>, hw: SharedState) {
     let count: u32 = 30;
     let bench_path = find_bench_sh();
-    tracing::info!("benchmark starting with bench.sh at: {} (count={})", bench_path, count);
+    tracing::info!(
+        "benchmark starting with bench.sh at: {} (count={})",
+        bench_path,
+        count
+    );
 
     // Setup
     {
         let mut b = bench.write().await;
         b.0 = "setup".into();
-        b.1 = BenchRun { label: "Naive Agent (no Axon)".into(), batch_size: count, total: count, status: "pending".into(), ..Default::default() };
-        b.2 = BenchRun { label: "Axon-Aware Agent".into(), total: count, status: "pending".into(), ..Default::default() };
+        b.1 = BenchRun {
+            label: "Naive Agent (no Axon)".into(),
+            batch_size: count,
+            total: count,
+            status: "pending".into(),
+            ..Default::default()
+        };
+        b.2 = BenchRun {
+            label: "Axon-Aware Agent".into(),
+            total: count,
+            status: "pending".into(),
+            ..Default::default()
+        };
     }
     tracing::info!("bench setup: bash {} setup 50 {}", bench_path, count);
-    let setup = tokio::process::Command::new("bash").args([&bench_path, "setup", "50", &count.to_string()]).output().await;
-    if let Ok(ref o) = setup { tracing::info!("setup done: {}", String::from_utf8_lossy(&o.stdout).trim()); }
+    let setup = tokio::process::Command::new("bash")
+        .args([&bench_path, "setup", "50", &count.to_string()])
+        .output()
+        .await;
+    if let Ok(ref o) = setup {
+        tracing::info!("setup done: {}", String::from_utf8_lossy(&o.stdout).trim());
+    }
 
     // Naive run: all images at once
     {
@@ -760,8 +795,14 @@ async fn run_benchmark(bench: Arc<RwLock<(String, BenchRun, BenchRun)>>, hw: Sha
     tracing::info!("naive run: batch={} count={}", count, count);
     let t0 = std::time::Instant::now();
     let out = tokio::process::Command::new("bash")
-        .args([&bench_path, "process", &count.to_string(), &count.to_string()])
-        .output().await;
+        .args([
+            &bench_path,
+            "process",
+            &count.to_string(),
+            &count.to_string(),
+        ])
+        .output()
+        .await;
     {
         let mut b = bench.write().await;
         b.1.elapsed_s = t0.elapsed().as_secs_f64();
@@ -774,7 +815,9 @@ async fn run_benchmark(bench: Arc<RwLock<(String, BenchRun, BenchRun)>>, hw: Sha
                 if let Ok(v) = serde_json::from_str::<serde_json::Value>(last_line) {
                     b.1.processed = v["processed"].as_u64().unwrap_or(0) as u32;
                     b.1.failed = v["failed"].as_u64().unwrap_or(0) as u32;
-                    if let Some(e) = v["elapsed_s"].as_f64() { b.1.elapsed_s = e; }
+                    if let Some(e) = v["elapsed_s"].as_f64() {
+                        b.1.elapsed_s = e;
+                    }
                 }
             }
         }
@@ -790,10 +833,21 @@ async fn run_benchmark(bench: Arc<RwLock<(String, BenchRun, BenchRun)>>, hw: Sha
         let g = hw.lock().unwrap();
         let pct = (g.hw.ram_used_gb / g.hw.ram_total_gb) * 100.0;
         let h = format!("{:?}", g.hw.headroom).to_lowercase();
-        let batch = if pct > 75.0 { 3 } else if pct > 60.0 { 5 } else { 8 };
+        let batch = if pct > 75.0 {
+            3
+        } else if pct > 60.0 {
+            5
+        } else {
+            8
+        };
         (batch, pct, h)
     };
-    tracing::info!("axon decision: RAM {:.0}% headroom={} → batch_size={}", ram_pct, headroom, batch_size);
+    tracing::info!(
+        "axon decision: RAM {:.0}% headroom={} → batch_size={}",
+        ram_pct,
+        headroom,
+        batch_size
+    );
     {
         let mut b = bench.write().await;
         b.0 = "axon_running".into();
@@ -804,8 +858,14 @@ async fn run_benchmark(bench: Arc<RwLock<(String, BenchRun, BenchRun)>>, hw: Sha
     tracing::info!("axon run: batch={} count={}", batch_size, count);
     let t1 = std::time::Instant::now();
     let out2 = tokio::process::Command::new("bash")
-        .args([&bench_path, "process", &batch_size.to_string(), &count.to_string()])
-        .output().await;
+        .args([
+            &bench_path,
+            "process",
+            &batch_size.to_string(),
+            &count.to_string(),
+        ])
+        .output()
+        .await;
     {
         let mut b = bench.write().await;
         b.2.elapsed_s = t1.elapsed().as_secs_f64();
@@ -817,7 +877,9 @@ async fn run_benchmark(bench: Arc<RwLock<(String, BenchRun, BenchRun)>>, hw: Sha
                 if let Ok(v) = serde_json::from_str::<serde_json::Value>(last_line) {
                     b.2.processed = v["processed"].as_u64().unwrap_or(0) as u32;
                     b.2.failed = v["failed"].as_u64().unwrap_or(0) as u32;
-                    if let Some(e) = v["elapsed_s"].as_f64() { b.2.elapsed_s = e; }
+                    if let Some(e) = v["elapsed_s"].as_f64() {
+                        b.2.elapsed_s = e;
+                    }
                 }
             }
         }
@@ -833,9 +895,18 @@ async fn collect_snapshots(bench: Arc<RwLock<(String, BenchRun, BenchRun)>>, hw:
         let t = start.elapsed().as_secs_f64();
         let (cpu, ram, pressure) = {
             let g = hw.lock().unwrap();
-            (g.hw.cpu_usage_pct, g.hw.ram_used_gb, format!("{:?}", g.hw.ram_pressure).to_lowercase())
+            (
+                g.hw.cpu_usage_pct,
+                g.hw.ram_used_gb,
+                format!("{:?}", g.hw.ram_pressure).to_lowercase(),
+            )
         };
-        let snap = BenchSnap { t, cpu, ram_gb: ram, pressure };
+        let snap = BenchSnap {
+            t,
+            cpu,
+            ram_gb: ram,
+            pressure,
+        };
         let mut b = bench.write().await;
         match b.0.as_str() {
             "naive_running" => b.1.snapshots.push(snap),
@@ -868,17 +939,17 @@ fn find_bench_sh() -> String {
 
 // ── Public Entry Point ───────────────────────────────────────────────────────
 
-pub async fn run_dashboard(
-    state: SharedState,
-    db: DbHandle,
-    port: u16,
-) -> anyhow::Result<()> {
+pub async fn run_dashboard(state: SharedState, db: DbHandle, port: u16) -> anyhow::Result<()> {
     let dashboard_state = DashboardState {
         hw_state: state,
         db,
         interactions: Arc::new(RwLock::new(Vec::new())),
         spawned_agents: Arc::new(RwLock::new(Vec::new())),
-        bench: Arc::new(RwLock::new(("idle".into(), BenchRun::default(), BenchRun::default()))),
+        bench: Arc::new(RwLock::new((
+            "idle".into(),
+            BenchRun::default(),
+            BenchRun::default(),
+        ))),
     };
 
     let app = Router::new()

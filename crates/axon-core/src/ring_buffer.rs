@@ -77,10 +77,7 @@ impl SnapshotRing {
         }
         let latest_ts = buf.back().unwrap().hw.ts;
         let cutoff = latest_ts - chrono::Duration::seconds(seconds as i64);
-        buf.iter()
-            .filter(|e| e.hw.ts >= cutoff)
-            .cloned()
-            .collect()
+        buf.iter().filter(|e| e.hw.ts >= cutoff).cloned().collect()
     }
 
     /// Compute summary statistics over the last N seconds.
@@ -132,7 +129,10 @@ impl SnapshotRing {
     /// Compute session health from the ring buffer (no DB for snapshot data).
     /// Uses whatever entries fall within the window. Returns None only if the
     /// ring has zero entries in the window (caller should fall back to DB).
-    pub fn session_health(&self, since: chrono::DateTime<chrono::Utc>) -> Option<crate::types::SessionHealth> {
+    pub fn session_health(
+        &self,
+        since: chrono::DateTime<chrono::Utc>,
+    ) -> Option<crate::types::SessionHealth> {
         let buf = self.inner.read().unwrap();
         if buf.is_empty() {
             return None;
@@ -156,14 +156,20 @@ impl SnapshotRing {
 
         for e in &entries {
             cpu_sum += e.hw.cpu_usage_pct;
-            if e.hw.cpu_usage_pct > cpu_max { cpu_max = e.hw.cpu_usage_pct; }
+            if e.hw.cpu_usage_pct > cpu_max {
+                cpu_max = e.hw.cpu_usage_pct;
+            }
             ram_sum += e.hw.ram_used_gb;
-            if e.hw.ram_used_gb > ram_max { ram_max = e.hw.ram_used_gb; }
+            if e.hw.ram_used_gb > ram_max {
+                ram_max = e.hw.ram_used_gb;
+            }
             if let Some(t) = e.hw.die_temp_celsius {
                 temp_max = Some(temp_max.map_or(t, |m: f64| m.max(t)));
             }
             score_sum += e.anomaly_score;
-            if e.hw.throttling { throttle_count += 1; }
+            if e.hw.throttling {
+                throttle_count += 1;
+            }
             if impact_rank(&e.impact_level) > impact_rank(&worst_impact) {
                 worst_impact = e.impact_level.clone();
             }
@@ -230,7 +236,7 @@ impl SnapshotRing {
                     buckets.push(compute_bucket(bucket_start, &bucket_entries));
                 }
                 bucket_entries.clear();
-                bucket_start = bucket_start + chrono::Duration::seconds(bucket_secs);
+                bucket_start += chrono::Duration::seconds(bucket_secs);
             }
             bucket_entries.push(e);
         }
@@ -247,8 +253,8 @@ impl SnapshotRing {
             let mid = buckets.len() / 2;
             let first_avg: f64 =
                 buckets[..mid].iter().map(|b| b.avg_cpu_pct).sum::<f64>() / mid as f64;
-            let second_avg: f64 =
-                buckets[mid..].iter().map(|b| b.avg_cpu_pct).sum::<f64>() / (buckets.len() - mid) as f64;
+            let second_avg: f64 = buckets[mid..].iter().map(|b| b.avg_cpu_pct).sum::<f64>()
+                / (buckets.len() - mid) as f64;
             let delta = second_avg - first_avg;
             if delta > 5.0 {
                 "rising".to_string()
@@ -474,9 +480,21 @@ mod tests {
     fn test_recent_time_window() {
         let ring = SnapshotRing::new();
         let now = Utc::now();
-        ring.push(make_entry_at(10.0, 1.0, now - chrono::Duration::seconds(60)));
-        ring.push(make_entry_at(20.0, 2.0, now - chrono::Duration::seconds(30)));
-        ring.push(make_entry_at(30.0, 3.0, now - chrono::Duration::seconds(10)));
+        ring.push(make_entry_at(
+            10.0,
+            1.0,
+            now - chrono::Duration::seconds(60),
+        ));
+        ring.push(make_entry_at(
+            20.0,
+            2.0,
+            now - chrono::Duration::seconds(30),
+        ));
+        ring.push(make_entry_at(
+            30.0,
+            3.0,
+            now - chrono::Duration::seconds(10),
+        ));
         ring.push(make_entry_at(40.0, 4.0, now - chrono::Duration::seconds(2)));
 
         let recent = ring.recent(15); // last 15 seconds

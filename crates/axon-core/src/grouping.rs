@@ -8,10 +8,7 @@ pub fn normalize_process_name(cmd: &str) -> String {
     let name = cmd.trim_end_matches('\0').trim();
 
     // Strip path prefix (e.g., "/usr/bin/node" -> "node", "C:\Program Files\app.exe" -> "app.exe")
-    let base = name
-        .rsplit(|c| c == '/' || c == '\\')
-        .next()
-        .unwrap_or(name);
+    let base = name.rsplit(['/', '\\']).next().unwrap_or(name);
 
     // Strip .exe suffix (Windows)
     let base = base.strip_suffix(".exe").unwrap_or(base);
@@ -87,7 +84,9 @@ pub struct ClaudeCmdlineMeta {
 fn extract_session_from_url(s: &str) -> Option<String> {
     // URL pattern: .../sessions/<id>
     if let Some(after) = s.split("/sessions/").nth(1) {
-        let id = after.split(|c: char| !c.is_alphanumeric() && c != '_' && c != '-').next()?;
+        let id = after
+            .split(|c: char| !c.is_alphanumeric() && c != '_' && c != '-')
+            .next()?;
         if !id.is_empty() {
             return Some(id.to_string());
         }
@@ -136,16 +135,14 @@ pub fn parse_claude_cmdline(cmdline_bytes: &[u8]) -> ClaudeCmdlineMeta {
                 }
                 i += 1;
             }
-        } else if arg == "--mcp-config" {
-            if i + 1 < args.len() {
-                let path = args[i + 1];
-                // Extract basename, then session id from "mcp-config-<id>.json"
-                let basename = path.rsplit('/').next().unwrap_or(path);
-                if meta.session_id.is_none() {
-                    meta.session_id = extract_session_from_url(basename);
-                }
-                i += 1;
+        } else if arg == "--mcp-config" && i + 1 < args.len() {
+            let path = args[i + 1];
+            // Extract basename, then session id from "mcp-config-<id>.json"
+            let basename = path.rsplit('/').next().unwrap_or(path);
+            if meta.session_id.is_none() {
+                meta.session_id = extract_session_from_url(basename);
             }
+            i += 1;
         }
         i += 1;
     }
@@ -248,10 +245,7 @@ mod tests {
             normalize_process_name("C:\\Windows\\System32\\cmd.exe"),
             "cmd"
         );
-        assert_eq!(
-            normalize_process_name("D:\\tools\\cargo.exe"),
-            "cargo"
-        );
+        assert_eq!(normalize_process_name("D:\\tools\\cargo.exe"), "cargo");
     }
 
     #[test]
@@ -660,9 +654,7 @@ mod tests {
     #[test]
     fn test_extract_session_from_url_helper() {
         assert_eq!(
-            extract_session_from_url(
-                "https://api.anthropic.com/v1/code/sessions/cse_test123"
-            ),
+            extract_session_from_url("https://api.anthropic.com/v1/code/sessions/cse_test123"),
             Some("cse_test123".to_string())
         );
         assert_eq!(

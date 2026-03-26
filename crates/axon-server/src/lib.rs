@@ -397,10 +397,7 @@ fn hw_narrative(hw: &HwSnapshot) -> String {
              Check: du -sh ~/.claude/debug/ ~/.claude/node_modules/ ~/.claude/projects/",
             gb
         ),
-        Some(gb) if gb >= 2.0 => format!(
-            " [INFO] ~/.claude/ is {:.1}GB.",
-            gb
-        ),
+        Some(gb) if gb >= 2.0 => format!(" [INFO] ~/.claude/ is {:.1}GB.", gb),
         _ => String::new(),
     };
     // MCP server count: too many simultaneous MCP servers drain commit charge.
@@ -495,7 +492,12 @@ fn blame_narrative(blame: &ProcessBlame) -> String {
     // Crashed claude processes: PIDs tracked last tick that have disappeared.
     // Likely causes: Bun segfault (#21875), OOM kill (#39022), SIGKILL.
     if !blame.crashed_agent_pids.is_empty() {
-        let pids = blame.crashed_agent_pids.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(" ");
+        let pids = blame
+            .crashed_agent_pids
+            .iter()
+            .map(|p| p.to_string())
+            .collect::<Vec<_>>()
+            .join(" ");
         base.push_str(&format!(
             " [WARN] Claude PID(s) {} disappeared unexpectedly — likely crashed \
              (Bun segfault, OOM kill, or SIGKILL). Check system logs: journalctl -k | grep -E 'Killed|OOM'",
@@ -522,9 +524,15 @@ fn blame_narrative(blame: &ProcessBlame) -> String {
     // and CPU on resource-constrained machines, causing system lockups before OOM triggers.
     // Observed: 24 agents in 2 min → 17x disk I/O spike → system freeze (#15487).
     {
-        let non_orch_count = blame.claude_agents.iter().filter(|a| !a.is_orchestrator).count();
+        let non_orch_count = blame
+            .claude_agents
+            .iter()
+            .filter(|a| !a.is_orchestrator)
+            .count();
         if non_orch_count >= 8 {
-            let pids: Vec<String> = blame.claude_agents.iter()
+            let pids: Vec<String> = blame
+                .claude_agents
+                .iter()
                 .filter(|a| !a.is_orchestrator)
                 .map(|a| a.pid.to_string())
                 .collect();
@@ -605,9 +613,13 @@ fn blame_narrative(blame: &ProcessBlame) -> String {
              On WSL2 this causes 1-6min thinking delays. \
              Check: cat /proc/{}/wchan to see what it's waiting on.",
             io_blocked.join(", "),
-            blame.claude_agents.iter()
+            blame
+                .claude_agents
+                .iter()
                 .filter(|a| a.suspected_io_block == Some(true))
-                .map(|a| a.pid.to_string()).next().unwrap_or_default()
+                .map(|a| a.pid.to_string())
+                .next()
+                .unwrap_or_default()
         ));
     }
 
@@ -663,8 +675,8 @@ fn blame_narrative(blame: &ProcessBlame) -> String {
     // a single helper at 65% CPU. Detect Browser culprit + high CPU + helper in name.
     // See: github.com/anthropics/claude-code/issues/37544
     if matches!(blame.culprit_category, CulpritCategory::Browser) {
-        let high_cpu_browser = blame.culprit.as_ref().map_or(false, |p| p.cpu_pct > 50.0);
-        let is_helper = blame.culprit.as_ref().map_or(false, |p| {
+        let high_cpu_browser = blame.culprit.as_ref().is_some_and(|p| p.cpu_pct > 50.0);
+        let is_helper = blame.culprit.as_ref().is_some_and(|p| {
             let cmd = p.cmd.to_lowercase();
             cmd.contains("helper") || cmd.contains("renderer") || cmd.contains("worker")
         });
@@ -678,10 +690,16 @@ fn blame_narrative(blame: &ProcessBlame) -> String {
     }
 
     for agent in &blame.claude_agents {
-        let uptime_str = agent.uptime_s.map(|s| {
-            if s >= 3600 { format!(" ({}h session)", s / 3600) }
-            else { format!(" ({}m session)", s / 60) }
-        }).unwrap_or_default();
+        let uptime_str = agent
+            .uptime_s
+            .map(|s| {
+                if s >= 3600 {
+                    format!(" ({}h session)", s / 3600)
+                } else {
+                    format!(" ({}m session)", s / 60)
+                }
+            })
+            .unwrap_or_default();
         match agent.gc_pressure.as_deref() {
             Some("critical") => base.push_str(&format!(
                 " [CRITICAL] PID {} RAM {:.1}GB{} — Bun GC thrashing imminent. \
@@ -705,7 +723,7 @@ fn blame_narrative(blame: &ProcessBlame) -> String {
         // context-compaction operation (no timeout, can spin at >100% CPU for hours).
         // See: github.com/anthropics/claude-code/issues/11377.
         if agent.gc_pressure.as_deref() == Some("critical")
-            && agent.uptime_s.map_or(false, |s| s > 8 * 3600)
+            && agent.uptime_s.is_some_and(|s| s > 8 * 3600)
         {
             base.push_str(&format!(
                 " [WARN] PID {} has been running {}h with critical RAM — possible compacting \
