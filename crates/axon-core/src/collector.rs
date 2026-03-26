@@ -402,25 +402,13 @@ fn read_dot_claude_size_gb() -> Option<f64> {
 /// Compute total size (GB) of /tmp/claude-{uid}/ by walking the directory.
 /// On macOS: /private/tmp/claude-{uid}/  On Linux: /tmp/claude-{uid}/
 /// Only called every ~60s to amortize filesystem overhead.
+#[cfg(unix)]
 fn read_tmp_claude_size_gb() -> Option<f64> {
-    let uid = {
-        #[cfg(unix)]
-        {
-            unsafe { libc::getuid() }
-        }
-        #[cfg(not(unix))]
-        {
-            return None;
-        }
-    };
+    let uid = unsafe { libc::getuid() };
     #[cfg(target_os = "macos")]
     let base = std::path::PathBuf::from(format!("/private/tmp/claude-{}", uid));
-    #[cfg(target_os = "linux")]
+    #[cfg(not(target_os = "macos"))]
     let base = std::path::PathBuf::from(format!("/tmp/claude-{}", uid));
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-    let base: std::path::PathBuf = {
-        return None;
-    };
 
     if !base.exists() {
         return None;
@@ -451,6 +439,11 @@ fn read_tmp_claude_size_gb() -> Option<f64> {
     } else {
         None
     }
+}
+
+#[cfg(not(unix))]
+fn read_tmp_claude_size_gb() -> Option<f64> {
+    None
 }
 
 /// Return the open file-descriptor count for a process on macOS using proc_pidinfo.

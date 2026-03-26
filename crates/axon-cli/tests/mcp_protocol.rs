@@ -73,6 +73,7 @@ fn test_initialize_response() {
 
 #[test]
 #[ignore] // takes ~5s
+#[cfg(not(target_os = "windows"))]
 fn test_tools_list() {
     let list_msg = r#"{"method":"tools/list","jsonrpc":"2.0","id":1}"#;
     let responses = send_and_collect(&[INIT_MSG, INITIALIZED_MSG, list_msg], 2);
@@ -167,6 +168,7 @@ fn test_process_blame_call() {
 
 #[test]
 #[ignore] // takes ~6s
+#[cfg(not(target_os = "windows"))]
 fn test_system_profile_call() {
     let call_msg = r#"{"method":"tools/call","params":{"name":"system_profile","arguments":{}},"jsonrpc":"2.0","id":4}"#;
     let responses = send_and_collect(&[INIT_MSG, INITIALIZED_MSG, call_msg], 5);
