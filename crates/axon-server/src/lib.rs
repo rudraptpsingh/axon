@@ -332,7 +332,7 @@ fn hw_narrative(hw: &HwSnapshot) -> String {
         (Some(used), Some(total)) if total > 0.1 => {
             let pct = used / total * 100.0;
             if pct > 50.0 {
-                format!(" Swap {:.1}/{:.0}GB ({:.0}%, HIGH — system paging heavily).", used, total, pct)
+                format!(" Swap {:.1}/{:.0}GB ({:.0}%, HIGH — system paging heavily; systemd-oomd may kill processes if sustained >20s).", used, total, pct)
             } else if pct > 10.0 {
                 format!(" Swap {:.1}/{:.0}GB ({:.0}%).", used, total, pct)
             } else {
