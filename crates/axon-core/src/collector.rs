@@ -194,6 +194,8 @@ impl AppState {
                 ai_agent_count: 0,
                 ai_agent_ram_gb: 0.0,
                 irq_per_sec: None,
+                swap_used_gb: None,
+                swap_total_gb: None,
             },
             blame: ProcessBlame {
                 anomaly_type: AnomalyType::None,
@@ -337,6 +339,8 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
     // Per-PID consecutive idle tick counter for non-orchestrator claude processes.
     // Only processes where is_orchestrator=false are tracked here.
     let mut agent_idle_ticks: HashMap<u32, u32> = HashMap::new();
+    // D-state I/O blocking: consecutive ticks where /proc/<pid>/stat shows 'D' state.
+    let mut agent_d_state_ticks: HashMap<u32, u32> = HashMap::new();
 
     // Orphan detection: all PIDs that were descendants of any claude process
     // last tick. Any survivor this tick with PPID=1 is an orphan.
@@ -446,6 +450,14 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
             ai_agent_count: 0,    // filled after process collection
             ai_agent_ram_gb: 0.0, // filled after process collection
             irq_per_sec,
+            swap_used_gb: {
+                let used = sys.used_swap();
+                if used > 0 { Some(used as f64 / 1_073_741_824.0) } else { None }
+            },
+            swap_total_gb: {
+                let total = sys.total_swap();
+                if total > 0 { Some(total as f64 / 1_073_741_824.0) } else { None }
+            },
         };
         let (headroom, headroom_reason) = impact::compute_headroom(&hw);
         hw.headroom = headroom;
@@ -646,6 +658,29 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
                         None
                     }
                 });
+                // D-state I/O blocking detection: check /proc/<pid>/stat process state.
+                // D = uninterruptible sleep (blocking on disk/network/filesystem).
+                // On WSL2 this causes "thinking" delays of 1-6 minutes (#22855).
+                // Flag after 2 consecutive D-state ticks (~4s) to avoid transient noise.
+                #[cfg(target_os = "linux")]
+                let suspected_io_block = {
+                    let is_d_state = std::fs::read_to_string(format!("/proc/{}/stat", pid_u32))
+                        .ok()
+                        .and_then(|s| {
+                            // Format: "pid (name) state ..."
+                            s.rfind(')').map(|i| s[i + 2..].trim_start().starts_with('D'))
+                        })
+                        .unwrap_or(false);
+                    let ticks = agent_d_state_ticks.entry(pid_u32).or_insert(0);
+                    if is_d_state {
+                        *ticks += 1;
+                    } else {
+                        *ticks = 0;
+                    }
+                    if *ticks >= 2 { Some(true) } else { None }
+                };
+                #[cfg(not(target_os = "linux"))]
+                let suspected_io_block: Option<bool> = None;
                 Some(ClaudeAgentInfo {
                     pid: pid_u32,
                     session_id: meta.session_id,
@@ -657,6 +692,7 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
                     gc_pressure,
                     uptime_s,
                     ram_spike,
+                    suspected_io_block,
                 })
             })
             .collect();
@@ -676,6 +712,7 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
         }
         // Evict PIDs that no longer exist
         agent_idle_ticks.retain(|pid, _| active_pids.contains(pid));
+        agent_d_state_ticks.retain(|pid, _| active_pids.contains(pid));
 
         let stranded_idle_pids: Vec<u32> = agent_idle_ticks
             .iter()

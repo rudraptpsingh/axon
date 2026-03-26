@@ -327,6 +327,20 @@ fn hw_narrative(hw: &HwSnapshot) -> String {
             )
         }
     };
+    // Swap pressure: high swap = RAM exhaustion, forces paging (Cowork VM bundle #22543).
+    let swap_str = match (hw.swap_used_gb, hw.swap_total_gb) {
+        (Some(used), Some(total)) if total > 0.1 => {
+            let pct = used / total * 100.0;
+            if pct > 50.0 {
+                format!(" Swap {:.1}/{:.0}GB ({:.0}%, HIGH — system paging heavily).", used, total, pct)
+            } else if pct > 10.0 {
+                format!(" Swap {:.1}/{:.0}GB ({:.0}%).", used, total, pct)
+            } else {
+                String::new()
+            }
+        }
+        _ => String::new(),
+    };
     // IRQ rate hint: high IRQ with moderate CPU → real I/O; near-zero IRQ with high CPU → spin-loop.
     let irq_str = match hw.irq_per_sec {
         Some(irq) if irq > 50_000 => format!(" IRQ {}/s (I/O-heavy).", irq),
@@ -336,7 +350,7 @@ fn hw_narrative(hw: &HwSnapshot) -> String {
         _ => String::new(),
     };
     format!(
-        "CPU {:.0}% {}, die {}{} RAM {:.1}/{:.0}GB {} ({} pressure).{}{} {} | {}",
+        "CPU {:.0}% {}, die {}{} RAM {:.1}/{:.0}GB {} ({} pressure).{}{}{} {} | {}",
         hw.cpu_usage_pct,
         hw.cpu_trend,
         temp_str,
@@ -346,6 +360,7 @@ fn hw_narrative(hw: &HwSnapshot) -> String {
         hw.ram_trend,
         pressure,
         disk_str,
+        swap_str,
         irq_str,
         headroom_str,
         hw.one_liner,
@@ -485,6 +500,26 @@ fn blame_narrative(blame: &ProcessBlame) -> String {
              possible Ink render loop stall (#38932). \
              Send a keystroke to the terminal to wake the inbox poller.",
             orch_pid, idle_min
+        ));
+    }
+
+    // I/O block detection: D-state (uninterruptible wait) for 2+ ticks — WSL2 filesystem
+    // bridging, NFS hang, or overlapping heavy I/O causing 1-6min thinking delays (#22855).
+    let io_blocked: Vec<String> = blame
+        .claude_agents
+        .iter()
+        .filter(|a| a.suspected_io_block == Some(true))
+        .map(|a| format!("PID {} ({:.0}%CPU)", a.pid, a.cpu_pct))
+        .collect();
+    if !io_blocked.is_empty() {
+        base.push_str(&format!(
+            " [WARN] Claude {} in D-state (I/O blocking) — filesystem or network stall. \
+             On WSL2 this causes 1-6min thinking delays. \
+             Check: cat /proc/{}/wchan to see what it's waiting on.",
+            io_blocked.join(", "),
+            blame.claude_agents.iter()
+                .filter(|a| a.suspected_io_block == Some(true))
+                .map(|a| a.pid.to_string()).next().unwrap_or_default()
         ));
     }
 

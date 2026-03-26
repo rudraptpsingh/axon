@@ -656,6 +656,8 @@ mod tests {
             one_liner: String::new(),
             ai_agent_count: 0,
             ai_agent_ram_gb: 0.0,
+                swap_used_gb: None,
+                swap_total_gb: None,
             irq_per_sec: None,
         }
     }

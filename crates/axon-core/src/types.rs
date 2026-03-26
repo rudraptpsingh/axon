@@ -156,6 +156,12 @@ pub struct ClaudeAgentInfo {
     /// See: github.com/anthropics/claude-code/issues/39022.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ram_spike: Option<bool>,
+    /// True when this claude process is in D-state (uninterruptible I/O wait) for 2+
+    /// consecutive ticks (~4s). Indicates filesystem/network blocking — common on WSL2
+    /// where filesystem bridging is slow, causing 1-6 minute "thinking" delays.
+    /// See: github.com/anthropics/claude-code/issues/22855.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suspected_io_block: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -205,6 +211,13 @@ pub struct HwSnapshot {
     /// Useful for distinguishing cargo build (high IRQ) from runaway agent (low IRQ).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub irq_per_sec: Option<u64>,
+    /// Swap space currently in use (GB). High swap indicates RAM exhaustion forcing paging.
+    /// Relevant for Cowork VM bundle memory pressure (#22543) and general OOM risk.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub swap_used_gb: Option<f64>,
+    /// Total swap space available (GB). None when no swap is configured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub swap_total_gb: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
