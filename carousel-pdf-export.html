@@ -1,0 +1,253 @@
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+.controls {
+  display: flex; gap: 12px; align-items: center; justify-content: center;
+  padding: 16px; font-family: -apple-system, sans-serif;
+}
+.controls button {
+  padding: 10px 24px; border-radius: 8px; border: 1px solid rgba(88,166,255,0.3);
+  background: rgba(88,166,255,0.1); color: #58a6ff; font-size: 14px;
+  font-weight: 600; cursor: pointer;
+}
+.controls button:hover { background: rgba(88,166,255,0.2); }
+.hint { font-size: 12px; color: #8b949e; font-family: -apple-system, sans-serif; text-align: center; padding: 0 16px 16px; }
+
+.slides { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 0 16px 24px; }
+
+.slide {
+  width: 540px; height: 675px;
+  background: #0d1117;
+  position: relative;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  display: flex; flex-direction: column; justify-content: center;
+  padding: 0 50px;
+  overflow: hidden;
+  border-radius: 8px;
+  flex-shrink: 0;
+}
+
+@media print {
+  .controls, .hint { display: none !important; }
+  body { background: #0d1117 !important; }
+  .slides { gap: 0; padding: 0; }
+  .slide {
+    width: 1080px; height: 1350px;
+    padding: 0 100px;
+    border-radius: 0;
+    page-break-after: always;
+    break-after: page;
+    background: #0d1117 !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+    color-adjust: exact !important;
+  }
+  .slide * {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+    color-adjust: exact !important;
+  }
+  .slide:last-child { page-break-after: avoid; }
+  .tag { font-size: 22px !important; margin-bottom: 48px !important; }
+  .footer { bottom: 48px !important; left: 100px !important; right: 100px !important; font-size: 20px !important; }
+  .footer .socials { gap: 28px !important; margin-top: 10px !important; }
+  .footer svg { width: 20px !important; height: 20px !important; }
+  .box-r, .box-g, .issue, .code { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+  @page { size: 1080px 1350px; margin: 0; }
+}
+
+.tag { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.12em; margin-bottom: 24px; }
+.footer {
+  position: absolute; bottom: 48px; left: 50px; right: 50px;
+  font-size: 10px; color: #484f58;
+}
+.footer .top { display: flex; justify-content: space-between; align-items: center; }
+.footer .name { font-weight: 600; color: #8b949e; }
+.footer .socials { display: flex; gap: 14px; margin-top: 5px; align-items: center; }
+.footer .socials span { display: flex; align-items: center; gap: 4px; }
+.footer .x { color: #8b949e; }
+.footer .li { color: #484f58; }
+
+.bg-text {
+  position: absolute; inset: 0; opacity: 0.04;
+  font-family: monospace; font-size: 10px; line-height: 15px;
+  color: #58a6ff; padding: 20px; white-space: pre-wrap;
+  overflow: hidden; pointer-events: none;
+}
+.box-r { padding: 18px 16px; background: rgba(248,81,73,0.04); border-radius: 10px; border: 1px solid rgba(248,81,73,0.08); }
+.box-g { padding: 18px 16px; background: rgba(63,185,80,0.04); border-radius: 10px; border: 1px solid rgba(63,185,80,0.08); }
+.box-label-r { font-size: 10px; font-weight: 700; color: #f85149; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 12px; }
+.box-label-g { font-size: 10px; font-weight: 700; color: #3fb950; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 12px; }
+.issue { padding: 10px 12px; background: rgba(248,81,73,0.04); border-radius: 6px; border: 1px solid rgba(248,81,73,0.08); display: flex; align-items: center; gap: 10px; }
+.code { font-family: monospace; font-size: 13px; color: #3fb950; background: rgba(63,185,80,0.06); padding: 14px 16px; border-radius: 8px; border: 1px solid rgba(63,185,80,0.1); text-align: left; }
+</style>
+
+<div class="controls">
+  <button onclick="window.print()">Print / Save as PDF</button>
+</div>
+<div class="hint">Click the button → in print dialog: <b>"Save as PDF"</b> → margins: <b>None</b> → expand "More settings" and check <b>"Background graphics"</b></div>
+
+<div class="slides">
+
+<!-- S1 -->
+<div class="slide">
+  <div class="bg-text">CPU: ████████████████ 99.97%
+RAM: ██████████████░ 91.2%
+HEADROOM: insufficient
+
+> process_blame
+  culprit: "claude-code"
+  impact: "critical"
+  fix: "kill stale sessions"
+
+ALERT: ram_pressure WARN→CRIT</div>
+  <div style="position:relative;z-index:1">
+    <div style="font-size:28px;font-weight:800;color:#f0f6fc;line-height:1.2">Your machine is dying.</div>
+    <div style="font-size:28px;font-weight:800;color:#f85149;line-height:1.2;margin-top:12px">Your agent is spawning another subprocess.</div>
+    <div style="margin-top:36px;font-size:14px;color:#8b949e">I built the missing feedback loop.</div>
+  </div>
+  <div class="footer"><div class="top"><span class="name">Rudra Pratap Singh</span><span style="color:#58a6ff">SWIPE →</span></div>
+    <div class="socials"><span class="x"><svg width="12" height="12" viewBox="0 0 24 24" fill="#8b949e"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>@TheNextIdeaGuy</span><span class="li"><svg width="12" height="12" viewBox="0 0 24 24" fill="#484f58"><path d="M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433a2.062 2.062 0 01-2.063-2.065 2.064 2.064 0 112.063 2.065zm1.782 13.019H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z"/></svg>rudraptpsingh</span></div></div>
+</div>
+
+<!-- S2 -->
+<div class="slide">
+  <div class="tag" style="color:#d2992a">The data</div>
+  <div style="font-size:64px;font-weight:800;color:#f85149;line-height:1">19%</div>
+  <div style="font-size:64px;font-weight:800;color:#f0f6fc;line-height:1;margin-top:4px">slower.</div>
+  <div style="margin-top:32px;font-size:14px;color:#8b949e;line-height:1.7">Devs using AI tools were 19% slower.<br>They <span style="color:#f0f6fc;font-weight:700">thought</span> they were 20% faster.</div>
+  <div style="margin-top:28px;font-size:13px;color:#f0f6fc;font-weight:600;border-left:2px solid #d2992a;padding-left:12px">The bottleneck moved to hardware.</div>
+  <div class="footer"><div class="top"><span class="name">Rudra Pratap Singh</span><span>2 / 10</span></div>
+    <div class="socials"><span class="x"><svg width="12" height="12" viewBox="0 0 24 24" fill="#8b949e"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>@TheNextIdeaGuy</span><span class="li"><svg width="12" height="12" viewBox="0 0 24 24" fill="#484f58"><path d="M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433a2.062 2.062 0 01-2.063-2.065 2.064 2.064 0 112.063 2.065zm1.782 13.019H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z"/></svg>rudraptpsingh</span></div></div>
+</div>
+
+<!-- S3 -->
+<div class="slide">
+  <div class="tag" style="color:#f85149">The blind spot</div>
+  <div style="font-size:20px;font-weight:700;color:#f0f6fc;line-height:1.35">Agents can read your machine.</div>
+  <div style="font-size:20px;font-weight:700;color:#8b949e;line-height:1.35;margin-top:6px">They've never let it guide a single decision.</div>
+  <div style="margin-top:28px;display:flex;flex-direction:column;gap:12px">
+    <div style="font-size:13px;color:#8b949e"><span style="color:#3fb950;margin-right:8px">✓</span>Can shell out to ps aux</div>
+    <div style="font-size:13px;color:#8b949e"><span style="color:#3fb950;margin-right:8px">✓</span>Can parse top output</div>
+    <div style="font-size:13px;color:#8b949e"><span style="color:#3fb950;margin-right:8px">✓</span>Can read /proc/stat</div>
+  </div>
+  <div style="margin-top:20px;display:flex;flex-direction:column;gap:12px">
+    <div style="font-size:13px;color:#f85149"><span style="margin-right:8px">✗</span>None self-regulate</div>
+    <div style="font-size:13px;color:#f85149"><span style="margin-right:8px">✗</span>None adjust parallelism</div>
+    <div style="font-size:13px;color:#f85149"><span style="margin-right:8px">✗</span>None pause at 90% RAM</div>
+  </div>
+  <div class="footer"><div class="top"><span class="name">Rudra Pratap Singh</span><span>3 / 10</span></div>
+    <div class="socials"><span class="x"><svg width="12" height="12" viewBox="0 0 24 24" fill="#8b949e"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>@TheNextIdeaGuy</span><span class="li"><svg width="12" height="12" viewBox="0 0 24 24" fill="#484f58"><path d="M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433a2.062 2.062 0 01-2.063-2.065 2.064 2.064 0 112.063 2.065zm1.782 13.019H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z"/></svg>rudraptpsingh</span></div></div>
+</div>
+
+<!-- S4 -->
+<div class="slide">
+  <div class="tag" style="color:#f85149">Real incident</div>
+  <div style="font-size:19px;font-weight:700;color:#f0f6fc;line-height:1.35">I wasted 20 minutes debugging tests that weren't broken.</div>
+  <div style="margin-top:24px;font-size:14px;color:#c9d1d9;line-height:1.7">Vibe coding on my M4 MacBook Air.<br>Fans screaming. Tests flaking.</div>
+  <div style="margin-top:24px;padding:14px 16px;background:rgba(248,81,73,0.05);border-radius:8px;border:1px solid rgba(248,81,73,0.1)">
+    <div style="font-size:10px;color:#f85149;font-weight:600;margin-bottom:8px">ACTIVITY MONITOR</div>
+    <div style="color:#f0f6fc;font-weight:700;font-size:16px">5 Claude processes.</div>
+    <div style="color:#f0f6fc;font-weight:700;font-size:16px;margin-top:2px">14GB on a 16GB machine.</div>
+  </div>
+  <div style="margin-top:24px;font-size:16px;font-weight:700;color:#f85149">My machine was drowning.</div>
+  <div class="footer"><div class="top"><span class="name">Rudra Pratap Singh</span><span>4 / 10</span></div>
+    <div class="socials"><span class="x"><svg width="12" height="12" viewBox="0 0 24 24" fill="#8b949e"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>@TheNextIdeaGuy</span><span class="li"><svg width="12" height="12" viewBox="0 0 24 24" fill="#484f58"><path d="M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433a2.062 2.062 0 01-2.063-2.065 2.064 2.064 0 112.063 2.065zm1.782 13.019H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z"/></svg>rudraptpsingh</span></div></div>
+</div>
+
+<!-- S5 -->
+<div class="slide">
+  <div class="tag" style="color:#f85149">The receipts</div>
+  <div style="font-size:17px;font-weight:700;color:#f0f6fc;margin-bottom:24px">From the Claude Code repo:</div>
+  <div style="display:flex;flex-direction:column;gap:10px">
+    <div class="issue"><span style="font-family:monospace;font-size:11px;color:#f85149;font-weight:700">#24960</span><span style="font-size:12px;color:#c9d1d9">Kernel panic. Forced power-off.</span></div>
+    <div class="issue"><span style="font-family:monospace;font-size:11px;color:#f85149;font-weight:700">#18859</span><span style="font-size:12px;color:#c9d1d9">60GB overnight. Full crash.</span></div>
+    <div class="issue"><span style="font-family:monospace;font-size:11px;color:#f85149;font-weight:700">#15487</span><span style="font-size:12px;color:#c9d1d9">24 sub-agents. System lockup.</span></div>
+    <div class="issue"><span style="font-family:monospace;font-size:11px;color:#f85149;font-weight:700">#33963</span><span style="font-size:12px;color:#c9d1d9">OOM. No degradation.</span></div>
+  </div>
+  <div style="margin-top:24px;font-size:12px;color:#8b949e;font-style:italic">The agent kept going while the machine was failing.</div>
+  <div class="footer"><div class="top"><span class="name">Rudra Pratap Singh</span><span>5 / 10</span></div>
+    <div class="socials"><span class="x"><svg width="12" height="12" viewBox="0 0 24 24" fill="#8b949e"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>@TheNextIdeaGuy</span><span class="li"><svg width="12" height="12" viewBox="0 0 24 24" fill="#484f58"><path d="M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433a2.062 2.062 0 01-2.063-2.065 2.064 2.064 0 112.063 2.065zm1.782 13.019H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z"/></svg>rudraptpsingh</span></div></div>
+</div>
+
+<!-- S6 -->
+<div class="slide">
+  <div class="tag" style="color:#58a6ff">The fix</div>
+  <div style="font-size:26px;font-weight:800;color:#58a6ff">axon</div>
+  <div style="margin-top:6px;font-size:16px;color:#8b949e">Hardware awareness for AI agents.</div>
+  <div style="margin-top:32px;display:flex;flex-direction:column;gap:16px">
+    <div style="font-size:14px;color:#c9d1d9;display:flex;align-items:center;gap:10px"><div style="width:5px;height:5px;border-radius:50%;background:#58a6ff;flex-shrink:0"></div>Local MCP server. 7 tools.</div>
+    <div style="font-size:14px;color:#c9d1d9;display:flex;align-items:center;gap:10px"><div style="width:5px;height:5px;border-radius:50%;background:#58a6ff;flex-shrink:0"></div>Collects state every 2 seconds.</div>
+    <div style="font-size:14px;color:#3fb950;font-weight:700;display:flex;align-items:center;gap:10px"><div style="width:5px;height:5px;border-radius:50%;background:#3fb950;flex-shrink:0"></div>Zero network calls. Ever.</div>
+    <div style="font-size:14px;color:#c9d1d9;display:flex;align-items:center;gap:10px"><div style="width:5px;height:5px;border-radius:50%;background:#58a6ff;flex-shrink:0"></div>macOS + Linux. Open source.</div>
+  </div>
+  <div style="margin-top:32px;font-size:13px;color:#f0f6fc;font-weight:600;border-left:2px solid #58a6ff;padding-left:12px">Not monitoring. A decision-shaping interface.</div>
+  <div class="footer"><div class="top"><span class="name">Rudra Pratap Singh</span><span>6 / 10</span></div>
+    <div class="socials"><span class="x"><svg width="12" height="12" viewBox="0 0 24 24" fill="#8b949e"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>@TheNextIdeaGuy</span><span class="li"><svg width="12" height="12" viewBox="0 0 24 24" fill="#484f58"><path d="M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433a2.062 2.062 0 01-2.063-2.065 2.064 2.064 0 112.063 2.065zm1.782 13.019H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z"/></svg>rudraptpsingh</span></div></div>
+</div>
+
+<!-- S7 -->
+<div class="slide">
+  <div class="tag" style="color:#58a6ff">Before / after</div>
+  <div class="box-r">
+    <div class="box-label-r">Without axon</div>
+    <div style="font-size:13px;color:#8b949e;line-height:1.7">Agent runs ps aux + top + vm_stat<br>Parses output. Guesses wrong.</div>
+    <div style="margin-top:10px;font-size:16px;color:#f85149;font-weight:700">~3,000 tokens.</div>
+  </div>
+  <div class="box-g" style="margin-top:14px">
+    <div class="box-label-g">With axon</div>
+    <div style="font-size:13px;color:#c9d1d9;line-height:1.7">Agent calls <span style="font-family:monospace;color:#58a6ff">process_blame</span><br><span style="color:#f0f6fc;font-weight:600">"Cursor (204% CPU) — restart it."</span></div>
+    <div style="margin-top:10px;font-size:16px;color:#3fb950;font-weight:700">200 tokens. Done.</div>
+  </div>
+  <div class="footer"><div class="top"><span class="name">Rudra Pratap Singh</span><span>7 / 10</span></div>
+    <div class="socials"><span class="x"><svg width="12" height="12" viewBox="0 0 24 24" fill="#8b949e"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>@TheNextIdeaGuy</span><span class="li"><svg width="12" height="12" viewBox="0 0 24 24" fill="#484f58"><path d="M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433a2.062 2.062 0 01-2.063-2.065 2.064 2.064 0 112.063 2.065zm1.782 13.019H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z"/></svg>rudraptpsingh</span></div></div>
+</div>
+
+<!-- S8 -->
+<div class="slide">
+  <div class="tag" style="color:#d2992a">The experiment</div>
+  <div style="font-size:18px;font-weight:700;color:#f0f6fc;margin-bottom:24px">4 agents. One machine.</div>
+  <div class="box-r">
+    <div class="box-label-r">Blind</div>
+    <div style="display:flex;gap:32px">
+      <div><div style="font-size:32px;font-weight:800;color:#f85149;line-height:1">99.97%</div><div style="font-size:10px;color:#8b949e;margin-top:4px">CPU</div></div>
+      <div><div style="font-size:32px;font-weight:800;color:#f85149;line-height:1">51.66%</div><div style="font-size:10px;color:#8b949e;margin-top:4px">RAM</div></div>
+    </div>
+  </div>
+  <div class="box-g" style="margin-top:14px">
+    <div class="box-label-g">Axon-aware</div>
+    <div style="display:flex;gap:32px">
+      <div><div style="font-size:32px;font-weight:800;color:#3fb950;line-height:1">48.05%</div><div style="font-size:10px;color:#8b949e;margin-top:4px">CPU</div></div>
+      <div><div style="font-size:32px;font-weight:800;color:#3fb950;line-height:1">10.73%</div><div style="font-size:10px;color:#8b949e;margin-top:4px">RAM</div></div>
+    </div>
+  </div>
+  <div style="margin-top:20px;font-size:13px;color:#8b949e;text-align:center">No scheduler. Just a shared view of reality.</div>
+  <div class="footer"><div class="top"><span class="name">Rudra Pratap Singh</span><span>8 / 10</span></div>
+    <div class="socials"><span class="x"><svg width="12" height="12" viewBox="0 0 24 24" fill="#8b949e"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>@TheNextIdeaGuy</span><span class="li"><svg width="12" height="12" viewBox="0 0 24 24" fill="#484f58"><path d="M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433a2.062 2.062 0 01-2.063-2.065 2.064 2.064 0 112.063 2.065zm1.782 13.019H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z"/></svg>rudraptpsingh</span></div></div>
+</div>
+
+<!-- S9 -->
+<div class="slide" style="align-items:center;text-align:center;padding:0 50px">
+  <div class="tag" style="color:#3fb950">Setup</div>
+  <div style="font-size:28px;font-weight:800;color:#f0f6fc;margin-bottom:32px">Two commands.</div>
+  <div style="display:flex;flex-direction:column;gap:10px;width:100%">
+    <div class="code"><span style="color:#484f58">$ </span>brew install rudraptpsingh/tap/axon</div>
+    <div class="code"><span style="color:#484f58">$ </span>axon setup</div>
+  </div>
+  <div style="margin-top:28px;font-size:14px;color:#c9d1d9">Configures Claude, Cursor, VS Code.</div>
+  <div style="margin-top:12px;font-size:17px;color:#f0f6fc;font-weight:700">Agent restarts. Now it can see.</div>
+  <div class="footer"><div class="top"><span class="name">Rudra Pratap Singh</span><span>9 / 10</span></div>
+    <div class="socials"><span class="x"><svg width="12" height="12" viewBox="0 0 24 24" fill="#8b949e"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>@TheNextIdeaGuy</span><span class="li"><svg width="12" height="12" viewBox="0 0 24 24" fill="#484f58"><path d="M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433a2.062 2.062 0 01-2.063-2.065 2.064 2.064 0 112.063 2.065zm1.782 13.019H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z"/></svg>rudraptpsingh</span></div></div>
+</div>
+
+<!-- S10 -->
+<div class="slide" style="align-items:center;text-align:center">
+  <div style="font-size:28px;font-weight:800;color:#f0f6fc">Give your agent eyes.</div>
+  <div style="margin-top:32px;font-family:monospace;font-size:14px;color:#58a6ff;background:rgba(88,166,255,0.06);padding:14px 20px;border-radius:8px;border:1px solid rgba(88,166,255,0.12)">github.com/rudraptpsingh/axon</div>
+  <div style="margin-top:36px;font-size:14px;color:#c9d1d9">Ever lost work to an OOM crash?</div>
+  <div style="margin-top:8px;font-size:14px;color:#f0f6fc;font-weight:600">Drop a comment — I'll help you set up axon.</div>
+  <div class="footer"><div class="top"><span class="name">Rudra Pratap Singh</span><span>10 / 10</span></div>
+    <div class="socials"><span class="x"><svg width="12" height="12" viewBox="0 0 24 24" fill="#8b949e"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>@TheNextIdeaGuy</span><span class="li"><svg width="12" height="12" viewBox="0 0 24 24" fill="#484f58"><path d="M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433a2.062 2.062 0 01-2.063-2.065 2.064 2.064 0 112.063 2.065zm1.782 13.019H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z"/></svg>rudraptpsingh</span></div></div>
+</div>
+
+</div>
