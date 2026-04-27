@@ -549,12 +549,45 @@ fn count_net_time_wait() -> Option<u32> {
     }
 }
 
-/// Read the system-wide inotify watch count from /proc/sys/fs/inotify/nr_watches. Linux only.
+/// Count system-wide inotify file descriptor instances. Linux only.
+/// Fast path: /proc/sys/fs/inotify/nr_watches (Linux 5.10+). If unavailable,
+/// scans /proc/<pid>/fd/ for anon_inode:inotify symlinks (call only every 30
+/// ticks to amortize cost). Returns None when count is below 50.
 #[cfg(target_os = "linux")]
 fn read_inotify_watch_count() -> Option<u32> {
-    std::fs::read_to_string("/proc/sys/fs/inotify/nr_watches")
-        .ok()
-        .and_then(|s| s.trim().parse().ok())
+    // Fast path: kernel-provided aggregate (Linux 5.10+).
+    if let Ok(s) = std::fs::read_to_string("/proc/sys/fs/inotify/nr_watches") {
+        return s.trim().parse::<u32>().ok().filter(|&n| n >= 50);
+    }
+    // Fallback: scan /proc/<pid>/fd/ for anon_inode:inotify symlinks.
+    // Caller must gate this to run only every ~30 ticks to avoid per-tick overhead.
+    let mut count: u32 = 0;
+    if let Ok(procs) = std::fs::read_dir("/proc") {
+        for entry in procs.flatten() {
+            let pid_str = entry.file_name();
+            if !pid_str.to_string_lossy().chars().all(|c| c.is_ascii_digit()) {
+                continue;
+            }
+            if let Ok(fds) = std::fs::read_dir(entry.path().join("fd")) {
+                for fd in fds.flatten() {
+                    if std::fs::read_link(fd.path())
+                        .ok()
+                        .and_then(|t| {
+                            if t.to_string_lossy().contains("anon_inode:inotify") {
+                                Some(())
+                            } else {
+                                None
+                            }
+                        })
+                        .is_some()
+                    {
+                        count += 1;
+                    }
+                }
+            }
+        }
+    }
+    if count >= 50 { Some(count) } else { None }
 }
 
 /// Return raw size in MB of the largest ~/.claude/projects/**/*.jsonl file for a session.
@@ -668,6 +701,8 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
     let mut pipe_stall_ticks: HashMap<u32, u32> = HashMap::new();
     // Raw session file size (MB) cached between 30-tick samples for ctx_window_risk.
     let mut cached_raw_session_file_mb: HashMap<u32, f64> = HashMap::new();
+    // Inotify watch count: cached between 30-tick samples (fallback scan is expensive).
+    let mut cached_inotify_watch_count: Option<u32> = None;
 
     let self_pid = std::process::id();
 
@@ -852,9 +887,16 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
             net_time_wait_count: count_net_time_wait(),
             #[cfg(not(target_os = "linux"))]
             net_time_wait_count: None,
-            // Inotify watch resource exhaustion: leaked fs.watch() watchers (#11136).
+            // Inotify watch count: sampled every 30 ticks (~60s).
+            // Fast path (nr_watches) runs every tick; fallback scan gates to 30-tick cadence.
             #[cfg(target_os = "linux")]
-            inotify_watch_count: read_inotify_watch_count(),
+            inotify_watch_count: if tick_count % 30 == 3 {
+                let v = read_inotify_watch_count();
+                cached_inotify_watch_count = v;
+                v
+            } else {
+                cached_inotify_watch_count
+            },
             #[cfg(not(target_os = "linux"))]
             inotify_watch_count: None,
         };
