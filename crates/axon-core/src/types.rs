@@ -232,6 +232,26 @@ pub struct ClaudeAgentInfo {
     /// Fires at > 100 MB/hr. See: #36727 (unbounded token consumption), #22265 (growing lag).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_file_growth_mb_per_hr: Option<f64>,
+    /// Seconds this claude PID has been blocking on a pipe I/O wait.
+    /// Detected via /proc/<pid>/wchan containing "pipe_wait" or related pipe sleep symbols.
+    /// Indicates deadlocked tool execution: a subprocess's stdin/stdout pipe is full or empty
+    /// and neither end is making progress. Fires at 10+ consecutive seconds. Linux only.
+    /// Complements suspected_io_block (which detects filesystem D-state, not pipe deadlock).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pipe_stall_secs: Option<u64>,
+    /// Context window saturation risk inferred from session JSONL file size.
+    /// "warn" when the largest session file exceeds 5 MB (approaching context pressure).
+    /// "critical" when it exceeds 20 MB (high risk of truncation or synchronous load hang).
+    /// Fires earlier than large_session_file_mb (40 MB threshold), giving time to /compact.
+    /// Sampled every 30 ticks (~60s). None when session_id is unknown or file is small.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ctx_window_risk: Option<String>,
+    /// Maximum depth of the subprocess tree rooted at this claude PID.
+    /// Depth 1 = direct children only. Values > 5 may indicate runaway recursive
+    /// tool invocations (agents spawning agents spawning agents). None when no children exist.
+    /// Useful for detecting unbounded subagent fan-out before RAM/CPU symptoms appear.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call_depth: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -330,6 +350,18 @@ pub struct HwSnapshot {
     /// Fires [WARN] at 5GB, [CRITICAL] at 50GB.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tmp_claude_size_gb: Option<f64>,
+    /// System-wide count of TIME_WAIT TCP connections (Linux, /proc/net/tcp + /proc/net/tcp6).
+    /// TIME_WAIT sockets linger ~60s after close; values > 500 indicate rapid API call turnover
+    /// or dead agent sessions leaving connections open (socket exhaustion risk).
+    /// None on non-Linux or when count is below 50.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub net_time_wait_count: Option<u32>,
+    /// System-wide inotify watch count (Linux, /proc/sys/fs/inotify/nr_watches).
+    /// Complements system_fd_pct: inotify watches are a separate kernel resource with their
+    /// own limit (typically 524288). Values > 100K indicate leaked fs.watch() watchers even
+    /// before the FD table is exhausted. See: github.com/anthropics/claude-code/issues/11136.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inotify_watch_count: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

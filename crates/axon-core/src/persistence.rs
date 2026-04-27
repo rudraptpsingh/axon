@@ -667,6 +667,8 @@ mod tests {
             mcp_server_count: None,
             tmp_claude_size_gb: None,
             process_spawn_rate_per_sec: None,
+            net_time_wait_count: None,
+            inotify_watch_count: None,
         }
     }
 
