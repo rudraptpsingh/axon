@@ -116,6 +116,12 @@ Live webhook E2E (needs release binary; may wait up to `ALERT_E2E_WAIT` seconds)
 
 The CLI supports: `claude-desktop`, `claude-code`, `cursor`, `vscode`. Each writes to the agent's config file using the appropriate JSON structure. Setup is explicit via `axon setup [target]`.
 
+## Git Conventions
+
+- **Branch names**: always `rudraptpsingh/<feature-name>` (e.g. `rudraptpsingh/add-gpu-alerts`). Never use `claude/` or any other prefix.
+- **Commit messages and PR descriptions**: write in first-person as the project author. Do not reference AI, agents, or automated tools. No phrases like "AI-generated", "as an AI", or similar. Changes must read as authored by rudraptpsingh.
+- **Commit style**: imperative mood, concise first line, body explains why not what.
+
 ## What NOT To Do
 
 - Do not add network calls or telemetry of any kind
