@@ -371,6 +371,8 @@ pub fn query_session_health(db: &DbHandle, since: DateTime<Utc>) -> Result<Sessi
             throttle_event_count: 0,
             agent_accumulation_events: 0,
             peak_ai_agent_count: 0,
+            agent_critical_ticks: 0,
+            crash_count: 0,
         });
     }
 
@@ -474,6 +476,8 @@ pub fn query_session_health(db: &DbHandle, since: DateTime<Utc>) -> Result<Sessi
         throttle_event_count: throttle_count,
         agent_accumulation_events,
         peak_ai_agent_count,
+        agent_critical_ticks: 0,
+        crash_count: 0,
     })
 }
 
@@ -667,6 +671,8 @@ mod tests {
             mcp_server_count: None,
             tmp_claude_size_gb: None,
             process_spawn_rate_per_sec: None,
+            net_time_wait_count: None,
+            inotify_watch_count: None,
         }
     }
 

@@ -205,6 +205,8 @@ impl AppState {
                 mcp_server_count: None,
                 tmp_claude_size_gb: None,
                 process_spawn_rate_per_sec: None,
+                net_time_wait_count: None,
+                inotify_watch_count: None,
             },
             blame: ProcessBlame {
                 anomaly_type: AnomalyType::None,
@@ -498,9 +500,99 @@ fn count_mcp_servers(sys: &System) -> u32 {
         .count() as u32
 }
 
-/// Find the largest ~/.claude/projects/**/*.jsonl file for a given session_id.
-/// Returns size in MB if any file exceeds 40MB.
-fn largest_session_file_mb(session_id: Option<&str>) -> Option<f64> {
+/// Read cumulative read_bytes for a PID from /proc/<pid>/io. Linux only.
+#[cfg(target_os = "linux")]
+fn read_pid_io_bytes(pid: u32) -> Option<u64> {
+    let content = std::fs::read_to_string(format!("/proc/{}/io", pid)).ok()?;
+    content
+        .lines()
+        .find(|l| l.starts_with("read_bytes:"))
+        .and_then(|l| l.split_whitespace().nth(1))
+        .and_then(|v| v.parse().ok())
+}
+
+/// Read the kernel wait channel for a PID from /proc/<pid>/wchan. Linux only.
+/// Returns the symbol name the process is sleeping in (e.g. "pipe_wait", "futex_wait").
+#[cfg(target_os = "linux")]
+fn read_wchan(pid: u32) -> Option<String> {
+    let s = std::fs::read_to_string(format!("/proc/{}/wchan", pid)).ok()?;
+    let s = s.trim();
+    if s.is_empty() || s == "0" {
+        None
+    } else {
+        Some(s.to_string())
+    }
+}
+
+/// Count TIME_WAIT TCP connections from /proc/net/tcp and /proc/net/tcp6. Linux only.
+/// TIME_WAIT state code is 0x06. Returns None when count < 50 to suppress noise.
+#[cfg(target_os = "linux")]
+fn count_net_time_wait() -> Option<u32> {
+    let mut count: u32 = 0;
+    for path in &["/proc/net/tcp", "/proc/net/tcp6"] {
+        if let Ok(content) = std::fs::read_to_string(path) {
+            for line in content.lines().skip(1) {
+                // Field 4 (0-indexed: 3) is the connection state in hex
+                let mut fields = line.split_whitespace();
+                if let Some(state) = fields.nth(3) {
+                    if state == "06" {
+                        count += 1;
+                    }
+                }
+            }
+        }
+    }
+    if count >= 50 {
+        Some(count)
+    } else {
+        None
+    }
+}
+
+/// Count system-wide inotify file descriptor instances. Linux only.
+/// Fast path: /proc/sys/fs/inotify/nr_watches (Linux 5.10+). If unavailable,
+/// scans /proc/<pid>/fd/ for anon_inode:inotify symlinks (call only every 30
+/// ticks to amortize cost). Returns None when count is below 50.
+#[cfg(target_os = "linux")]
+fn read_inotify_watch_count() -> Option<u32> {
+    // Fast path: kernel-provided aggregate (Linux 5.10+).
+    if let Ok(s) = std::fs::read_to_string("/proc/sys/fs/inotify/nr_watches") {
+        return s.trim().parse::<u32>().ok().filter(|&n| n >= 50);
+    }
+    // Fallback: scan /proc/<pid>/fd/ for anon_inode:inotify symlinks.
+    // Caller must gate this to run only every ~30 ticks to avoid per-tick overhead.
+    let mut count: u32 = 0;
+    if let Ok(procs) = std::fs::read_dir("/proc") {
+        for entry in procs.flatten() {
+            let pid_str = entry.file_name();
+            if !pid_str.to_string_lossy().chars().all(|c| c.is_ascii_digit()) {
+                continue;
+            }
+            if let Ok(fds) = std::fs::read_dir(entry.path().join("fd")) {
+                for fd in fds.flatten() {
+                    if std::fs::read_link(fd.path())
+                        .ok()
+                        .and_then(|t| {
+                            if t.to_string_lossy().contains("anon_inode:inotify") {
+                                Some(())
+                            } else {
+                                None
+                            }
+                        })
+                        .is_some()
+                    {
+                        count += 1;
+                    }
+                }
+            }
+        }
+    }
+    if count >= 50 { Some(count) } else { None }
+}
+
+/// Return raw size in MB of the largest ~/.claude/projects/**/*.jsonl file for a session.
+/// Unlike largest_session_file_mb(), returns the value even for small files (no threshold).
+fn raw_session_file_mb(session_id: Option<&str>) -> Option<f64> {
     let home = std::env::var("HOME").ok()?;
     let projects_dir = std::path::PathBuf::from(&home)
         .join(".claude")
@@ -518,13 +610,11 @@ fn largest_session_file_mb(session_id: Option<&str>) -> Option<f64> {
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_dir() {
-                // If session_id is known, skip dirs that don't match
                 if let Some(sid) = session_id {
                     let dir_name = path
                         .file_name()
                         .map(|n| n.to_string_lossy().to_string())
                         .unwrap_or_default();
-                    // Only descend if dir name contains session id prefix (first 8 chars)
                     let prefix = &sid[..sid.len().min(8)];
                     if !dir_name.contains(prefix) && !dir_name.is_empty() {
                         stack.push(path);
@@ -540,22 +630,11 @@ fn largest_session_file_mb(session_id: Option<&str>) -> Option<f64> {
         }
     }
     let mb = max_bytes as f64 / 1_048_576.0;
-    if mb > 40.0 {
+    if mb > 0.1 {
         Some(mb)
     } else {
         None
     }
-}
-
-/// Read cumulative read_bytes for a PID from /proc/<pid>/io. Linux only.
-#[cfg(target_os = "linux")]
-fn read_pid_io_bytes(pid: u32) -> Option<u64> {
-    let content = std::fs::read_to_string(format!("/proc/{}/io", pid)).ok()?;
-    content
-        .lines()
-        .find(|l| l.starts_with("read_bytes:"))
-        .and_then(|l| l.split_whitespace().nth(1))
-        .and_then(|v| v.parse().ok())
 }
 
 /// Spawns a background Tokio task that refreshes hardware state every 2 seconds.
@@ -618,6 +697,12 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
     let mut agent_stall_ticks: HashMap<u32, u32> = HashMap::new();
     // Session file size from last sample for growth rate computation.
     let mut prev_session_file_mb: HashMap<u32, f64> = HashMap::new();
+    // Pipe stall: per-PID consecutive ticks where wchan is a pipe sleep symbol (Linux).
+    let mut pipe_stall_ticks: HashMap<u32, u32> = HashMap::new();
+    // Raw session file size (MB) cached between 30-tick samples for ctx_window_risk.
+    let mut cached_raw_session_file_mb: HashMap<u32, f64> = HashMap::new();
+    // Inotify watch count: cached between 30-tick samples (fallback scan is expensive).
+    let mut cached_inotify_watch_count: Option<u32> = None;
 
     let self_pid = std::process::id();
 
@@ -797,6 +882,23 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
                 prev_total_process_count = Some(current_count);
                 rate
             },
+            // TIME_WAIT TCP connections: rapid API call turnover or leaked sockets from dead agents.
+            #[cfg(target_os = "linux")]
+            net_time_wait_count: count_net_time_wait(),
+            #[cfg(not(target_os = "linux"))]
+            net_time_wait_count: None,
+            // Inotify watch count: sampled every 30 ticks (~60s).
+            // Fast path (nr_watches) runs every tick; fallback scan gates to 30-tick cadence.
+            #[cfg(target_os = "linux")]
+            inotify_watch_count: if tick_count % 30 == 3 {
+                let v = read_inotify_watch_count();
+                cached_inotify_watch_count = v;
+                v
+            } else {
+                cached_inotify_watch_count
+            },
+            #[cfg(not(target_os = "linux"))]
+            inotify_watch_count: None,
         };
         prev_disk_used_gb = Some(disk_used_gb);
         let (headroom, headroom_reason) = impact::compute_headroom(&hw);
@@ -919,11 +1021,14 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
         let culprit = process_infos.first().cloned();
         let groups = grouping::build_groups(&process_infos);
 
-        // ── Pre-compute per-PID child counts and zombie counts ────────────
-        // Build parent→child_count and parent→zombie_child_count maps from
-        // all live processes. Used by the claude_agents filter_map below
+        // ── Pre-compute per-PID child counts, zombie counts, and full child map ──
+        // Build parent→child_count, parent→zombie_child_count, and parent→children maps
+        // from all live processes. Used by the claude_agents filter_map below
         // (avoids holding a second borrow on sys.processes() inside the closure).
         let mut direct_child_counts: HashMap<u32, u32> = HashMap::new();
+        // Full parent→children map: used for tool_call_depth (BFS from agent PID)
+        // and later reused for orphan/zombie detection (replaces the duplicate build below).
+        let mut children_of_all: HashMap<u32, Vec<u32>> = HashMap::new();
         #[cfg(target_os = "linux")]
         let mut zombie_child_counts_map: HashMap<u32, u32> = HashMap::new();
         for process in sys.processes().values() {
@@ -931,7 +1036,10 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
             let pid_u32 = usize::from(process.pid()) as u32;
             if let Some(parent) = process.parent() {
                 let parent_u32 = usize::from(parent) as u32;
+                #[cfg(not(target_os = "linux"))]
+                let pid_u32 = usize::from(process.pid()) as u32;
                 *direct_child_counts.entry(parent_u32).or_insert(0) += 1;
+                children_of_all.entry(parent_u32).or_default().push(pid_u32);
                 #[cfg(target_os = "linux")]
                 {
                     // Check if this process is a zombie
@@ -1185,13 +1293,33 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
                     }
                 });
 
-                // Largest session file size for this PID's session.
-                // Sampled only every 30 ticks (~60s) to amortize glob cost.
-                let large_session_file_mb: Option<f64> = if tick_count % 30 == 1 {
-                    largest_session_file_mb(meta.session_id.as_deref())
+                // Session file sampling: every 30 ticks (~60s) to amortize glob cost.
+                // raw_file_mb is the full size regardless of threshold (for ctx_window_risk).
+                // large_session_file_mb fires only at >40MB (synchronous-load-hang threshold).
+                let raw_file_mb: Option<f64> = if tick_count % 30 == 1 {
+                    let v = raw_session_file_mb(meta.session_id.as_deref());
+                    if let Some(mb) = v {
+                        cached_raw_session_file_mb.insert(pid_u32, mb);
+                    }
+                    v
                 } else {
-                    None
+                    cached_raw_session_file_mb.get(&pid_u32).copied()
                 };
+                let large_session_file_mb: Option<f64> =
+                    raw_file_mb.filter(|&mb| mb > 40.0);
+
+                // Context window saturation risk: fires earlier than large_session_file_mb.
+                // Based on file size: warn >5MB, critical >20MB.
+                // Gives time to /compact before a load-hang materializes (#21022).
+                let ctx_window_risk: Option<String> = raw_file_mb.and_then(|mb| {
+                    if mb > 20.0 {
+                        Some("critical".to_string())
+                    } else if mb > 5.0 {
+                        Some("warn".to_string())
+                    } else {
+                        None
+                    }
+                });
 
                 // Bun crash trajectory: uptime > 4h AND RSS growing > 300 MB/hr.
                 let bun_crash_trajectory: Option<bool> = {
@@ -1221,10 +1349,10 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
                     None
                 };
 
-                // Session file growth rate: delta of large_session_file_mb over 60s.
+                // Session file growth rate: delta of raw_file_mb over 60s.
                 // Infers context burn rate without API access (#36727, #22265).
                 let session_file_growth_mb_per_hr: Option<f64> = if tick_count % 30 == 1 {
-                    large_session_file_mb.and_then(|current| {
+                    raw_file_mb.and_then(|current| {
                         let prev = prev_session_file_mb.get(&pid_u32).copied();
                         prev_session_file_mb.insert(pid_u32, current);
                         prev.and_then(|p| {
@@ -1240,6 +1368,67 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
                     })
                 } else {
                     None
+                };
+
+                // Pipe stall detection: track when the process is sleeping in a pipe
+                // wait channel. wchan="pipe_wait" means the process is blocked on a
+                // pipe read/write — classic deadlock when neither end makes progress.
+                // Fire after 5 consecutive ticks (10s) to avoid transient noise.
+                // Linux only; falls back to None on other platforms.
+                #[cfg(target_os = "linux")]
+                let pipe_stall_secs: Option<u64> = {
+                    let wchan = read_wchan(pid_u32);
+                    let is_pipe_sleep = wchan.as_deref().map(|w| {
+                        w.contains("pipe_wait")
+                            || w.contains("pipe_read")
+                            || w.contains("pipe_write")
+                            || w.contains("read_pipe")
+                    }).unwrap_or(false);
+                    let ticks = pipe_stall_ticks.entry(pid_u32).or_insert(0);
+                    if is_pipe_sleep {
+                        *ticks += 1;
+                    } else {
+                        *ticks = 0;
+                    }
+                    if *ticks >= 5 {
+                        Some(*ticks as u64 * 2)
+                    } else {
+                        None
+                    }
+                };
+                #[cfg(not(target_os = "linux"))]
+                let pipe_stall_secs: Option<u64> = None;
+
+                // Tool call depth: BFS from this PID through children_of_all to find the
+                // maximum depth of the subprocess tree. Depth > 5 may indicate runaway
+                // recursive tool invocations (agents spawning agents unboundedly).
+                let tool_call_depth: Option<u32> = {
+                    if children_of_all.contains_key(&pid_u32) {
+                        let mut max_depth: u32 = 0;
+                        let mut queue: std::collections::VecDeque<(u32, u32)> =
+                            std::collections::VecDeque::new();
+                        queue.push_back((pid_u32, 0));
+                        while let Some((node, depth)) = queue.pop_front() {
+                            if depth > max_depth {
+                                max_depth = depth;
+                            }
+                            if let Some(kids) = children_of_all.get(&node) {
+                                for &child in kids {
+                                    // Guard against cycles (shouldn't exist, but be safe)
+                                    if depth < 20 {
+                                        queue.push_back((child, depth + 1));
+                                    }
+                                }
+                            }
+                        }
+                        if max_depth > 0 {
+                            Some(max_depth)
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
                 };
 
                 // Zombie child count for this PID specifically.
@@ -1278,6 +1467,9 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
                     zombie_child_count,
                     agent_stall_secs,
                     session_file_growth_mb_per_hr,
+                    pipe_stall_secs,
+                    ctx_window_risk,
+                    tool_call_depth,
                 })
             })
             .collect();
@@ -1303,6 +1495,8 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
         prev_io_read_bytes.retain(|pid, _| active_pids.contains(pid));
         agent_stall_ticks.retain(|pid, _| active_pids.contains(pid));
         prev_session_file_mb.retain(|pid, _| active_pids.contains(pid));
+        pipe_stall_ticks.retain(|pid, _| active_pids.contains(pid));
+        cached_raw_session_file_mb.retain(|pid, _| active_pids.contains(pid));
 
         let stranded_idle_pids: Vec<u32> = agent_idle_ticks
             .iter()
@@ -1311,17 +1505,8 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
             .collect();
 
         // ── Orphan process detection ──────────────────────────────────────
-        // Build parent→children map for all live processes.
-        let mut children_of: HashMap<u32, Vec<u32>> = HashMap::new();
-        for (pid, process) in sys.processes() {
-            let pid_u32 = usize::from(*pid) as u32;
-            if let Some(parent) = process.parent() {
-                children_of
-                    .entry(usize::from(parent) as u32)
-                    .or_default()
-                    .push(pid_u32);
-            }
-        }
+        // Reuse the children_of_all map built in the pre-compute block above.
+        let children_of = &children_of_all;
         // BFS: collect all living descendants of each claude PID.
         let claude_pids: std::collections::HashSet<u32> =
             claude_agents.iter().map(|a| a.pid).collect();
@@ -1550,9 +1735,9 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
         };
 
         let impact_msg = impact::impact_message(&impact_level, &anomaly_type);
-        let fix = impact::suggest_fix(culprit.as_ref(), culprit_group.as_ref(), &anomaly_type);
+        let fix = impact::suggest_fix(culprit.as_ref(), culprit_group.as_ref(), &anomaly_type, &claude_agents);
 
-        let urgency = impact::compute_urgency(&impact_level, &cpu_trend, &ram_trend);
+        let urgency = impact::compute_urgency(&impact_level, &cpu_trend, &ram_trend, &claude_agents);
         let culprit_category =
             impact::classify_culprit_from_blame(culprit_group.as_ref(), culprit.as_ref());
 
@@ -1577,6 +1762,14 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
             subagent_orphan_count_total,
             background_bash_count,
         };
+
+        // ── Elevate headroom based on per-agent signals (second pass) ────
+        // compute_headroom() ran before claude_agents were known; now escalate
+        // if any agent has a critical signal (crash trajectory, GC thrash, etc.).
+        let (elevated_headroom, elevated_reason) =
+            impact::elevate_headroom_for_agents(hw.headroom.clone(), hw.headroom_reason.clone(), &blame.claude_agents);
+        hw.headroom = elevated_headroom;
+        hw.headroom_reason = elevated_reason;
 
         // ── Enrich hw snapshot with post-process fields ──────────────────
         // Top culprit summary
@@ -1864,11 +2057,21 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
         drop(guard);
 
         // ── Push to ring buffer every tick (full 2s resolution) ────────
+        let agent_critical = blame.claude_agents.iter().any(|a| {
+            a.gc_pressure.as_deref() == Some("critical")
+                || a.bun_crash_trajectory == Some(true)
+                || a.pipe_stall_secs.is_some_and(|s| s > 30)
+                || a.agent_stall_secs.is_some_and(|s| s > 300)
+                || a.ram_spike == Some(true)
+        });
+        let crash_count_tick = blame.crashed_agent_pids.len() as u32;
         ring.push(crate::ring_buffer::RingEntry {
             hw: hw.clone(),
             anomaly_type: blame.anomaly_type.clone(),
             impact_level: blame.impact_level.clone(),
             anomaly_score: blame.anomaly_score,
+            agent_critical,
+            crash_count: crash_count_tick,
         });
 
         // ── Persist snapshot every 15 ticks (~30s) ────────────────────────
@@ -2121,6 +2324,58 @@ fn build_one_liner(hw: &HwSnapshot, blame: &ProcessBlame) -> String {
     // Top culprit if present
     if !hw.top_culprit.is_empty() {
         parts.push(hw.top_culprit.clone());
+    }
+
+    // Most critical per-agent signal (highest severity first, one signal only).
+    // This surfaces agent-level issues in the compact summary that hardware metrics miss.
+    'agent: for agent in &blame.claude_agents {
+        if agent.bun_crash_trajectory == Some(true) {
+            parts.push(format!("PID {} crash-trajectory [/clear now]", agent.pid));
+            break 'agent;
+        }
+        if agent.gc_pressure.as_deref() == Some("critical") {
+            parts.push(format!(
+                "PID {} GC-critical {:.1}GB [/clear]",
+                agent.pid, agent.ram_gb
+            ));
+            break 'agent;
+        }
+        if agent.pipe_stall_secs.is_some_and(|s| s > 30) {
+            parts.push(format!(
+                "PID {} pipe-deadlock {}s [kill-subprocess]",
+                agent.pid,
+                agent.pipe_stall_secs.unwrap()
+            ));
+            break 'agent;
+        }
+        if agent.agent_stall_secs.is_some_and(|s| s > 300) {
+            parts.push(format!(
+                "PID {} stalled {}min [kill]",
+                agent.pid,
+                agent.agent_stall_secs.unwrap() / 60
+            ));
+            break 'agent;
+        }
+        if agent.ctx_window_risk.as_deref() == Some("critical") {
+            parts.push(format!("PID {} ctx-critical [/compact]", agent.pid));
+            break 'agent;
+        }
+        if agent.tool_call_depth.is_some_and(|d| d >= 5) {
+            parts.push(format!(
+                "PID {} depth-{} [recursive-tool-call]",
+                agent.pid,
+                agent.tool_call_depth.unwrap()
+            ));
+            break 'agent;
+        }
+        if agent.rss_growth_rate_mb_per_hr.is_some_and(|r| r > 300.0) {
+            parts.push(format!(
+                "PID {} RSS+{:.0}MB/hr [leak]",
+                agent.pid,
+                agent.rss_growth_rate_mb_per_hr.unwrap()
+            ));
+            break 'agent;
+        }
     }
 
     // Urgency

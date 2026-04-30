@@ -23,6 +23,12 @@ pub struct RingEntry {
     pub anomaly_type: AnomalyType,
     pub impact_level: ImpactLevel,
     pub anomaly_score: f64,
+    /// True when any claude agent had a critical-severity signal this tick
+    /// (gc_pressure=critical, bun_crash_trajectory, pipe_stall_secs>30,
+    /// agent_stall_secs>300, ram_spike). Drives agent_critical_ticks in session_health.
+    pub agent_critical: bool,
+    /// Count of agent process crashes detected this tick (disappeared from process list).
+    pub crash_count: u32,
 }
 
 /// Thread-safe ring buffer for recent snapshots + blame summaries.
@@ -151,6 +157,8 @@ impl SnapshotRing {
         let mut temp_max: Option<f64> = None;
         let mut score_sum = 0.0_f64;
         let mut throttle_count = 0_u32;
+        let mut agent_critical_ticks = 0_u32;
+        let mut crash_count_total = 0_u32;
         let mut worst_impact = ImpactLevel::Healthy;
         let mut worst_anomaly = AnomalyType::None;
 
@@ -170,6 +178,10 @@ impl SnapshotRing {
             if e.hw.throttling {
                 throttle_count += 1;
             }
+            if e.agent_critical {
+                agent_critical_ticks += 1;
+            }
+            crash_count_total += e.crash_count;
             if impact_rank(&e.impact_level) > impact_rank(&worst_impact) {
                 worst_impact = e.impact_level.clone();
             }
@@ -200,6 +212,8 @@ impl SnapshotRing {
                 .map(|e| e.hw.ai_agent_count)
                 .max()
                 .unwrap_or(0),
+            agent_critical_ticks,
+            crash_count: crash_count_total,
         })
     }
 
@@ -397,10 +411,14 @@ mod tests {
                 mcp_server_count: None,
                 tmp_claude_size_gb: None,
                 process_spawn_rate_per_sec: None,
+                net_time_wait_count: None,
+                inotify_watch_count: None,
             },
             anomaly_type: AnomalyType::None,
             impact_level: ImpactLevel::Healthy,
             anomaly_score: 0.0,
+            agent_critical: false,
+            crash_count: 0,
         }
     }
 
@@ -440,10 +458,14 @@ mod tests {
                 mcp_server_count: None,
                 tmp_claude_size_gb: None,
                 process_spawn_rate_per_sec: None,
+                net_time_wait_count: None,
+                inotify_watch_count: None,
             },
             anomaly_type: AnomalyType::None,
             impact_level: ImpactLevel::Healthy,
             anomaly_score: 0.0,
+            agent_critical: false,
+            crash_count: 0,
         }
     }
 

@@ -441,8 +441,35 @@ fn hw_narrative(hw: &HwSnapshot) -> String {
         Some(n) if n >= 4 => format!(" {} MCP servers running.", n),
         _ => String::new(),
     };
+    // TIME_WAIT socket accumulation: rapid API call turnover or leaked connections from dead agents.
+    let time_wait_str = match hw.net_time_wait_count {
+        Some(n) if n >= 1000 => format!(
+            " [WARN] {} TIME_WAIT TCP connections — socket exhaustion risk from rapid API \
+             call turnover or dead agent sessions not closing connections. \
+             Check: ss -s | grep TIME-WAIT",
+            n
+        ),
+        Some(n) if n >= 200 => format!(" {} TIME_WAIT sockets (elevated).", n),
+        _ => String::new(),
+    };
+    // Inotify watch exhaustion: leaked fs.watch() watchers (complement to system_fd_pct).
+    let inotify_str = match hw.inotify_watch_count {
+        Some(n) if n >= 200_000 => format!(
+            " [CRITICAL] {} inotify watches in use — near system limit. Any new fs.watch() \
+             call will fail with ENOSPC on the inotify resource. \
+             Restart processes with leaked watchers: \
+             cat /proc/sys/fs/inotify/max_user_watches shows the limit.",
+            n
+        ),
+        Some(n) if n >= 100_000 => format!(
+            " [WARN] {} inotify watches in use — fs.watch() watcher leak likely. \
+             See: github.com/anthropics/claude-code/issues/11136.",
+            n
+        ),
+        _ => String::new(),
+    };
     format!(
-        "CPU {:.0}% {}, die {}{} RAM {:.1}/{:.0}GB {} ({} pressure).{}{}{}{}{}{}{}{}{}  {} | {}",
+        "CPU {:.0}% {}, die {}{} RAM {:.1}/{:.0}GB {} ({} pressure).{}{}{}{}{}{}{}{}{}{}{}  {} | {}",
         hw.cpu_usage_pct,
         hw.cpu_trend,
         temp_str,
@@ -460,6 +487,8 @@ fn hw_narrative(hw: &HwSnapshot) -> String {
         tmp_claude_str,
         spawn_rate_str,
         mcp_str,
+        time_wait_str,
+        inotify_str,
         headroom_str,
         hw.one_liner,
     )
@@ -912,6 +941,68 @@ fn blame_narrative(blame: &ProcessBlame) -> String {
                 ));
             }
         }
+
+        // Pipe stall: claude blocked on a pipe I/O wait channel (deadlocked tool comms).
+        if let Some(secs) = agent.pipe_stall_secs {
+            if secs > 30 {
+                base.push_str(&format!(
+                    " [CRITICAL] PID {} has been blocked on a pipe for {:.0}s — tool subprocess \
+                     deadlock: neither end is reading/writing. The spawned command is likely hung \
+                     waiting for input that will never arrive (or vice versa). \
+                     Run: lsof -p {} | grep pipe to identify the stuck fd pair. \
+                     Kill the subprocess or PID {} to recover.",
+                    agent.pid, secs, agent.pid, agent.pid
+                ));
+            } else {
+                base.push_str(&format!(
+                    " [WARN] PID {} blocked on pipe I/O for {}s — possible tool subprocess \
+                     deadlock. Monitor; if it continues past 30s the subprocess is likely stuck.",
+                    agent.pid, secs
+                ));
+            }
+        }
+
+        // Context window risk: early warning before large_session_file_mb threshold.
+        match agent.ctx_window_risk.as_deref() {
+            Some("critical") => {
+                // Only report if large_session_file_mb isn't already firing (avoids duplicate)
+                if agent.large_session_file_mb.is_none() {
+                    base.push_str(&format!(
+                        " [WARN] PID {} session file > 20MB — context window near saturation. \
+                         Run /compact NOW to compress history before a synchronous load hang \
+                         occurs at ~40MB (#21022). Check: ls -lh ~/.claude/projects/",
+                        agent.pid
+                    ));
+                }
+            }
+            Some("warn") => {
+                base.push_str(&format!(
+                    " [INFO] PID {} session file > 5MB — context is growing. \
+                     Run /compact proactively to keep session size manageable.",
+                    agent.pid
+                ));
+            }
+            _ => {}
+        }
+
+        // Tool call depth: runaway recursive subagent invocations.
+        if let Some(depth) = agent.tool_call_depth {
+            if depth >= 8 {
+                base.push_str(&format!(
+                    " [CRITICAL] PID {} has a subprocess tree {} levels deep — likely runaway \
+                     recursive tool invocations (agents spawning agents). This pattern causes \
+                     exponential RAM growth and PID exhaustion. Kill the agent tree: \
+                     kill -TERM {} && pkill -P {}",
+                    agent.pid, depth, agent.pid, agent.pid
+                ));
+            } else if depth >= 5 {
+                base.push_str(&format!(
+                    " [WARN] PID {} subprocess tree is {} levels deep — possible recursive \
+                     tool call chain. Monitor RAM; if growing, stop the agent with Ctrl-C.",
+                    agent.pid, depth
+                ));
+            }
+        }
     }
 
     // Stale session summary (blame-level, not per-agent).
@@ -1102,6 +1193,15 @@ fn session_health_narrative(health: &SessionHealth) -> String {
     }
     if health.throttle_event_count > 0 {
         parts.push(format!("{} throttle events", health.throttle_event_count));
+    }
+    if health.agent_critical_ticks > 0 {
+        parts.push(format!(
+            "{} ticks with critical agent signal",
+            health.agent_critical_ticks
+        ));
+    }
+    if health.crash_count > 0 {
+        parts.push(format!("{} agent crash(es) detected", health.crash_count));
     }
     if let Some(t) = health.peak_temp_celsius {
         parts.push(format!("peak temp {:.0}C", t));
