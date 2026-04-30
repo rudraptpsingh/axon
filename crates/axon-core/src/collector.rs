@@ -1735,9 +1735,9 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
         };
 
         let impact_msg = impact::impact_message(&impact_level, &anomaly_type);
-        let fix = impact::suggest_fix(culprit.as_ref(), culprit_group.as_ref(), &anomaly_type);
+        let fix = impact::suggest_fix(culprit.as_ref(), culprit_group.as_ref(), &anomaly_type, &claude_agents);
 
-        let urgency = impact::compute_urgency(&impact_level, &cpu_trend, &ram_trend);
+        let urgency = impact::compute_urgency(&impact_level, &cpu_trend, &ram_trend, &claude_agents);
         let culprit_category =
             impact::classify_culprit_from_blame(culprit_group.as_ref(), culprit.as_ref());
 
@@ -1762,6 +1762,14 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
             subagent_orphan_count_total,
             background_bash_count,
         };
+
+        // ── Elevate headroom based on per-agent signals (second pass) ────
+        // compute_headroom() ran before claude_agents were known; now escalate
+        // if any agent has a critical signal (crash trajectory, GC thrash, etc.).
+        let (elevated_headroom, elevated_reason) =
+            impact::elevate_headroom_for_agents(hw.headroom.clone(), hw.headroom_reason.clone(), &blame.claude_agents);
+        hw.headroom = elevated_headroom;
+        hw.headroom_reason = elevated_reason;
 
         // ── Enrich hw snapshot with post-process fields ──────────────────
         // Top culprit summary
@@ -2049,11 +2057,21 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
         drop(guard);
 
         // ── Push to ring buffer every tick (full 2s resolution) ────────
+        let agent_critical = blame.claude_agents.iter().any(|a| {
+            a.gc_pressure.as_deref() == Some("critical")
+                || a.bun_crash_trajectory == Some(true)
+                || a.pipe_stall_secs.is_some_and(|s| s > 30)
+                || a.agent_stall_secs.is_some_and(|s| s > 300)
+                || a.ram_spike == Some(true)
+        });
+        let crash_count_tick = blame.crashed_agent_pids.len() as u32;
         ring.push(crate::ring_buffer::RingEntry {
             hw: hw.clone(),
             anomaly_type: blame.anomaly_type.clone(),
             impact_level: blame.impact_level.clone(),
             anomaly_score: blame.anomaly_score,
+            agent_critical,
+            crash_count: crash_count_tick,
         });
 
         // ── Persist snapshot every 15 ticks (~30s) ────────────────────────
@@ -2306,6 +2324,58 @@ fn build_one_liner(hw: &HwSnapshot, blame: &ProcessBlame) -> String {
     // Top culprit if present
     if !hw.top_culprit.is_empty() {
         parts.push(hw.top_culprit.clone());
+    }
+
+    // Most critical per-agent signal (highest severity first, one signal only).
+    // This surfaces agent-level issues in the compact summary that hardware metrics miss.
+    'agent: for agent in &blame.claude_agents {
+        if agent.bun_crash_trajectory == Some(true) {
+            parts.push(format!("PID {} crash-trajectory [/clear now]", agent.pid));
+            break 'agent;
+        }
+        if agent.gc_pressure.as_deref() == Some("critical") {
+            parts.push(format!(
+                "PID {} GC-critical {:.1}GB [/clear]",
+                agent.pid, agent.ram_gb
+            ));
+            break 'agent;
+        }
+        if agent.pipe_stall_secs.is_some_and(|s| s > 30) {
+            parts.push(format!(
+                "PID {} pipe-deadlock {}s [kill-subprocess]",
+                agent.pid,
+                agent.pipe_stall_secs.unwrap()
+            ));
+            break 'agent;
+        }
+        if agent.agent_stall_secs.is_some_and(|s| s > 300) {
+            parts.push(format!(
+                "PID {} stalled {}min [kill]",
+                agent.pid,
+                agent.agent_stall_secs.unwrap() / 60
+            ));
+            break 'agent;
+        }
+        if agent.ctx_window_risk.as_deref() == Some("critical") {
+            parts.push(format!("PID {} ctx-critical [/compact]", agent.pid));
+            break 'agent;
+        }
+        if agent.tool_call_depth.is_some_and(|d| d >= 5) {
+            parts.push(format!(
+                "PID {} depth-{} [recursive-tool-call]",
+                agent.pid,
+                agent.tool_call_depth.unwrap()
+            ));
+            break 'agent;
+        }
+        if agent.rss_growth_rate_mb_per_hr.is_some_and(|r| r > 300.0) {
+            parts.push(format!(
+                "PID {} RSS+{:.0}MB/hr [leak]",
+                agent.pid,
+                agent.rss_growth_rate_mb_per_hr.unwrap()
+            ));
+            break 'agent;
+        }
     }
 
     // Urgency

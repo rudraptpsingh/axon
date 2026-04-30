@@ -371,6 +371,8 @@ pub fn query_session_health(db: &DbHandle, since: DateTime<Utc>) -> Result<Sessi
             throttle_event_count: 0,
             agent_accumulation_events: 0,
             peak_ai_agent_count: 0,
+            agent_critical_ticks: 0,
+            crash_count: 0,
         });
     }
 
@@ -474,6 +476,8 @@ pub fn query_session_health(db: &DbHandle, since: DateTime<Utc>) -> Result<Sessi
         throttle_event_count: throttle_count,
         agent_accumulation_events,
         peak_ai_agent_count,
+        agent_critical_ticks: 0,
+        crash_count: 0,
     })
 }
 

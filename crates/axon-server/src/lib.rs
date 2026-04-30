@@ -1194,6 +1194,15 @@ fn session_health_narrative(health: &SessionHealth) -> String {
     if health.throttle_event_count > 0 {
         parts.push(format!("{} throttle events", health.throttle_event_count));
     }
+    if health.agent_critical_ticks > 0 {
+        parts.push(format!(
+            "{} ticks with critical agent signal",
+            health.agent_critical_ticks
+        ));
+    }
+    if health.crash_count > 0 {
+        parts.push(format!("{} agent crash(es) detected", health.crash_count));
+    }
     if let Some(t) = health.peak_temp_celsius {
         parts.push(format!("peak temp {:.0}C", t));
     }

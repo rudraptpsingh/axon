@@ -570,6 +570,16 @@ pub struct SessionHealth {
     /// Peak number of AI agent processes seen at any single snapshot during the session.
     #[serde(default)]
     pub peak_ai_agent_count: u32,
+    /// Number of 2-second ticks where at least one claude agent had a critical-severity
+    /// signal (gc_pressure=critical, bun_crash_trajectory, pipe_stall_secs>30,
+    /// agent_stall_secs>300, or ram_spike). Divide by 1800 to get fraction of an hour.
+    /// Normal: 0. Sustained values indicate an agent that needs intervention.
+    #[serde(default)]
+    pub agent_critical_ticks: u32,
+    /// Total agent crash events (process disappeared without graceful exit) in the window.
+    /// Normal: 0. Non-zero means at least one session was killed (OOM, SIGKILL, segfault).
+    #[serde(default)]
+    pub crash_count: u32,
 }
 
 // ── GPU Types ─────────────────────────────────────────────────────────────────

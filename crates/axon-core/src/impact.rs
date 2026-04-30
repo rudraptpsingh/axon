@@ -1,7 +1,7 @@
 use crate::thresholds;
 use crate::types::{
-    AnomalyType, CulpritCategory, DiskPressure, HeadroomLevel, HwSnapshot, ImpactLevel,
-    ProcessGroup, ProcessInfo, RamPressure, TrendDirection, Urgency,
+    AnomalyType, ClaudeAgentInfo, CulpritCategory, DiskPressure, HeadroomLevel, HwSnapshot,
+    ImpactLevel, ProcessGroup, ProcessInfo, RamPressure, TrendDirection, Urgency,
 };
 
 // ── Headroom Computation ──────────────────────────────────────────────────────
@@ -83,6 +83,74 @@ pub fn compute_headroom(snap: &HwSnapshot) -> (HeadroomLevel, String) {
         );
     }
     (HeadroomLevel::Adequate, "System has headroom".to_string())
+}
+
+/// Escalate headroom based on per-agent critical signals. Called after claude_agents
+/// are computed; only ever raises the level, never lowers it.
+pub fn elevate_headroom_for_agents(
+    current: HeadroomLevel,
+    current_reason: String,
+    agents: &[ClaudeAgentInfo],
+) -> (HeadroomLevel, String) {
+    for agent in agents {
+        // Imminent OOM crash: trajectory beats everything
+        if agent.bun_crash_trajectory == Some(true) {
+            return (
+                HeadroomLevel::Insufficient,
+                format!(
+                    "PID {} crash-trajectory (>4h uptime + rapid RSS growth)",
+                    agent.pid
+                ),
+            );
+        }
+        // GC thrashing: process will spin at 100% CPU and become unresponsive
+        if agent.gc_pressure.as_deref() == Some("critical")
+            && current != HeadroomLevel::Insufficient
+        {
+            return (
+                HeadroomLevel::Insufficient,
+                format!(
+                    "PID {} Bun GC critical ({:.1}GB RAM)",
+                    agent.pid, agent.ram_gb
+                ),
+            );
+        }
+        // Pipe deadlock or prolonged stall: agent is effectively frozen
+        if agent.pipe_stall_secs.is_some_and(|s| s > 30)
+            && current == HeadroomLevel::Adequate
+        {
+            return (
+                HeadroomLevel::Limited,
+                format!(
+                    "PID {} pipe deadlock ({}s blocked)",
+                    agent.pid,
+                    agent.pipe_stall_secs.unwrap()
+                ),
+            );
+        }
+        if agent.agent_stall_secs.is_some_and(|s| s > 300)
+            && current == HeadroomLevel::Adequate
+        {
+            return (
+                HeadroomLevel::Limited,
+                format!(
+                    "PID {} stalled {}min with no progress",
+                    agent.pid,
+                    agent.agent_stall_secs.unwrap() / 60
+                ),
+            );
+        }
+        // Context window pressure: new tasks will be truncated or hang
+        if agent.ctx_window_risk.as_deref() == Some("critical")
+            && current == HeadroomLevel::Adequate
+        {
+            return (
+                HeadroomLevel::Limited,
+                format!("PID {} context window near limit (session file >20MB)", agent.pid),
+            );
+        }
+    }
+    (current, current_reason)
 }
 
 // ── Agent Accumulation Detection ─────────────────────────────────────────────
@@ -413,13 +481,65 @@ pub fn impact_message(level: &ImpactLevel, anomaly: &AnomalyType) -> String {
 // ── Fix Suggestions ───────────────────────────────────────────────────────────
 
 /// Return a concrete fix for the given culprit process and anomaly type.
-/// When a group is available, uses the group name for matching and includes
-/// group-level stats in the fix message.
+/// Agent signals take priority over process-name matching — the most actionable
+/// signal for the user's running claude sessions is returned first.
 pub fn suggest_fix(
     culprit: Option<&ProcessInfo>,
     group: Option<&ProcessGroup>,
     anomaly: &AnomalyType,
+    agents: &[ClaudeAgentInfo],
 ) -> String {
+    // Agent-signal priority: these are more actionable than hardware/process blame
+    for agent in agents {
+        if agent.bun_crash_trajectory == Some(true) {
+            return format!(
+                "PID {} is on crash trajectory (>4h uptime + rapid RSS growth). \
+                 Save work and restart claude now before OOM kill.",
+                agent.pid
+            );
+        }
+        if agent.gc_pressure.as_deref() == Some("critical") {
+            return format!(
+                "PID {} RAM {:.1}GB — Bun GC thrashing. Run /clear to reset session buffer \
+                 (known fix: drops RAM from ~2GB to ~160MB instantly).",
+                agent.pid, agent.ram_gb
+            );
+        }
+        if agent.pipe_stall_secs.is_some_and(|s| s > 30) {
+            return format!(
+                "PID {} deadlocked on pipe {}s. Kill the stuck subprocess or the agent: \
+                 lsof -p {} | grep pipe, then kill {}",
+                agent.pid,
+                agent.pipe_stall_secs.unwrap(),
+                agent.pid,
+                agent.pid
+            );
+        }
+        if agent.agent_stall_secs.is_some_and(|s| s > 300) {
+            return format!(
+                "PID {} stalled {}min with no progress (no CPU, no children, no I/O). \
+                 Kill and restart the session: kill {}",
+                agent.pid,
+                agent.agent_stall_secs.unwrap() / 60,
+                agent.pid
+            );
+        }
+        if agent.ctx_window_risk.as_deref() == Some("critical") {
+            return format!(
+                "PID {} context window near limit (session file >20MB). \
+                 Run /compact to compress history before load-hang occurs.",
+                agent.pid
+            );
+        }
+        if agent.rss_growth_rate_mb_per_hr.is_some_and(|r| r > 300.0) {
+            return format!(
+                "PID {} RSS growing {:.0}MB/hr — memory leak. \
+                 Run /clear now or restart before OOM kill.",
+                agent.pid,
+                agent.rss_growth_rate_mb_per_hr.unwrap()
+            );
+        }
+    }
     // Use group name for matching if available, fall back to culprit cmd
     let match_name = group
         .map(|g| g.name.clone())
@@ -722,7 +842,31 @@ pub fn compute_urgency(
     impact: &ImpactLevel,
     cpu_trend: &TrendDirection,
     ram_trend: &TrendDirection,
+    agents: &[ClaudeAgentInfo],
 ) -> Urgency {
+    // Agent signals override hardware-based urgency: these mean act immediately
+    // regardless of what system-level metrics show.
+    for agent in agents {
+        if agent.bun_crash_trajectory == Some(true)
+            || agent.ram_spike == Some(true)
+            || agent.pipe_stall_secs.is_some_and(|s| s > 60)
+            || agent.gc_pressure.as_deref() == Some("critical")
+            || agent.tool_call_depth.is_some_and(|d| d >= 8)
+        {
+            return Urgency::ActNow;
+        }
+        if agent.agent_stall_secs.is_some_and(|s| s > 120)
+            || agent.ctx_window_risk.as_deref() == Some("critical")
+            || agent.rss_growth_rate_mb_per_hr.is_some_and(|r| r > 300.0)
+            || agent.pipe_stall_secs.is_some_and(|s| s > 10)
+            || agent.tool_call_depth.is_some_and(|d| d >= 5)
+        {
+            // Only escalate upward (don't override ActNow from hardware)
+            if *impact != ImpactLevel::Critical {
+                return Urgency::ActSoon;
+            }
+        }
+    }
     let rising = *cpu_trend == TrendDirection::Rising || *ram_trend == TrendDirection::Rising;
     match impact {
         ImpactLevel::Critical => Urgency::ActNow,
@@ -903,7 +1047,7 @@ mod tests {
             ram_gb: 2.0,
             blame_score: 0.5,
         };
-        let fix = suggest_fix(Some(&chrome), None, &AnomalyType::MemoryPressure);
+        let fix = suggest_fix(Some(&chrome), None, &AnomalyType::MemoryPressure, &[]);
         assert!(
             fix.contains("browser") || fix.contains("tabs"),
             "expected browser fix, got: {}",
@@ -929,7 +1073,7 @@ mod tests {
             top_pid: 1,
             pids: vec![1],
         };
-        let fix = suggest_fix(Some(&chrome), Some(&group), &AnomalyType::MemoryPressure);
+        let fix = suggest_fix(Some(&chrome), Some(&group), &AnomalyType::MemoryPressure, &[]);
         assert!(
             fix.contains("6.2GB"),
             "expected group RAM in fix, got: {}",
@@ -951,7 +1095,7 @@ mod tests {
             ram_gb: 2.0,
             blame_score: 0.5,
         };
-        let fix = suggest_fix(Some(&unknown), None, &AnomalyType::MemoryPressure);
+        let fix = suggest_fix(Some(&unknown), None, &AnomalyType::MemoryPressure, &[]);
         assert!(
             fix.contains("unknown_app_xyz") && fix.contains("Close or restart"),
             "expected process-specific fallback, got: {}",
@@ -968,7 +1112,7 @@ mod tests {
             ram_gb: 1.5,
             blame_score: 0.6,
         };
-        let fix = suggest_fix(Some(&rustc), None, &AnomalyType::CpuSaturation);
+        let fix = suggest_fix(Some(&rustc), None, &AnomalyType::CpuSaturation, &[]);
         assert!(
             fix.contains("cargo build -j 2"),
             "rustc should get cargo build fix, got: {}",
@@ -1202,7 +1346,7 @@ mod tests {
             top_pid: 100,
             pids: vec![100, 101, 102],
         };
-        let fix = suggest_fix(None, Some(&group), &AnomalyType::AgentAccumulation);
+        let fix = suggest_fix(None, Some(&group), &AnomalyType::AgentAccumulation, &[]);
         assert!(fix.contains("3"), "fix: {}", fix);
         assert!(fix.contains("claude"), "fix: {}", fix);
         assert!(fix.contains("1.1GB"), "fix: {}", fix);
@@ -1437,7 +1581,8 @@ mod tests {
             compute_urgency(
                 &ImpactLevel::Critical,
                 &TrendDirection::Stable,
-                &TrendDirection::Stable
+                &TrendDirection::Stable,
+                &[]
             ),
             Urgency::ActNow
         );
@@ -1449,7 +1594,8 @@ mod tests {
             compute_urgency(
                 &ImpactLevel::Strained,
                 &TrendDirection::Rising,
-                &TrendDirection::Stable
+                &TrendDirection::Stable,
+                &[]
             ),
             Urgency::ActNow
         );
@@ -1461,7 +1607,8 @@ mod tests {
             compute_urgency(
                 &ImpactLevel::Strained,
                 &TrendDirection::Stable,
-                &TrendDirection::Stable
+                &TrendDirection::Stable,
+                &[]
             ),
             Urgency::ActSoon
         );
@@ -1473,7 +1620,8 @@ mod tests {
             compute_urgency(
                 &ImpactLevel::Degrading,
                 &TrendDirection::Rising,
-                &TrendDirection::Stable
+                &TrendDirection::Stable,
+                &[]
             ),
             Urgency::ActSoon
         );
@@ -1485,7 +1633,8 @@ mod tests {
             compute_urgency(
                 &ImpactLevel::Degrading,
                 &TrendDirection::Stable,
-                &TrendDirection::Stable
+                &TrendDirection::Stable,
+                &[]
             ),
             Urgency::Monitor
         );
@@ -1497,7 +1646,8 @@ mod tests {
             compute_urgency(
                 &ImpactLevel::Healthy,
                 &TrendDirection::Rising,
-                &TrendDirection::Rising
+                &TrendDirection::Rising,
+                &[]
             ),
             Urgency::Monitor
         );
@@ -1556,7 +1706,7 @@ mod tests {
             AnomalyType::GeneralSlowdown,
             AnomalyType::None,
         ] {
-            let fix = suggest_fix(Some(&culprit), Some(&group), anomaly);
+            let fix = suggest_fix(Some(&culprit), Some(&group), anomaly, &[]);
             assert!(
                 fix.contains("Cursor") && fix.contains("Cmd+W"),
                 "anomaly {:?}: fix should mention Cursor and Cmd+W, got: {}",
@@ -1578,7 +1728,7 @@ mod tests {
             top_pid: 55600,
             pids: (100..120).collect(),
         };
-        let fix = suggest_fix(None, Some(&group), &AnomalyType::MemoryPressure);
+        let fix = suggest_fix(None, Some(&group), &AnomalyType::MemoryPressure, &[]);
         assert!(
             fix.contains("Cursor") && fix.contains("Cmd+W"),
             "20-process Cursor group should get Cursor-specific fix, got: {}",
@@ -1598,7 +1748,7 @@ mod tests {
             top_pid: 9999,
             pids: vec![self_pid, 9999, 8888],
         };
-        let fix = suggest_fix(None, Some(&group), &AnomalyType::CpuSaturation);
+        let fix = suggest_fix(None, Some(&group), &AnomalyType::CpuSaturation, &[]);
         // Should mention stale instances and include kill command with non-self PIDs
         assert!(fix.contains("stale axon"), "fix: {}", fix);
         assert!(fix.contains("kill"), "fix: {}", fix);
@@ -1623,7 +1773,7 @@ mod tests {
             top_pid: std::process::id(),
             pids: vec![std::process::id()],
         };
-        let fix = suggest_fix(None, Some(&group), &AnomalyType::CpuSaturation);
+        let fix = suggest_fix(None, Some(&group), &AnomalyType::CpuSaturation, &[]);
         // Single instance should fall through to generic fix, not mention stale
         assert!(!fix.contains("stale axon"), "fix: {}", fix);
     }
