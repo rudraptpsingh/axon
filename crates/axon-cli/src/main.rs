@@ -431,6 +431,18 @@ fn run_setup(target: Option<&str>) -> Result<()> {
 // ── Shared Helpers ───────────────────────────────────────────────────────────
 
 fn bin_path() -> std::path::PathBuf {
+    preferred_bin_path()
+}
+
+/// Returns the most stable axon binary path available.
+/// Prefers ~/.cargo/bin/axon (survives `cargo clean`) over the current executable.
+fn preferred_bin_path() -> std::path::PathBuf {
+    if let Some(home) = dirs::home_dir() {
+        let cargo_bin = home.join(".cargo/bin/axon");
+        if cargo_bin.exists() {
+            return cargo_bin;
+        }
+    }
     std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("axon"))
 }
 
@@ -633,8 +645,22 @@ fn setup_all() -> Result<()> {
         }
     }
 
+    // Claude Code — always attempt; writes to ~/.claude.json (global, all projects)
+    match setup_claude_code_inner() {
+        Ok(true) => {
+            println!("[ok] Configured Claude Code (global, all projects).");
+            println!("     Restart Claude Code to apply changes.");
+            configured += 1;
+        }
+        Ok(false) => {
+            println!("[ok] Claude Code already configured.");
+            skipped += 1;
+        }
+        Err(e) => println!("[err] Claude Code: {}", e),
+    }
+
     if configured == 0 && skipped == 0 {
-        println!("[info] No supported agents detected (Claude Desktop, Cursor, VS Code).");
+        println!("[info] No supported agents detected (Claude Desktop, Cursor, VS Code, Claude Code).");
         println!("       Run 'axon setup <target>' to configure a specific agent.");
     }
 
@@ -687,40 +713,67 @@ fn setup_vscode() -> Result<()> {
 }
 
 fn setup_claude_code() -> Result<()> {
-    use std::process::Command;
-
-    let full_path = bin_path();
-    let status = Command::new("claude")
-        .args([
-            "mcp",
-            "add",
-            "axon",
-            "--",
-            &full_path.to_string_lossy(),
-            "serve",
-        ])
-        .status();
-
-    match status {
-        Ok(s) if s.success() => {
-            println!("[ok] axon added to Claude Code.");
-            println!("     Verify with: claude mcp list");
-        }
-        Ok(_) => {
-            anyhow::bail!("claude mcp add failed. Check that Claude Code is installed.");
-        }
-        Err(_) => {
-            eprintln!("'claude' command not found. Printing config manually:\n");
-            println!("Add this to your Claude Code MCP config:");
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&serde_json::json!({
-                    "axon": mcp_entry()
-                }))?
-            );
-        }
+    let wrote = setup_claude_code_inner()?;
+    let path = claude_json_path()
+        .ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?;
+    if wrote {
+        println!("[ok] axon added to Claude Code (global, all projects).");
+        println!("     Config: {}", path.display());
+        println!("     Binary: {}", preferred_bin_path().display());
+        println!("     Restart Claude Code to apply changes.");
+    } else {
+        println!("[ok] Already configured at {}", path.display());
     }
     Ok(())
+}
+
+fn claude_json_path() -> Option<std::path::PathBuf> {
+    dirs::home_dir().map(|h| h.join(".claude.json"))
+}
+
+/// Write axon into the global mcpServers section of ~/.claude.json.
+/// Returns Ok(true) if the file was written (new or updated), Ok(false) if already correct.
+fn setup_claude_code_inner() -> Result<bool> {
+    let path = claude_json_path()
+        .ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?;
+    let bin = preferred_bin_path();
+    let bin_str = bin.to_string_lossy();
+
+    let mut config: serde_json::Value = if path.exists() {
+        std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|raw| serde_json::from_str(&raw).ok())
+            .unwrap_or_else(|| serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
+
+    // Already configured with the correct binary — nothing to do.
+    let existing_cmd = config
+        .get("mcpServers")
+        .and_then(|s| s.get("axon"))
+        .and_then(|e| e.get("command"))
+        .and_then(|c| c.as_str())
+        .unwrap_or("");
+    if existing_cmd == bin_str.as_ref() {
+        return Ok(false);
+    }
+
+    if config.get("mcpServers").is_none() {
+        config["mcpServers"] = serde_json::json!({});
+    }
+    config["mcpServers"]["axon"] = serde_json::json!({
+        "type": "stdio",
+        "command": bin_str,
+        "args": ["serve"],
+        "env": {}
+    });
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&path, serde_json::to_string_pretty(&config)?)?;
+    Ok(true)
 }
 
 // ── Setup List ───────────────────────────────────────────────────────────────
@@ -774,18 +827,16 @@ fn run_setup_list() -> Result<()> {
         detected: vscode_config.exists(),
     });
 
-    // Claude Code
+    // Claude Code — config lives in ~/.claude.json (global mcpServers)
+    let claude_code_json = claude_json_path().unwrap_or_else(|| std::path::PathBuf::from("~/.claude.json"));
     let claude_code_ok = check_claude_code();
+    let claude_code_bin = get_configured_binary(&claude_code_json, &["mcpServers", "axon", "command"]);
     agents.push(AgentInfo {
         name: "Claude Code",
         configured: claude_code_ok,
-        config_path: "(managed by claude CLI)".to_string(),
-        binary_path: if claude_code_ok {
-            "via claude mcp".to_string()
-        } else {
-            "-".to_string()
-        },
-        detected: which_exists("claude"),
+        config_path: claude_code_json.display().to_string(),
+        binary_path: claude_code_bin,
+        detected: true, // always show; ~/.claude.json may not exist yet but setup can create it
     });
 
     // Data directories
@@ -854,16 +905,6 @@ fn get_configured_binary(path: &std::path::Path, keys: &[&str]) -> String {
     current.as_str().unwrap_or("-").to_string()
 }
 
-fn which_exists(cmd: &str) -> bool {
-    use std::process::Command;
-    Command::new("which")
-        .arg(cmd)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
-}
 
 fn check_mcp_config(path: &std::path::Path, key: &str) -> bool {
     if !path.exists() {
@@ -888,14 +929,12 @@ fn check_vscode_config(path: &std::path::Path) -> bool {
 }
 
 fn check_claude_code() -> bool {
-    use std::process::Command;
-    Command::new("claude")
-        .args(["mcp", "get", "axon"])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+    claude_json_path()
+        .filter(|p| p.exists())
+        .and_then(|p| std::fs::read_to_string(&p).ok())
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+        .and_then(|cfg| cfg.get("mcpServers")?.get("axon").cloned())
+        .is_some()
 }
 
 // ── Uninstall ────────────────────────────────────────────────────────────────
@@ -1060,14 +1099,29 @@ fn uninstall_claude_code() -> Result<()> {
 }
 
 fn uninstall_claude_code_inner() -> bool {
-    use std::process::Command;
-    Command::new("claude")
-        .args(["mcp", "remove", "axon"])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+    let path = match claude_json_path().filter(|p| p.exists()) {
+        Some(p) => p,
+        None => return false,
+    };
+    let raw = match std::fs::read_to_string(&path) {
+        Ok(r) => r,
+        Err(_) => return false,
+    };
+    let mut config: serde_json::Value = match serde_json::from_str(&raw) {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    let had_axon = config.get("mcpServers").and_then(|s| s.get("axon")).is_some();
+    if !had_axon {
+        return false;
+    }
+    if let Some(servers) = config.get_mut("mcpServers").and_then(|s| s.as_object_mut()) {
+        servers.remove("axon");
+    }
+    match serde_json::to_string_pretty(&config) {
+        Ok(out) => std::fs::write(&path, out).is_ok(),
+        Err(_) => false,
+    }
 }
 
 fn purge_data() -> Result<()> {

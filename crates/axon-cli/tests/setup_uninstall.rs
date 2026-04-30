@@ -134,7 +134,7 @@ fn test_setup_list_shows_status() {
         assert!(ok);
         assert!(stdout.contains("[ok]"));
         assert!(stdout.contains("binary:"));
-        assert!(stdout.contains("3 of"));
+        assert!(stdout.contains("4 of"));
     });
 }
 
@@ -160,7 +160,8 @@ fn test_uninstall_removes_from_all() {
         assert!(stdout.contains("Removed axon from Claude Desktop"));
         assert!(stdout.contains("Removed axon from Cursor"));
         assert!(stdout.contains("Removed axon from VS Code"));
-        assert!(stdout.contains("Removed from 3 agent(s)"));
+        assert!(stdout.contains("Removed axon from Claude Code"));
+        assert!(stdout.contains("Removed from 4 agent(s)"));
 
         // Verify configs no longer have axon
         #[cfg(target_os = "macos")]
@@ -189,9 +190,9 @@ fn test_uninstall_single_target() {
         assert!(ok);
         assert!(stdout.contains("Removed axon from Cursor"));
 
-        // Others should still be configured
+        // Others should still be configured (Claude Desktop + VS Code + Claude Code = 3)
         let (_, stdout, _) = run_axon(home, &["setup", "--list"]);
-        assert!(stdout.contains("2 of"));
+        assert!(stdout.contains("3 of"));
     });
 }
 
