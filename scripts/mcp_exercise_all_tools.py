@@ -95,6 +95,8 @@ def main() -> int:
             "hardware_trend",
             "session_health",
             "gpu_snapshot",
+            "workload_advice",
+            "agent_runtime_health",
         }
         missing = expected - names
         if missing:
@@ -109,6 +111,8 @@ def main() -> int:
             (6, "hardware_trend", {"time_range": "last_1h", "interval": "15m"}),
             (7, "session_health", {}),
             (8, "gpu_snapshot", {}),
+            (9, "workload_advice", {"kind": "test", "requested_parallelism": 8}),
+            (10, "agent_runtime_health", {}),
         ]
 
         for mid, name, args in calls:

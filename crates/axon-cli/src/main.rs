@@ -62,7 +62,7 @@ enum Commands {
 
     /// Call an MCP tool directly and print the JSON response (e.g. process_blame, hw_snapshot)
     Query {
-        /// Tool name: process_blame | hw_snapshot | battery_status | system_profile | session_health | gpu_snapshot | hardware_trend
+        /// Tool name: process_blame | hw_snapshot | workload_advice | agent_runtime_health | battery_status | system_profile | session_health | gpu_snapshot | hardware_trend
         #[arg(value_name = "TOOL")]
         tool: String,
     },
@@ -347,6 +347,30 @@ async fn run_query(tool: &str) -> Result<()> {
                 let response = axon_core::types::McpResponse::success(guard.hw.clone(), narrative);
                 serde_json::to_string_pretty(&response)?
             }
+            "workload_advice" => {
+                let req = axon_core::types::WorkloadAdviceRequest {
+                    kind: axon_core::types::WorkloadKind::General,
+                    requested_parallelism: None,
+                    estimated_duration_s: None,
+                    gpu_required: false,
+                };
+                let advice = axon_core::impact::advise_workload(
+                    &req,
+                    &guard.hw,
+                    &guard.blame,
+                    guard.gpu.as_ref(),
+                    &guard.profile,
+                );
+                let narrative = axon_server::workload_advice_narrative_pub(&advice);
+                let response = axon_core::types::McpResponse::success(advice, narrative);
+                serde_json::to_string_pretty(&response)?
+            }
+            "agent_runtime_health" => {
+                let health = axon_core::agent_runtime::scan_agent_runtime_health();
+                let narrative = axon_server::agent_runtime_health_narrative_pub(&health);
+                let response = axon_core::types::McpResponse::success(health, narrative);
+                serde_json::to_string_pretty(&response)?
+            }
             "battery_status" => match &guard.battery {
                 Some(b) => {
                     let narrative = b.narrative.clone();
@@ -404,7 +428,7 @@ async fn run_query(tool: &str) -> Result<()> {
                 serde_json::to_string_pretty(&response)?
             }
             other => anyhow::bail!(
-                "Unknown tool '{}'. Supported: process_blame, hw_snapshot, battery_status, system_profile, session_health, gpu_snapshot, hardware_trend",
+                "Unknown tool '{}'. Supported: process_blame, hw_snapshot, workload_advice, agent_runtime_health, battery_status, system_profile, session_health, gpu_snapshot, hardware_trend",
                 other
             ),
         }
@@ -660,7 +684,9 @@ fn setup_all() -> Result<()> {
     }
 
     if configured == 0 && skipped == 0 {
-        println!("[info] No supported agents detected (Claude Desktop, Cursor, VS Code, Claude Code).");
+        println!(
+            "[info] No supported agents detected (Claude Desktop, Cursor, VS Code, Claude Code)."
+        );
         println!("       Run 'axon setup <target>' to configure a specific agent.");
     }
 
@@ -714,8 +740,8 @@ fn setup_vscode() -> Result<()> {
 
 fn setup_claude_code() -> Result<()> {
     let wrote = setup_claude_code_inner()?;
-    let path = claude_json_path()
-        .ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?;
+    let path =
+        claude_json_path().ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?;
     if wrote {
         println!("[ok] axon added to Claude Code (global, all projects).");
         println!("     Config: {}", path.display());
@@ -734,8 +760,8 @@ fn claude_json_path() -> Option<std::path::PathBuf> {
 /// Write axon into the global mcpServers section of ~/.claude.json.
 /// Returns Ok(true) if the file was written (new or updated), Ok(false) if already correct.
 fn setup_claude_code_inner() -> Result<bool> {
-    let path = claude_json_path()
-        .ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?;
+    let path =
+        claude_json_path().ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?;
     let bin = preferred_bin_path();
     let bin_str = bin.to_string_lossy();
 
@@ -828,9 +854,11 @@ fn run_setup_list() -> Result<()> {
     });
 
     // Claude Code — config lives in ~/.claude.json (global mcpServers)
-    let claude_code_json = claude_json_path().unwrap_or_else(|| std::path::PathBuf::from("~/.claude.json"));
+    let claude_code_json =
+        claude_json_path().unwrap_or_else(|| std::path::PathBuf::from("~/.claude.json"));
     let claude_code_ok = check_claude_code();
-    let claude_code_bin = get_configured_binary(&claude_code_json, &["mcpServers", "axon", "command"]);
+    let claude_code_bin =
+        get_configured_binary(&claude_code_json, &["mcpServers", "axon", "command"]);
     agents.push(AgentInfo {
         name: "Claude Code",
         configured: claude_code_ok,
@@ -904,7 +932,6 @@ fn get_configured_binary(path: &std::path::Path, keys: &[&str]) -> String {
     }
     current.as_str().unwrap_or("-").to_string()
 }
-
 
 fn check_mcp_config(path: &std::path::Path, key: &str) -> bool {
     if !path.exists() {
@@ -1111,7 +1138,10 @@ fn uninstall_claude_code_inner() -> bool {
         Ok(c) => c,
         Err(_) => return false,
     };
-    let had_axon = config.get("mcpServers").and_then(|s| s.get("axon")).is_some();
+    let had_axon = config
+        .get("mcpServers")
+        .and_then(|s| s.get("axon"))
+        .is_some();
     if !had_axon {
         return false;
     }

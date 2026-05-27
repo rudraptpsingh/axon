@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Axon is a zero-cloud MCP server that gives AI coding agents real-time local runtime awareness before they spawn more tools.">
+  <meta property="og:title" content="Axon - Runtime intelligence for local AI agents">
+  <meta property="og:description" content="Stop blind agent fan-out before it taxes the workstation. Private hardware and agent-runtime signals for Codex, Claude, Cursor, VS Code, servers, VMs, and workstations.">
+  <meta property="og:type" content="website">
+  <link rel="icon" href="data:,">
+  <title>Axon - Runtime intelligence for local AI agents</title>
+  <style>
+    *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:#090a0a;color:#f4f1e8;font-family:"Avenir Next","Helvetica Neue",Helvetica,Arial,sans-serif;-webkit-font-smoothing:antialiased;text-rendering:geometricPrecision}
+    :root{--bg:#090a0a;--panel:#111211;--panel2:#171817;--line:rgba(244,241,232,.12);--line2:rgba(244,241,232,.22);--ink:#f4f1e8;--muted:#aaa49b;--faint:#706b63;--green:#59d68c;--amber:#d9a84f;--red:#e4655e;--blue:#90b9ff;--r:10px}
+    a{color:inherit;text-decoration:none}.mono{font-family:"SF Mono","Menlo",monospace}
+    .page{min-height:100vh;background:linear-gradient(90deg,rgba(255,255,255,.026) 1px,transparent 1px),linear-gradient(0deg,rgba(255,255,255,.018) 1px,transparent 1px);background-size:76px 76px}
+    .wrap{width:min(1180px,calc(100% - 40px));margin:0 auto}
+    nav{position:sticky;top:0;z-index:20;background:rgba(9,10,10,.82);backdrop-filter:blur(18px);border-bottom:1px solid var(--line)}
+    .nav-inner{height:64px;display:flex;align-items:center;justify-content:space-between;gap:20px}
+    .brand{display:flex;align-items:center;gap:12px;font-weight:850;letter-spacing:2.6px}.mark{width:32px;height:32px;border:1px solid var(--line2);border-radius:8px;display:grid;place-items:center;background:#111}
+    .links{display:flex;gap:20px;color:var(--muted);font-size:13px}.links a:hover{color:var(--ink)}
+    .nav-cta{height:34px;border:1px solid var(--line2);border-radius:8px;padding:0 13px;display:inline-flex;align-items:center;font-size:12px;font-weight:760;background:var(--ink);color:#090a0a}
+    .hero{padding:118px 0 104px;max-width:920px}
+    .eyebrow{font-size:11px;text-transform:uppercase;letter-spacing:1.6px;color:var(--amber);font-weight:850;margin-bottom:18px}
+    h1{font-size:76px;line-height:.95;letter-spacing:-.048em;margin:0;font-weight:870;max-width:900px}
+    .lead{font-size:18px;line-height:1.7;color:var(--muted);max-width:720px;margin:24px 0 0}
+    .hero-actions{display:flex;gap:12px;flex-wrap:wrap;margin-top:34px}.btn{height:42px;border-radius:9px;border:1px solid var(--line2);display:inline-flex;align-items:center;padding:0 16px;font-weight:780;font-size:13px;background:var(--panel2)}.btn.primary{background:var(--ink);color:#090a0a;border-color:var(--ink)}.btn:hover{transform:translateY(-1px)}
+    .hero-foot{display:flex;gap:18px;flex-wrap:wrap;margin-top:38px;color:var(--muted);font-size:13px}.hero-foot span{height:34px;border:1px solid var(--line);border-radius:8px;display:inline-flex;align-items:center;padding:0 12px;background:rgba(17,18,17,.48)}
+    section{padding:72px 0;border-top:1px solid var(--line)}.section-head{display:flex;align-items:end;justify-content:space-between;gap:24px;margin-bottom:24px}h2{font-size:42px;line-height:1.05;letter-spacing:-.03em;margin:0}.section-head p{max-width:520px;color:var(--muted);line-height:1.65;margin:0}
+    .cards{display:grid;grid-template-columns:repeat(3,1fr);border:1px solid var(--line);border-radius:var(--r);overflow:hidden;background:rgba(17,18,17,.55)}.card{padding:24px;border-right:1px solid var(--line);min-height:220px}.card:last-child{border-right:0}.card h3{font-size:18px;margin:0 0 12px}.card p{color:var(--muted);line-height:1.65;margin:0}.card .tag{display:inline-flex;margin-bottom:18px;height:24px;align-items:center;border-radius:999px;padding:0 8px;font-size:10px;text-transform:uppercase;letter-spacing:.8px;font-weight:850;background:#18281e;color:var(--green)}
+    .analysis-list{border:1px solid var(--line);border-radius:var(--r);overflow:hidden;background:rgba(17,18,17,.42)}.post{display:grid;grid-template-columns:180px 1fr 34px;gap:24px;padding:26px;border-top:1px solid var(--line);align-items:start}.post:first-child{border-top:0}.post-meta{font-size:11px;color:var(--faint);text-transform:uppercase;letter-spacing:1px;font-weight:850;line-height:1.7}.post h3{font-size:24px;line-height:1.1;letter-spacing:-.02em;margin:0 0 10px}.post p{color:var(--muted);line-height:1.65;margin:0;max-width:720px}.post-arrow{color:var(--green);font:850 24px/1 "SF Mono","Menlo",monospace}
+    .split{display:grid;grid-template-columns:1fr 1fr;gap:24px}.panel{min-width:0;border:1px solid var(--line);border-radius:var(--r);background:rgba(17,18,17,.58);padding:24px}.panel h3{margin:0 0 16px;font-size:18px}.list{display:grid;gap:13px}.item{display:grid;grid-template-columns:118px 1fr;gap:18px;border-top:1px solid var(--line);padding-top:13px}.item b{font-size:12px;color:var(--ink)}.item span{font-size:13px;color:var(--muted);line-height:1.5}
+    .code{max-width:100%;background:#050606;border:1px solid var(--line);border-radius:var(--r);padding:20px;overflow:auto;color:#dfe9de;font-size:13px;line-height:1.7}.code .dim{color:#777}
+    .cta{padding:78px 0 92px;text-align:center}.cta h2{font-size:56px}.cta p{color:var(--muted);font-size:17px;line-height:1.7;max-width:650px;margin:18px auto 0}.cta .hero-actions{justify-content:center}
+    footer{border-top:1px solid var(--line);padding:24px 0;color:var(--faint);font-size:12px}.foot{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}
+    @media(max-width:900px){.split{grid-template-columns:1fr}.cards{grid-template-columns:1fr}.card{border-right:0;border-bottom:1px solid var(--line)}.card:last-child{border-bottom:0}h1{font-size:52px}.links{display:none}.section-head{display:block}.section-head p{margin-top:14px}.item{grid-template-columns:1fr}.post{grid-template-columns:1fr;gap:12px}.post-arrow{display:none}}
+  </style>
+</head>
+<body>
+  <div class="page">
+    <nav>
+      <div class="wrap nav-inner">
+        <a class="brand" href="#"><span class="mark">A</span><span>AXON</span></a>
+        <div class="links">
+          <a href="#problem">Problem</a>
+          <a href="#proof">Proof</a>
+          <a href="#analysis">Analysis</a>
+          <a href="#use-cases">Use cases</a>
+          <a href="#install">Install</a>
+        </div>
+        <a class="nav-cta" href="https://github.com/rudraptpsingh/axon">View GitHub</a>
+      </div>
+    </nav>
+
+    <main>
+      <div class="wrap hero">
+        <div>
+          <div class="eyebrow">Zero-cloud runtime intelligence for agents</div>
+          <h1>Stop blind agent fan-out before it taxes the machine.</h1>
+          <p class="lead">Axon is a local MCP server that helps agents understand when the machine is the bottleneck, before they spawn more tools, burn more credits, or debug the wrong problem.</p>
+          <div class="hero-actions">
+            <a class="btn primary" href="#install">Install Axon</a>
+            <a class="btn" href="#analysis">Read engineering analysis</a>
+          </div>
+          <div class="hero-foot">
+            <span>Private by design</span>
+            <span>Works with local agents</span>
+            <span>Backed by A/B testing</span>
+          </div>
+        </div>
+      </div>
+
+      <section id="analysis">
+        <div class="wrap">
+          <div class="section-head">
+            <h2>Engineering analysis, not marketing claims.</h2>
+            <p>A public research log for real scenarios: same task with and without Axon, measured locally, with the tradeoffs shown instead of hidden.</p>
+          </div>
+          <div class="analysis-list">
+            <a class="post" href="analysis-app-development.html">
+              <div class="post-meta">A/B test<br>App development</div>
+              <div><h3>With and without Axon: app build, test, helper fan-out, and output preservation.</h3><p>The same app task was run in independent workspaces. Axon avoided extra tool helpers, reduced concurrency, preserved output, and made the tradeoff explicit.</p></div>
+              <div class="post-arrow">-&gt;</div>
+            </a>
+            <a class="post" href="value-scorecard.md">
+              <div class="post-meta">Scorecard<br>Cost and time</div>
+              <div><h3>Turning local runtime pressure into value metrics users can understand.</h3><p>Risky tool spawns avoided, estimated credits saved, developer time protected, and stale local runtime count.</p></div>
+              <div class="post-arrow">-&gt;</div>
+            </a>
+            <a class="post" href="problem-validation.md">
+              <div class="post-meta">Research<br>Agent failures</div>
+              <div><h3>Why agentic workflows need host awareness before they run more tools.</h3><p>OOMs, stuck sessions, large local logs, slow builds, and false debugging paths all point to a missing runtime signal.</p></div>
+              <div class="post-arrow">-&gt;</div>
+            </a>
+            <a class="post" href="agent-platform-demo.md">
+              <div class="post-meta">Demo<br>Platform pitch</div>
+              <div><h3>A generic demo for agent IDEs, app builders, local runners, and GPU boxes.</h3><p>How Axon sits beside any agent runtime and returns run, degrade, defer, cleanup, and safe_parallelism decisions.</p></div>
+              <div class="post-arrow">-&gt;</div>
+            </a>
+          </div>
+        </div>
+      </section>
+
+      <section id="problem">
+        <div class="wrap">
+          <div class="section-head">
+            <h2>The bottleneck moved below the prompt.</h2>
+            <p>Modern coding agents can plan, edit, test, spawn tools, drive browsers, and call MCP servers. But they usually do it blind to the local machine they are running on.</p>
+          </div>
+          <div class="cards">
+            <div class="card"><span class="tag">Invisible cost</span><h3>Tool servers accumulate</h3><p>Old MCP servers, stale shells, renderers, and browser controllers quietly compete with every new agent task.</p></div>
+            <div class="card"><span class="tag">Wrong diagnosis</span><h3>Agents blame the code</h3><p>When hardware pressure causes flaky tests or slow builds, the agent may debug false software problems instead of reducing local pressure.</p></div>
+            <div class="card"><span class="tag">Lost velocity</span><h3>Users feel the slowdown</h3><p>The visible outcome is lag, OOMs, fan noise, slow IDEs, failed browser automation, and wasted tokens.</p></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="proof">
+        <div class="wrap split">
+          <div class="panel">
+            <h3>What Axon gives an agent</h3>
+            <div class="list">
+              <div class="item"><b>workload_advice</b><span>Run/defer/degrade recommendation with safe parallelism for builds, tests, Docker, browser automation, GPU jobs, subagents, and MCP-heavy workflows.</span></div>
+              <div class="item"><b>agent_runtime_health</b><span>Live inventory of Codex, Claude, Cursor, MCP servers, stale sessions, duplicate server groups, renderer CPU, and business workflow impact.</span></div>
+              <div class="item"><b>process_blame</b><span>Top culprit process or process group, impact severity, anomaly type, and concrete fix.</span></div>
+              <div class="item"><b>hw_snapshot</b><span>CPU, memory, disk, thermal, GPU, and headroom fields for pre-task gating.</span></div>
+            </div>
+          </div>
+          <div class="panel">
+            <h3>Example decision</h3>
+            <pre class="code"><code><span class="dim">$ axon query workload_advice</span>
+{
+  "recommendation": "defer",
+  "risk": "critical",
+  "safe_parallelism": 1,
+  "reasons": [
+    "Disk at 96% (Critical)",
+    "System impact is critical",
+    "Current anomaly is memory_pressure"
+  ],
+  "suggested_actions": [
+    "defer new heavy work",
+    "cap parallelism at 1 instead of 4"
+  ]
+}</code></pre>
+          </div>
+        </div>
+      </section>
+
+      <section id="use-cases">
+        <div class="wrap">
+          <div class="section-head">
+            <h2>Built for the agent infrastructure layer.</h2>
+            <p>Axon is useful anywhere agents run on machines: laptops, workstations, developer VMs, CI-like local runners, GPU boxes, and hardware platforms.</p>
+          </div>
+          <div class="cards">
+            <div class="card"><span class="tag">Agent companies</span><h3>Agent IDEs and app builders</h3><p>Prevent runaway local fan-out, surface host constraints, and make “why is my agent slow?” answerable without cloud telemetry.</p></div>
+            <div class="card"><span class="tag">Hardware vendors</span><h3>NVIDIA, AMD, Apple, workstation OEMs</h3><p>Expose local capacity and bottlenecks as a standard primitive agents can use before GPU, compile, and browser workloads.</p></div>
+            <div class="card"><span class="tag">Developers</span><h3>Faster feedback with fewer false failures</h3><p>Keep useful work moving while avoiding memory storms, thermal throttling, stale MCP servers, and broken long sessions.</p></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="install">
+        <div class="wrap split">
+          <div>
+            <h2>Install once. Every local agent gets hardware context.</h2>
+            <p class="lead">Axon is private by architecture: no telemetry, no analytics, no cloud calls. It speaks MCP over stdio and runs locally.</p>
+          </div>
+          <pre class="code"><code><span class="dim"># Homebrew</span>
+brew install rudraptpsingh/tap/axon
+
+<span class="dim"># Configure agents</span>
+axon setup
+axon setup cursor
+axon setup vscode
+
+<span class="dim"># Try it directly</span>
+axon query agent_runtime_health
+axon query workload_advice</code></pre>
+        </div>
+      </section>
+
+      <div class="wrap cta">
+        <h2>Make local runtime a first-class agent signal.</h2>
+        <p>Axon turns host pressure into execution policy, so agents can prove value with fewer failed runs, fewer unnecessary tool workers, and clearer user-facing impact.</p>
+        <div class="hero-actions">
+          <a class="btn primary" href="https://github.com/rudraptpsingh/axon">Open the repository</a>
+          <a class="btn" href="value-scorecard.md">Read value scorecard notes</a>
+        </div>
+      </div>
+    </main>
+
+    <footer>
+      <div class="wrap foot">
+        <span>Axon. Zero-cloud local runtime intelligence for AI agents.</span>
+        <span><a href="problem-validation.md">Problem validation</a> / <a href="roadmap.md">Roadmap</a> / <a href="testing-guide.md">Testing</a></span>
+      </div>
+    </footer>
+  </div>
+</body>
+</html>

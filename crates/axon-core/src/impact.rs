@@ -1,7 +1,9 @@
 use crate::thresholds;
 use crate::types::{
-    AnomalyType, ClaudeAgentInfo, CulpritCategory, DiskPressure, HeadroomLevel, HwSnapshot,
-    ImpactLevel, ProcessGroup, ProcessInfo, RamPressure, TrendDirection, Urgency,
+    AnomalyType, ClaudeAgentInfo, CulpritCategory, DiskPressure, GpuSnapshot, HeadroomLevel,
+    HwSnapshot, ImpactLevel, ProcessBlame, ProcessGroup, ProcessInfo, RamPressure, SystemProfile,
+    TrendDirection, Urgency, WorkloadAdvice, WorkloadAdviceRequest, WorkloadKind,
+    WorkloadRecommendation, WorkloadRisk,
 };
 
 // ── Headroom Computation ──────────────────────────────────────────────────────
@@ -116,9 +118,7 @@ pub fn elevate_headroom_for_agents(
             );
         }
         // Pipe deadlock or prolonged stall: agent is effectively frozen
-        if agent.pipe_stall_secs.is_some_and(|s| s > 30)
-            && current == HeadroomLevel::Adequate
-        {
+        if agent.pipe_stall_secs.is_some_and(|s| s > 30) && current == HeadroomLevel::Adequate {
             return (
                 HeadroomLevel::Limited,
                 format!(
@@ -128,9 +128,7 @@ pub fn elevate_headroom_for_agents(
                 ),
             );
         }
-        if agent.agent_stall_secs.is_some_and(|s| s > 300)
-            && current == HeadroomLevel::Adequate
-        {
+        if agent.agent_stall_secs.is_some_and(|s| s > 300) && current == HeadroomLevel::Adequate {
             return (
                 HeadroomLevel::Limited,
                 format!(
@@ -146,11 +144,319 @@ pub fn elevate_headroom_for_agents(
         {
             return (
                 HeadroomLevel::Limited,
-                format!("PID {} context window near limit (session file >20MB)", agent.pid),
+                format!(
+                    "PID {} context window near limit (session file >20MB)",
+                    agent.pid
+                ),
             );
         }
     }
     (current, current_reason)
+}
+
+// ── Workload Advice ─────────────────────────────────────────────────────────
+
+/// Convert hardware/process state into an execution recommendation for agents.
+/// This is intentionally conservative: the cost of waiting or reducing
+/// parallelism is usually lower than triggering OOM, thermal throttling, or
+/// false debugging loops caused by runner pressure.
+pub fn advise_workload(
+    req: &WorkloadAdviceRequest,
+    hw: &HwSnapshot,
+    blame: &ProcessBlame,
+    gpu: Option<&GpuSnapshot>,
+    profile: &SystemProfile,
+) -> WorkloadAdvice {
+    let mut reasons = Vec::new();
+    let mut actions = Vec::new();
+    let requested = req
+        .requested_parallelism
+        .unwrap_or_else(|| default_parallelism_for(&req.kind, profile));
+    let safe_parallelism = safe_parallelism_for(&req.kind, requested, hw, profile);
+
+    reasons.push(hw.headroom_reason.clone());
+
+    if hw.impact_level != ImpactLevel::Healthy {
+        reasons.push(format!(
+            "System impact is {}",
+            impact_level_label(&hw.impact_level)
+        ));
+    }
+    if blame.anomaly_type != AnomalyType::None {
+        reasons.push(format!(
+            "Current anomaly is {}",
+            anomaly_type_label(&blame.anomaly_type)
+        ));
+    }
+    if hw.ai_agent_count >= 3 {
+        reasons.push(format!(
+            "{} AI agent processes already visible",
+            hw.ai_agent_count
+        ));
+    }
+    if hw.throttling {
+        actions.push("wait for thermal cooldown before starting heavy work".to_string());
+    }
+    if matches!(hw.ram_pressure, RamPressure::Warn | RamPressure::Critical) {
+        actions.push("avoid memory-heavy fan-out until RAM pressure recovers".to_string());
+    }
+
+    let mut recommendation = match hw.headroom {
+        HeadroomLevel::Adequate => WorkloadRecommendation::Proceed,
+        HeadroomLevel::Limited => {
+            if safe_parallelism < requested {
+                WorkloadRecommendation::ReduceParallelism
+            } else {
+                WorkloadRecommendation::ProceedWithCaution
+            }
+        }
+        HeadroomLevel::Insufficient => WorkloadRecommendation::Defer,
+    };
+
+    let mut risk = match hw.headroom {
+        HeadroomLevel::Adequate => WorkloadRisk::Low,
+        HeadroomLevel::Limited => WorkloadRisk::Moderate,
+        HeadroomLevel::Insufficient => WorkloadRisk::High,
+    };
+
+    if hw.impact_level == ImpactLevel::Critical
+        || hw.oom_freeze_risk == Some(true)
+        || matches!(hw.ram_pressure, RamPressure::Critical)
+    {
+        recommendation = WorkloadRecommendation::Defer;
+        risk = WorkloadRisk::Critical;
+        actions.push("defer new heavy work and resolve the current culprit first".to_string());
+    } else if hw.throttling || hw.impact_level == ImpactLevel::Strained {
+        recommendation = WorkloadRecommendation::Cooldown;
+        risk = WorkloadRisk::High;
+        actions
+            .push("retry after the machine has cooled and impact returns to healthy".to_string());
+    }
+
+    match req.kind {
+        WorkloadKind::Subagents => {
+            if hw.ai_agent_count >= 4 || hw.headroom == HeadroomLevel::Insufficient {
+                recommendation = WorkloadRecommendation::Defer;
+                risk = if risk == WorkloadRisk::Critical {
+                    WorkloadRisk::Critical
+                } else {
+                    WorkloadRisk::High
+                };
+                actions.push("do not spawn more subagents on this machine right now".to_string());
+            } else if safe_parallelism < requested {
+                recommendation = WorkloadRecommendation::ReduceParallelism;
+                actions.push(format!("spawn at most {} subagent(s)", safe_parallelism));
+            }
+        }
+        WorkloadKind::BrowserTest | WorkloadKind::DockerBuild => {
+            if hw.headroom == HeadroomLevel::Limited && safe_parallelism < requested {
+                recommendation = WorkloadRecommendation::ReduceParallelism;
+                actions.push(format!(
+                    "run with {} worker(s) and monitor headroom during execution",
+                    safe_parallelism
+                ));
+            }
+        }
+        WorkloadKind::LocalInference | WorkloadKind::GpuCompute => {
+            apply_gpu_advice(
+                req,
+                gpu,
+                &mut recommendation,
+                &mut risk,
+                &mut reasons,
+                &mut actions,
+            );
+        }
+        _ => {
+            if safe_parallelism < requested {
+                actions.push(format!(
+                    "cap parallelism at {} instead of {}",
+                    safe_parallelism, requested
+                ));
+            }
+        }
+    }
+
+    if req.estimated_duration_s.is_some_and(|s| s >= 1800)
+        && matches!(
+            risk,
+            WorkloadRisk::Moderate | WorkloadRisk::High | WorkloadRisk::Critical
+        )
+    {
+        reasons.push("long-running workload increases pressure risk".to_string());
+        actions.push("check session_health before and after the workload".to_string());
+    }
+
+    let retry_after_seconds = match recommendation {
+        WorkloadRecommendation::Defer | WorkloadRecommendation::Cooldown => Some(120),
+        _ => None,
+    };
+
+    let confidence = match (&recommendation, reasons.len()) {
+        (WorkloadRecommendation::Proceed, _) => 0.78,
+        (_, n) if n >= 3 => 0.90,
+        _ => 0.84,
+    };
+
+    WorkloadAdvice {
+        kind: req.kind.clone(),
+        recommendation,
+        risk,
+        safe_parallelism: Some(safe_parallelism),
+        retry_after_seconds,
+        reasons: dedupe_nonempty(reasons),
+        suggested_actions: dedupe_nonempty(actions),
+        confidence,
+    }
+}
+
+fn default_parallelism_for(kind: &WorkloadKind, profile: &SystemProfile) -> u32 {
+    let cores = profile.core_count.max(1) as u32;
+    match kind {
+        WorkloadKind::Subagents => 2,
+        WorkloadKind::BrowserTest => cores.min(4),
+        WorkloadKind::DockerBuild | WorkloadKind::Build | WorkloadKind::Test => {
+            cores.saturating_sub(1).max(1)
+        }
+        WorkloadKind::LocalInference | WorkloadKind::GpuCompute => 1,
+        _ => cores.min(4),
+    }
+}
+
+fn safe_parallelism_for(
+    kind: &WorkloadKind,
+    requested: u32,
+    hw: &HwSnapshot,
+    profile: &SystemProfile,
+) -> u32 {
+    let cores = profile.core_count.max(1) as u32;
+    let mut cap = requested.max(1).min(cores.max(1));
+
+    cap = match kind {
+        WorkloadKind::Subagents => cap.min(2),
+        WorkloadKind::BrowserTest => cap.min(4),
+        WorkloadKind::LocalInference | WorkloadKind::GpuCompute => 1,
+        _ => cap,
+    };
+
+    match hw.headroom {
+        HeadroomLevel::Adequate => cap.max(1),
+        HeadroomLevel::Limited => (cap / 2).max(1),
+        HeadroomLevel::Insufficient => 1,
+    }
+}
+
+fn apply_gpu_advice(
+    req: &WorkloadAdviceRequest,
+    gpu: Option<&GpuSnapshot>,
+    recommendation: &mut WorkloadRecommendation,
+    risk: &mut WorkloadRisk,
+    reasons: &mut Vec<String>,
+    actions: &mut Vec<String>,
+) {
+    let host_blocked = matches!(
+        recommendation,
+        WorkloadRecommendation::Defer | WorkloadRecommendation::Cooldown
+    );
+
+    let Some(gpu) = gpu else {
+        if req.gpu_required {
+            reasons.push("No GPU snapshot available".to_string());
+            if !host_blocked {
+                *recommendation = WorkloadRecommendation::UseCpuFallback;
+                *risk = WorkloadRisk::High;
+                actions.push("use a CPU fallback or move the job to a GPU machine".to_string());
+            }
+        }
+        return;
+    };
+
+    if !gpu.detected {
+        if req.gpu_required {
+            reasons.push("No GPU detected".to_string());
+            if !host_blocked {
+                *recommendation = WorkloadRecommendation::UseCpuFallback;
+                *risk = WorkloadRisk::High;
+                actions.push("use a CPU fallback or move the job to a GPU machine".to_string());
+            }
+        }
+        return;
+    }
+
+    if gpu.recovery_count.is_some_and(|n| n > 0) {
+        *recommendation = WorkloadRecommendation::Defer;
+        *risk = WorkloadRisk::High;
+        reasons.push("GPU recovery counter is non-zero".to_string());
+        actions.push("avoid GPU work until the driver is stable".to_string());
+        return;
+    }
+
+    if gpu.utilization_pct.is_some_and(|u| u >= 85.0) {
+        reasons.push(format!(
+            "GPU utilization already at {:.0}%",
+            gpu.utilization_pct.unwrap()
+        ));
+        if !host_blocked {
+            *recommendation = WorkloadRecommendation::Defer;
+            *risk = WorkloadRisk::High;
+            actions.push("wait for current GPU work to finish".to_string());
+        }
+    } else if gpu.utilization_pct.is_some_and(|u| u >= 60.0) {
+        reasons.push(format!(
+            "GPU utilization already at {:.0}%",
+            gpu.utilization_pct.unwrap()
+        ));
+        if !host_blocked {
+            *recommendation = WorkloadRecommendation::UseSmallerGpuWorkload;
+            if *risk == WorkloadRisk::Low {
+                *risk = WorkloadRisk::Moderate;
+            }
+            actions.push("reduce batch size or use a smaller model".to_string());
+        }
+    }
+
+    if gpu.vram_growth_mb_per_hr.is_some_and(|r| r > 100.0) {
+        reasons.push(format!(
+            "GPU memory growing at {:.0} MB/hr",
+            gpu.vram_growth_mb_per_hr.unwrap()
+        ));
+        if !host_blocked {
+            *recommendation = WorkloadRecommendation::UseSmallerGpuWorkload;
+            *risk = WorkloadRisk::High;
+            actions.push("restart the process holding GPU memory before new GPU work".to_string());
+        }
+    }
+}
+
+fn dedupe_nonempty(items: Vec<String>) -> Vec<String> {
+    let mut out = Vec::new();
+    for item in items {
+        if item.trim().is_empty() || out.contains(&item) {
+            continue;
+        }
+        out.push(item);
+    }
+    out
+}
+
+fn impact_level_label(level: &ImpactLevel) -> &'static str {
+    match level {
+        ImpactLevel::Healthy => "healthy",
+        ImpactLevel::Degrading => "degrading",
+        ImpactLevel::Strained => "strained",
+        ImpactLevel::Critical => "critical",
+    }
+}
+
+fn anomaly_type_label(anomaly: &AnomalyType) -> &'static str {
+    match anomaly {
+        AnomalyType::None => "none",
+        AnomalyType::MemoryPressure => "memory_pressure",
+        AnomalyType::CpuSaturation => "cpu_saturation",
+        AnomalyType::ThermalThrottle => "thermal_throttle",
+        AnomalyType::GeneralSlowdown => "general_slowdown",
+        AnomalyType::AgentAccumulation => "agent_accumulation",
+    }
 }
 
 // ── Agent Accumulation Detection ─────────────────────────────────────────────
@@ -1073,7 +1379,12 @@ mod tests {
             top_pid: 1,
             pids: vec![1],
         };
-        let fix = suggest_fix(Some(&chrome), Some(&group), &AnomalyType::MemoryPressure, &[]);
+        let fix = suggest_fix(
+            Some(&chrome),
+            Some(&group),
+            &AnomalyType::MemoryPressure,
+            &[],
+        );
         assert!(
             fix.contains("6.2GB"),
             "expected group RAM in fix, got: {}",
@@ -1166,6 +1477,65 @@ mod tests {
             net_time_wait_count: None,
             inotify_watch_count: None,
         }
+    }
+
+    fn make_profile() -> SystemProfile {
+        SystemProfile {
+            model_id: "test-host".to_string(),
+            chip: "test-cpu".to_string(),
+            core_count: 8,
+            ram_total_gb: 16.0,
+            os_version: "test-os".to_string(),
+            axon_version: "test".to_string(),
+            startup_warnings: vec![],
+        }
+    }
+
+    fn make_blame() -> ProcessBlame {
+        ProcessBlame {
+            anomaly_type: AnomalyType::None,
+            impact_level: ImpactLevel::Healthy,
+            culprit: None,
+            culprit_group: None,
+            anomaly_score: 0.0,
+            impact: "healthy".to_string(),
+            fix: "No action needed.".to_string(),
+            ts: chrono::Utc::now(),
+            stale_axon_pids: vec![],
+            urgency: Urgency::Monitor,
+            culprit_category: CulpritCategory::Unknown,
+            claude_agents: vec![],
+            stranded_idle_pids: vec![],
+            orphan_pids: vec![],
+            zombie_pids: vec![],
+            crashed_agent_pids: vec![],
+            stale_session_count: None,
+            subagent_orphan_count_total: None,
+            background_bash_count: None,
+        }
+    }
+
+    fn make_gpu(detected: bool, utilization_pct: Option<f64>) -> GpuSnapshot {
+        GpuSnapshot {
+            utilization_pct,
+            tiler_utilization_pct: None,
+            renderer_utilization_pct: None,
+            vram_used_bytes: None,
+            vram_alloc_bytes: None,
+            recovery_count: None,
+            model: Some("test-gpu".to_string()),
+            core_count: Some(16),
+            detected,
+            ts: chrono::Utc::now(),
+            vram_growth_mb_per_hr: None,
+        }
+    }
+
+    fn compute_hw_headroom(mut hw: HwSnapshot) -> HwSnapshot {
+        let (headroom, reason) = compute_headroom(&hw);
+        hw.headroom = headroom;
+        hw.headroom_reason = reason;
+        hw
     }
 
     #[test]
@@ -1271,6 +1641,183 @@ mod tests {
         assert_eq!(level, HeadroomLevel::Insufficient);
         assert!(reason.contains("Disk warn"), "reason: {}", reason);
         assert!(reason.contains("CPU"), "reason: {}", reason);
+    }
+
+    #[test]
+    fn test_workload_advice_proceeds_when_headroom_is_adequate() {
+        let hw = compute_hw_headroom(make_hw(
+            RamPressure::Normal,
+            DiskPressure::Normal,
+            false,
+            20.0,
+            None,
+        ));
+        let req = WorkloadAdviceRequest {
+            kind: WorkloadKind::Build,
+            requested_parallelism: Some(6),
+            estimated_duration_s: Some(300),
+            gpu_required: false,
+        };
+        let advice = advise_workload(&req, &hw, &make_blame(), None, &make_profile());
+
+        assert_eq!(advice.recommendation, WorkloadRecommendation::Proceed);
+        assert_eq!(advice.risk, WorkloadRisk::Low);
+        assert_eq!(advice.safe_parallelism, Some(6));
+    }
+
+    #[test]
+    fn test_workload_advice_reduces_parallelism_when_limited() {
+        let hw = compute_hw_headroom(make_hw(
+            RamPressure::Warn,
+            DiskPressure::Normal,
+            false,
+            40.0,
+            None,
+        ));
+        let req = WorkloadAdviceRequest {
+            kind: WorkloadKind::Test,
+            requested_parallelism: Some(8),
+            estimated_duration_s: Some(600),
+            gpu_required: false,
+        };
+        let advice = advise_workload(&req, &hw, &make_blame(), None, &make_profile());
+
+        assert_eq!(
+            advice.recommendation,
+            WorkloadRecommendation::ReduceParallelism
+        );
+        assert_eq!(advice.risk, WorkloadRisk::Moderate);
+        assert_eq!(advice.safe_parallelism, Some(4));
+        assert!(advice
+            .suggested_actions
+            .iter()
+            .any(|a| a.contains("cap parallelism")));
+    }
+
+    #[test]
+    fn test_workload_advice_defers_on_critical_ram() {
+        let mut hw = compute_hw_headroom(make_hw(
+            RamPressure::Critical,
+            DiskPressure::Normal,
+            false,
+            50.0,
+            None,
+        ));
+        hw.impact_level = ImpactLevel::Critical;
+        let mut blame = make_blame();
+        blame.impact_level = ImpactLevel::Critical;
+        blame.anomaly_type = AnomalyType::MemoryPressure;
+        let req = WorkloadAdviceRequest {
+            kind: WorkloadKind::DockerBuild,
+            requested_parallelism: Some(8),
+            estimated_duration_s: Some(1200),
+            gpu_required: false,
+        };
+        let advice = advise_workload(&req, &hw, &blame, None, &make_profile());
+
+        assert_eq!(advice.recommendation, WorkloadRecommendation::Defer);
+        assert_eq!(advice.risk, WorkloadRisk::Critical);
+        assert_eq!(advice.retry_after_seconds, Some(120));
+    }
+
+    #[test]
+    fn test_workload_advice_defers_subagents_when_agents_accumulated() {
+        let mut hw = compute_hw_headroom(make_hw(
+            RamPressure::Normal,
+            DiskPressure::Normal,
+            false,
+            35.0,
+            None,
+        ));
+        hw.ai_agent_count = 4;
+        let req = WorkloadAdviceRequest {
+            kind: WorkloadKind::Subagents,
+            requested_parallelism: Some(4),
+            estimated_duration_s: Some(900),
+            gpu_required: false,
+        };
+        let advice = advise_workload(&req, &hw, &make_blame(), None, &make_profile());
+
+        assert_eq!(advice.recommendation, WorkloadRecommendation::Defer);
+        assert_eq!(advice.risk, WorkloadRisk::High);
+        assert!(advice
+            .suggested_actions
+            .iter()
+            .any(|a| a.contains("do not spawn")));
+    }
+
+    #[test]
+    fn test_workload_advice_gpu_fallback_when_gpu_required_but_absent() {
+        let hw = compute_hw_headroom(make_hw(
+            RamPressure::Normal,
+            DiskPressure::Normal,
+            false,
+            20.0,
+            None,
+        ));
+        let gpu = make_gpu(false, None);
+        let req = WorkloadAdviceRequest {
+            kind: WorkloadKind::LocalInference,
+            requested_parallelism: Some(1),
+            estimated_duration_s: Some(300),
+            gpu_required: true,
+        };
+        let advice = advise_workload(&req, &hw, &make_blame(), Some(&gpu), &make_profile());
+
+        assert_eq!(
+            advice.recommendation,
+            WorkloadRecommendation::UseCpuFallback
+        );
+        assert_eq!(advice.risk, WorkloadRisk::High);
+    }
+
+    #[test]
+    fn test_workload_advice_smaller_gpu_workload_when_gpu_busy() {
+        let hw = compute_hw_headroom(make_hw(
+            RamPressure::Normal,
+            DiskPressure::Normal,
+            false,
+            20.0,
+            None,
+        ));
+        let gpu = make_gpu(true, Some(70.0));
+        let req = WorkloadAdviceRequest {
+            kind: WorkloadKind::GpuCompute,
+            requested_parallelism: Some(1),
+            estimated_duration_s: Some(300),
+            gpu_required: true,
+        };
+        let advice = advise_workload(&req, &hw, &make_blame(), Some(&gpu), &make_profile());
+
+        assert_eq!(
+            advice.recommendation,
+            WorkloadRecommendation::UseSmallerGpuWorkload
+        );
+        assert_eq!(advice.risk, WorkloadRisk::Moderate);
+    }
+
+    #[test]
+    fn test_workload_advice_critical_host_pressure_dominates_gpu_tuning() {
+        let mut hw = compute_hw_headroom(make_hw(
+            RamPressure::Critical,
+            DiskPressure::Normal,
+            false,
+            50.0,
+            None,
+        ));
+        hw.impact_level = ImpactLevel::Critical;
+        let gpu = make_gpu(true, Some(70.0));
+        let req = WorkloadAdviceRequest {
+            kind: WorkloadKind::LocalInference,
+            requested_parallelism: Some(1),
+            estimated_duration_s: Some(600),
+            gpu_required: true,
+        };
+        let advice = advise_workload(&req, &hw, &make_blame(), Some(&gpu), &make_profile());
+
+        assert_eq!(advice.recommendation, WorkloadRecommendation::Defer);
+        assert_eq!(advice.risk, WorkloadRisk::Critical);
+        assert!(advice.reasons.iter().any(|r| r.contains("GPU utilization")));
     }
 
     // ── Agent Accumulation Tests ─────────────────────────────────────────

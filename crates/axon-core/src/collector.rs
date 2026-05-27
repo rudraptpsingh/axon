@@ -565,7 +565,11 @@ fn read_inotify_watch_count() -> Option<u32> {
     if let Ok(procs) = std::fs::read_dir("/proc") {
         for entry in procs.flatten() {
             let pid_str = entry.file_name();
-            if !pid_str.to_string_lossy().chars().all(|c| c.is_ascii_digit()) {
+            if !pid_str
+                .to_string_lossy()
+                .chars()
+                .all(|c| c.is_ascii_digit())
+            {
                 continue;
             }
             if let Ok(fds) = std::fs::read_dir(entry.path().join("fd")) {
@@ -587,7 +591,11 @@ fn read_inotify_watch_count() -> Option<u32> {
             }
         }
     }
-    if count >= 50 { Some(count) } else { None }
+    if count >= 50 {
+        Some(count)
+    } else {
+        None
+    }
 }
 
 /// Return raw size in MB of the largest ~/.claude/projects/**/*.jsonl file for a session.
@@ -702,6 +710,7 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
     // Raw session file size (MB) cached between 30-tick samples for ctx_window_risk.
     let mut cached_raw_session_file_mb: HashMap<u32, f64> = HashMap::new();
     // Inotify watch count: cached between 30-tick samples (fallback scan is expensive).
+    #[cfg(target_os = "linux")]
     let mut cached_inotify_watch_count: Option<u32> = None;
 
     let self_pid = std::process::id();
@@ -1305,8 +1314,7 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
                 } else {
                     cached_raw_session_file_mb.get(&pid_u32).copied()
                 };
-                let large_session_file_mb: Option<f64> =
-                    raw_file_mb.filter(|&mb| mb > 40.0);
+                let large_session_file_mb: Option<f64> = raw_file_mb.filter(|&mb| mb > 40.0);
 
                 // Context window saturation risk: fires earlier than large_session_file_mb.
                 // Based on file size: warn >5MB, critical >20MB.
@@ -1378,12 +1386,15 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
                 #[cfg(target_os = "linux")]
                 let pipe_stall_secs: Option<u64> = {
                     let wchan = read_wchan(pid_u32);
-                    let is_pipe_sleep = wchan.as_deref().map(|w| {
-                        w.contains("pipe_wait")
-                            || w.contains("pipe_read")
-                            || w.contains("pipe_write")
-                            || w.contains("read_pipe")
-                    }).unwrap_or(false);
+                    let is_pipe_sleep = wchan
+                        .as_deref()
+                        .map(|w| {
+                            w.contains("pipe_wait")
+                                || w.contains("pipe_read")
+                                || w.contains("pipe_write")
+                                || w.contains("read_pipe")
+                        })
+                        .unwrap_or(false);
                     let ticks = pipe_stall_ticks.entry(pid_u32).or_insert(0);
                     if is_pipe_sleep {
                         *ticks += 1;
@@ -1735,9 +1746,15 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
         };
 
         let impact_msg = impact::impact_message(&impact_level, &anomaly_type);
-        let fix = impact::suggest_fix(culprit.as_ref(), culprit_group.as_ref(), &anomaly_type, &claude_agents);
+        let fix = impact::suggest_fix(
+            culprit.as_ref(),
+            culprit_group.as_ref(),
+            &anomaly_type,
+            &claude_agents,
+        );
 
-        let urgency = impact::compute_urgency(&impact_level, &cpu_trend, &ram_trend, &claude_agents);
+        let urgency =
+            impact::compute_urgency(&impact_level, &cpu_trend, &ram_trend, &claude_agents);
         let culprit_category =
             impact::classify_culprit_from_blame(culprit_group.as_ref(), culprit.as_ref());
 
@@ -1766,8 +1783,11 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
         // ── Elevate headroom based on per-agent signals (second pass) ────
         // compute_headroom() ran before claude_agents were known; now escalate
         // if any agent has a critical signal (crash trajectory, GC thrash, etc.).
-        let (elevated_headroom, elevated_reason) =
-            impact::elevate_headroom_for_agents(hw.headroom.clone(), hw.headroom_reason.clone(), &blame.claude_agents);
+        let (elevated_headroom, elevated_reason) = impact::elevate_headroom_for_agents(
+            hw.headroom.clone(),
+            hw.headroom_reason.clone(),
+            &blame.claude_agents,
+        );
         hw.headroom = elevated_headroom;
         hw.headroom_reason = elevated_reason;
 

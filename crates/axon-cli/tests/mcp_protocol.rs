@@ -87,11 +87,13 @@ fn test_tools_list() {
     let tools = resp["result"]["tools"]
         .as_array()
         .expect("tools should be an array");
-    assert_eq!(tools.len(), 7, "expected 7 tools, got {}", tools.len());
+    assert_eq!(tools.len(), 9, "expected 9 tools, got {}", tools.len());
 
     let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
     assert!(names.contains(&"hw_snapshot"));
     assert!(names.contains(&"process_blame"));
+    assert!(names.contains(&"workload_advice"));
+    assert!(names.contains(&"agent_runtime_health"));
     assert!(names.contains(&"battery_status"));
     assert!(names.contains(&"hardware_trend"));
     assert!(names.contains(&"system_profile"));
@@ -102,6 +104,66 @@ fn test_tools_list() {
         assert!(tool["description"].is_string(), "tool missing description");
         assert!(tool["inputSchema"].is_object(), "tool missing inputSchema");
     }
+}
+
+#[test]
+#[ignore] // takes ~6s (4s warm-up + call)
+fn test_workload_advice_call() {
+    let call_msg = r#"{"method":"tools/call","params":{"name":"workload_advice","arguments":{"kind":"test","requested_parallelism":8,"estimated_duration_s":600}},"jsonrpc":"2.0","id":8}"#;
+    let responses = send_and_collect(&[INIT_MSG, INITIALIZED_MSG, call_msg], 5);
+
+    let resp = responses
+        .iter()
+        .find(|r| r["id"] == 8)
+        .expect("no workload_advice response");
+
+    let text = resp["result"]["content"][0]["text"]
+        .as_str()
+        .expect("missing content text");
+    let data: serde_json::Value = serde_json::from_str(text).expect("content is not valid JSON");
+
+    assert_eq!(data["ok"], true);
+    assert_eq!(data["data"]["kind"], "test");
+    assert!(data["data"]["recommendation"].is_string());
+    assert!(data["data"]["risk"].is_string());
+    assert!(data["data"]["safe_parallelism"].is_number());
+    assert!(data["data"]["reasons"].is_array());
+    assert!(data["narrative"]
+        .as_str()
+        .unwrap()
+        .contains("workload advice"));
+}
+
+#[test]
+#[ignore] // takes ~8s (collector warm-up + agent runtime CPU sampling)
+fn test_agent_runtime_health_call() {
+    let call_msg = r#"{"method":"tools/call","params":{"name":"agent_runtime_health","arguments":{}},"jsonrpc":"2.0","id":9}"#;
+    let responses = send_and_collect(&[INIT_MSG, INITIALIZED_MSG, call_msg], 8);
+
+    let resp = responses
+        .iter()
+        .find(|r| r["id"] == 9)
+        .expect("no agent_runtime_health response");
+
+    let text = resp["result"]["content"][0]["text"]
+        .as_str()
+        .expect("missing content text");
+    let data: serde_json::Value = serde_json::from_str(text).expect("content is not valid JSON");
+
+    assert_eq!(data["ok"], true);
+    assert!(data["data"]["process_count"].is_number());
+    assert!(data["data"]["mcp_server_count"].is_number());
+    assert!(data["data"]["orphaned_mcp_server_count"].is_number());
+    assert!(data["data"]["duplicate_mcp_server_groups"].is_array());
+    assert!(data["data"]["stale_mcp_server_count"].is_number());
+    assert!(data["data"]["mcp_total_ram_mb"].is_number());
+    assert!(data["data"]["renderer_cpu_pct"].is_number());
+    assert!(data["data"]["gpu_helper_cpu_pct"].is_number());
+    assert!(data["data"]["high_cpu_ui_process_count"].is_number());
+    assert!(data["data"]["cursor_process_count"].is_number());
+    assert!(data["data"]["top_processes"].is_array());
+    assert!(data["data"]["workflow_impacts"].is_array());
+    assert!(data["data"]["recommendations"].is_array());
 }
 
 #[test]

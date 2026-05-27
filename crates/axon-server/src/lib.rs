@@ -42,6 +42,20 @@ pub struct SessionHealthParams {
     pub since: Option<String>,
 }
 
+#[derive(Debug, ::serde::Deserialize, schemars::JsonSchema)]
+pub struct WorkloadAdviceParams {
+    #[schemars(
+        description = "Workload kind: general, build, test, browser_test, docker_build, code_analysis, data_processing, subagents, local_inference, gpu_compute. Default: general."
+    )]
+    pub kind: Option<String>,
+    #[schemars(description = "How many workers/subagents/parallel jobs the agent wants to run.")]
+    pub requested_parallelism: Option<u32>,
+    #[schemars(description = "Estimated workload duration in seconds.")]
+    pub estimated_duration_s: Option<u64>,
+    #[schemars(description = "Set true when the workload requires GPU acceleration.")]
+    pub gpu_required: Option<bool>,
+}
+
 // ── MCP Server ────────────────────────────────────────────────────────────────
 
 #[derive(Clone)]
@@ -246,6 +260,44 @@ impl AxonServer {
             }
         }
     }
+
+    #[tool(
+        description = "Decision-oriented preflight for agent workloads. Returns proceed, reduce_parallelism, defer, cooldown, CPU fallback, or smaller GPU workload based on live CPU/RAM/disk/thermal/GPU pressure, current culprit process, and host capacity. Call before builds, tests, Docker work, browser tests, subagent fan-out, local inference, or GPU jobs."
+    )]
+    async fn workload_advice(&self, params: Parameters<WorkloadAdviceParams>) -> String {
+        let kind = parse_workload_kind(params.0.kind.as_deref().unwrap_or("general"));
+        let req = WorkloadAdviceRequest {
+            kind,
+            requested_parallelism: params.0.requested_parallelism,
+            estimated_duration_s: params.0.estimated_duration_s,
+            gpu_required: params.0.gpu_required.unwrap_or(false),
+        };
+        let (hw, blame, gpu, profile) = {
+            let guard = self.state.lock().unwrap();
+            (
+                guard.hw.clone(),
+                guard.blame.clone(),
+                guard.gpu.clone(),
+                guard.profile.clone(),
+            )
+        };
+        let advice = axon_core::impact::advise_workload(&req, &hw, &blame, gpu.as_ref(), &profile);
+        let narrative = workload_advice_narrative(&advice);
+        let response = McpResponse::success(advice, narrative);
+        serde_json::to_string(&response)
+            .unwrap_or_else(|e| format!("{{\"ok\":false,\"error\":\"{}\"}}", e))
+    }
+
+    #[tool(
+        description = "Inspect local AI agent runtime footprint. Returns running Codex/Claude/Cursor/MCP host processes, stale tool servers, total agent CPU/RAM, and cleanup recommendations. Call when the machine is slow, before spawning subagents/tools, or when users ask why Codex/ChatGPT agent sessions feel heavy."
+    )]
+    async fn agent_runtime_health(&self, _p: Parameters<EmptyParams>) -> String {
+        let health = axon_core::agent_runtime::scan_agent_runtime_health();
+        let narrative = agent_runtime_health_narrative(&health);
+        let response = McpResponse::success(health, narrative);
+        serde_json::to_string(&response)
+            .unwrap_or_else(|e| format!("{{\"ok\":false,\"error\":\"{}\"}}", e))
+    }
 }
 
 #[tool_handler(router = self.tool_router)]
@@ -263,7 +315,10 @@ impl ServerHandler for AxonServer {
                 5. Call hardware_trend for degradation patterns over time. \
                 6. Call session_health at end of long sessions for a retrospective summary. \
                 7. Call gpu_snapshot before GPU-heavy workloads (ML inference, video encoding, 3D rendering) \
-                   to check GPU utilization and VRAM pressure. Also check recovery_count for GPU driver crashes.",
+                   to check GPU utilization and VRAM pressure. Also check recovery_count for GPU driver crashes. \
+                8. Call workload_advice before starting builds, tests, Docker work, subagents, or GPU jobs \
+                   when you need an explicit proceed/reduce/defer decision. \
+                9. Call agent_runtime_health when agent hosts or MCP tools may have accumulated across sessions.",
         )
     }
 }
@@ -288,6 +343,109 @@ pub fn gpu_narrative_pub(gpu: &GpuSnapshot) -> String {
 
 pub fn trend_narrative_pub(trend: &TrendData, range: &str) -> String {
     trend_narrative(trend, range)
+}
+
+pub fn workload_advice_narrative_pub(advice: &WorkloadAdvice) -> String {
+    workload_advice_narrative(advice)
+}
+
+pub fn agent_runtime_health_narrative_pub(health: &AgentRuntimeHealth) -> String {
+    agent_runtime_health_narrative(health)
+}
+
+fn parse_workload_kind(kind: &str) -> WorkloadKind {
+    match kind.trim().to_ascii_lowercase().as_str() {
+        "build" | "compile" | "cargo_build" => WorkloadKind::Build,
+        "test" | "tests" | "cargo_test" => WorkloadKind::Test,
+        "browser_test" | "browser-tests" | "playwright" | "e2e" => WorkloadKind::BrowserTest,
+        "docker_build" | "docker-build" | "docker" => WorkloadKind::DockerBuild,
+        "code_analysis" | "analysis" | "index" | "search" => WorkloadKind::CodeAnalysis,
+        "data_processing" | "data" => WorkloadKind::DataProcessing,
+        "subagents" | "subagent" | "agents" => WorkloadKind::Subagents,
+        "local_inference" | "inference" | "llm" => WorkloadKind::LocalInference,
+        "gpu_compute" | "gpu" | "render" => WorkloadKind::GpuCompute,
+        _ => WorkloadKind::General,
+    }
+}
+
+fn workload_advice_narrative(advice: &WorkloadAdvice) -> String {
+    let mut parts = vec![format!(
+        "Workload advice for {}: {:?} ({:?} risk)",
+        advice.kind, advice.recommendation, advice.risk
+    )
+    .to_lowercase()];
+    if let Some(p) = advice.safe_parallelism {
+        parts.push(format!("safe_parallelism={}", p));
+    }
+    if !advice.reasons.is_empty() {
+        parts.push(format!("reason: {}", advice.reasons.join("; ")));
+    }
+    if !advice.suggested_actions.is_empty() {
+        parts.push(format!("action: {}", advice.suggested_actions.join("; ")));
+    }
+    if let Some(retry) = advice.retry_after_seconds {
+        parts.push(format!("retry_after={}s", retry));
+    }
+    parts.join(". ") + "."
+}
+
+fn agent_runtime_health_narrative(health: &AgentRuntimeHealth) -> String {
+    let mut parts = vec![format!(
+        "{} agent runtime processes using {:.0}MB RAM and {:.0}% CPU",
+        health.process_count, health.total_ram_mb, health.total_cpu_pct
+    )];
+    if health.codex_process_count > 0 {
+        parts.push(format!(
+            "{} Codex-related processes ({} stale)",
+            health.codex_process_count, health.codex_stale_process_count
+        ));
+    }
+    if health.cursor_process_count > 0 {
+        parts.push(format!(
+            "{} Cursor-related processes",
+            health.cursor_process_count
+        ));
+    }
+    if health.mcp_server_count > 0 {
+        parts.push(format!(
+            "{} MCP/tool servers ({:.0}MB, {} stale)",
+            health.mcp_server_count, health.mcp_total_ram_mb, health.stale_mcp_server_count
+        ));
+    }
+    if health.orphaned_mcp_server_count > 0 {
+        parts.push(format!(
+            "{} orphaned MCP/tool servers",
+            health.orphaned_mcp_server_count
+        ));
+    }
+    if !health.duplicate_mcp_server_groups.is_empty() {
+        parts.push(format!(
+            "duplicate MCP groups: {}",
+            health.duplicate_mcp_server_groups.join(", ")
+        ));
+    }
+    if health.stale_process_count > 0 {
+        parts.push(format!("{} stale >4h", health.stale_process_count));
+    }
+    if health.renderer_cpu_pct >= 10.0 || health.gpu_helper_cpu_pct >= 10.0 {
+        parts.push(format!(
+            "UI CPU: renderer {:.0}%, GPU helper {:.0}%",
+            health.renderer_cpu_pct, health.gpu_helper_cpu_pct
+        ));
+    }
+    if let Some(impact) = health.workflow_impacts.first() {
+        parts.push(format!(
+            "user impact: {} -> {}",
+            impact.use_case, impact.recommended_action
+        ));
+    }
+    if !health.recommendations.is_empty() {
+        parts.push(format!(
+            "recommendation: {}",
+            health.recommendations.join("; ")
+        ));
+    }
+    parts.join(". ") + "."
 }
 
 fn hw_narrative(hw: &HwSnapshot) -> String {
@@ -348,7 +506,10 @@ fn hw_narrative(hw: &HwSnapshot) -> String {
         (Some(used), Some(total)) if total > 0.1 => {
             let pct = used / total * 100.0;
             if pct > 50.0 {
-                format!(" Swap {:.1}/{:.0}GB ({:.0}%, HIGH — system paging heavily; systemd-oomd may kill processes if sustained >20s).", used, total, pct)
+                format!(
+                    " Swap {:.1}/{:.0}GB ({:.0}%, HIGH — system paging heavily; systemd-oomd may kill processes if sustained >20s).",
+                    used, total, pct
+                )
             } else if pct > 10.0 {
                 format!(" Swap {:.1}/{:.0}GB ({:.0}%).", used, total, pct)
             } else {
@@ -913,7 +1074,9 @@ fn blame_narrative(blame: &ProcessBlame) -> String {
                      activity. Likely stalled API connection or hung IPC socket \
                      (github.com/anthropics/claude-code/issues/25979, #37521). \
                      Kill PID {} and restart the session.",
-                    agent.pid, secs as f64 / 60.0, agent.pid
+                    agent.pid,
+                    secs as f64 / 60.0,
+                    agent.pid
                 ));
             } else {
                 base.push_str(&format!(

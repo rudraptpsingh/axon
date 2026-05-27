@@ -51,6 +51,158 @@ pub enum HeadroomLevel {
     Insufficient,
 }
 
+// ── Workload Advice ─────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkloadKind {
+    General,
+    Build,
+    Test,
+    BrowserTest,
+    DockerBuild,
+    CodeAnalysis,
+    DataProcessing,
+    Subagents,
+    LocalInference,
+    GpuCompute,
+}
+
+impl std::fmt::Display for WorkloadKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            WorkloadKind::General => write!(f, "general"),
+            WorkloadKind::Build => write!(f, "build"),
+            WorkloadKind::Test => write!(f, "test"),
+            WorkloadKind::BrowserTest => write!(f, "browser_test"),
+            WorkloadKind::DockerBuild => write!(f, "docker_build"),
+            WorkloadKind::CodeAnalysis => write!(f, "code_analysis"),
+            WorkloadKind::DataProcessing => write!(f, "data_processing"),
+            WorkloadKind::Subagents => write!(f, "subagents"),
+            WorkloadKind::LocalInference => write!(f, "local_inference"),
+            WorkloadKind::GpuCompute => write!(f, "gpu_compute"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkloadRecommendation {
+    Proceed,
+    ProceedWithCaution,
+    ReduceParallelism,
+    Defer,
+    Cooldown,
+    UseCpuFallback,
+    UseSmallerGpuWorkload,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkloadRisk {
+    Low,
+    Moderate,
+    High,
+    Critical,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkloadAdviceRequest {
+    pub kind: WorkloadKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested_parallelism: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimated_duration_s: Option<u64>,
+    #[serde(default)]
+    pub gpu_required: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkloadAdvice {
+    pub kind: WorkloadKind,
+    pub recommendation: WorkloadRecommendation,
+    pub risk: WorkloadRisk,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub safe_parallelism: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_after_seconds: Option<u64>,
+    pub reasons: Vec<String>,
+    pub suggested_actions: Vec<String>,
+    pub confidence: f64,
+}
+
+// ── Agent Runtime Health ────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentRuntimeProvider {
+    Codex,
+    Claude,
+    Cursor,
+    Windsurf,
+    Zed,
+    GenericMcp,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentRuntimeRole {
+    HostApp,
+    AppServer,
+    Renderer,
+    GpuHelper,
+    McpServer,
+    ToolWorker,
+    Updater,
+    Other,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentRuntimeProcess {
+    pub pid: u32,
+    pub ppid: Option<u32>,
+    pub provider: AgentRuntimeProvider,
+    pub role: AgentRuntimeRole,
+    pub name: String,
+    pub cpu_pct: f64,
+    pub ram_mb: f64,
+    pub uptime_s: u64,
+    pub stale: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentRuntimeImpact {
+    pub use_case: String,
+    pub visible_symptom: String,
+    pub business_impact: String,
+    pub recommended_action: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentRuntimeHealth {
+    pub process_count: u32,
+    pub stale_process_count: u32,
+    pub mcp_server_count: u32,
+    pub orphaned_mcp_server_count: u32,
+    pub duplicate_mcp_server_groups: Vec<String>,
+    pub stale_mcp_server_count: u32,
+    pub mcp_total_ram_mb: f64,
+    pub renderer_cpu_pct: f64,
+    pub gpu_helper_cpu_pct: f64,
+    pub high_cpu_ui_process_count: u32,
+    pub total_ram_mb: f64,
+    pub total_cpu_pct: f64,
+    pub codex_process_count: u32,
+    pub codex_stale_process_count: u32,
+    pub claude_process_count: u32,
+    pub cursor_process_count: u32,
+    pub top_processes: Vec<AgentRuntimeProcess>,
+    pub stale_processes: Vec<AgentRuntimeProcess>,
+    pub workflow_impacts: Vec<AgentRuntimeImpact>,
+    pub recommendations: Vec<String>,
+}
+
 // ── Trend Direction ──────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

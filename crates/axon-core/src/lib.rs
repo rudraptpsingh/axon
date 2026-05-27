@@ -1,3 +1,4 @@
+pub mod agent_runtime;
 pub mod alert_config;
 pub mod alert_dispatch;
 pub mod alerts;

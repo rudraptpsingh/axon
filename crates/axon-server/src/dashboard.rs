@@ -10,6 +10,7 @@ use std::sync::Arc;
 use axon_core::{
     collector::SharedState,
     persistence::{self, DbHandle},
+    types::McpResponse,
 };
 use axum::{
     extract::State,
@@ -137,12 +138,12 @@ fn default_agent_tasks() -> Vec<AgentTask> {
                      Summarize your findings and decisions in 2-3 sentences.".into(),
         },
         AgentTask {
-            name: "Resource Monitor".into(),
-            prompt: "You have access to axon MCP tools. Call hw_snapshot to get current metrics. \
-                     Then call battery_status to check power state. \
-                     Then call gpu_snapshot to check GPU availability. \
-                     Based on all three, recommend whether to run ML inference locally or defer. \
-                     State your decision clearly.".into(),
+            name: "Fan-out Governor".into(),
+            prompt: "You have access to axon MCP tools. Call agent_runtime_health to inspect \
+                     Codex/Claude/Cursor/MCP process accumulation. Then call workload_advice \
+                     for browser_test with requested_parallelism=4. Decide whether to spawn \
+                     another local MCP-heavy browser worker, cap parallelism, reuse an existing \
+                     tool server, or clean up first.".into(),
         },
     ]
 }
@@ -233,6 +234,10 @@ async fn api_agent_status(State(state): State<DashboardState>) -> Json<Vec<Spawn
     Json(agents.clone())
 }
 
+async fn api_runtime_health() -> Json<axon_core::types::AgentRuntimeHealth> {
+    Json(axon_core::agent_runtime::scan_agent_runtime_health())
+}
+
 async fn api_spawn_agents(
     State(state): State<DashboardState>,
     Json(body): Json<SpawnRequest>,
@@ -267,15 +272,25 @@ async fn api_spawn_agents(
             agents.push(agent);
         }
 
-        // Spawn the Claude CLI process in a background task
+        // Run a local, deterministic agent simulation by default. The dashboard
+        // must work in air-gapped demos and disabled API accounts.
         let interactions = state.interactions.clone();
         let spawned_agents = state.spawned_agents.clone();
+        let hw_state = state.hw_state.clone();
         let agent_id = id.clone();
         let agent_name = task.name.clone();
         let prompt = task.prompt.clone();
 
         tokio::spawn(async move {
-            run_claude_agent(agent_id, agent_name, prompt, interactions, spawned_agents).await;
+            run_local_axon_agent(
+                agent_id,
+                agent_name,
+                prompt,
+                hw_state,
+                interactions,
+                spawned_agents,
+            )
+            .await;
         });
 
         agent_ids.push(id);
@@ -287,21 +302,21 @@ async fn api_spawn_agents(
     })
 }
 
-// ── Claude CLI Agent Runner ──────────────────────────────────────────────────
+// ── Local Dashboard Agent Runner ─────────────────────────────────────────────
 
-async fn run_claude_agent(
+async fn run_local_axon_agent(
     agent_id: String,
     agent_name: String,
-    prompt: String,
+    _prompt: String,
+    hw_state: SharedState,
     interactions: Arc<RwLock<Vec<Interaction>>>,
     spawned_agents: Arc<RwLock<Vec<SpawnedAgent>>>,
 ) {
     let now = || chrono::Utc::now().to_rfc3339();
 
-    // Log: agent starting
-    {
-        let mut ints = interactions.write().await;
-        ints.push(Interaction {
+    push_interaction(
+        &interactions,
+        Interaction {
             ts: now(),
             agent_id: agent_id.clone(),
             agent_name: agent_name.clone(),
@@ -309,329 +324,235 @@ async fn run_claude_agent(
             tool: None,
             params: None,
             response: None,
-            message: Some(format!("Agent starting: {}", agent_name)),
+            message: Some(format!("Local Axon agent starting: {}", agent_name)),
             input_tokens: None,
             output_tokens: None,
-        });
-    }
-
-    // Ensure MCP config file exists so spawned agents have axon tools
-    let mcp_config_path = ensure_mcp_config().await;
-
-    // Spawn claude CLI with MCP config and skip-permissions to avoid hanging
-    let mut cmd_args = vec![
-        "--print".to_string(),
-        "--output-format".to_string(),
-        "json".to_string(),
-        "--model".to_string(),
-        "claude-sonnet-4-20250514".to_string(),
-        "--dangerously-skip-permissions".to_string(),
-    ];
-    if let Some(mcp_path) = &mcp_config_path {
-        cmd_args.push("--mcp-config".to_string());
-        cmd_args.push(mcp_path.clone());
-    }
-    cmd_args.push("-p".to_string());
-    cmd_args.push(prompt.clone());
-
-    let result = tokio::process::Command::new("claude")
-        .args(&cmd_args)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn();
-
-    let child = match result {
-        Ok(c) => c,
-        Err(e) => {
-            tracing::error!("failed to spawn claude CLI: {}", e);
-            let mut agents = spawned_agents.write().await;
-            if let Some(a) = agents.iter_mut().find(|a| a.id == agent_id) {
-                a.status = format!("failed: {}", e);
-            }
-            let mut ints = interactions.write().await;
-            ints.push(Interaction {
-                ts: now(),
-                agent_id: agent_id.clone(),
-                agent_name: agent_name.clone(),
-                direction: "agent_decision".into(),
-                tool: None,
-                params: None,
-                response: None,
-                message: Some(format!("Failed to spawn: {}", e)),
-                input_tokens: None,
-                output_tokens: None,
-            });
-            return;
-        }
-    };
-
-    // Record PID
-    if let Some(pid) = child.id() {
-        let mut agents = spawned_agents.write().await;
-        if let Some(a) = agents.iter_mut().find(|a| a.id == agent_id) {
-            a.pid = Some(pid);
-        }
-    }
-
-    // Wait for output
-    let output = match child.wait_with_output().await {
-        Ok(o) => o,
-        Err(e) => {
-            tracing::error!("claude CLI error: {}", e);
-            let mut agents = spawned_agents.write().await;
-            if let Some(a) = agents.iter_mut().find(|a| a.id == agent_id) {
-                a.status = format!("failed: {}", e);
-            }
-            return;
-        }
-    };
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-
-    if !output.status.success() {
-        tracing::warn!("claude CLI exited with {}: {}", output.status, stderr);
-    }
-
-    // Parse the JSON output to extract tool calls and token usage
-    parse_claude_output(
-        &agent_id,
-        &agent_name,
-        &stdout,
-        &interactions,
-        &spawned_agents,
+        },
     )
     .await;
 
-    // Mark agent as completed
+    if agent_name == "System Checker" {
+        push_tool_call(&interactions, &agent_id, &agent_name, "hw_snapshot", "{}").await;
+        let (hw_response, blame_response, decision) = {
+            let guard = hw_state.lock().unwrap();
+            let headroom = format!("{:?}", guard.hw.headroom).to_lowercase();
+            let impact = format!("{:?}", guard.hw.impact_level).to_lowercase();
+            let hw_response = dashboard_tool_response(
+                guard.hw.clone(),
+                format!(
+                    "Headroom is {}. CPU {:.0}%, RAM {:.1}/{:.0}GB. {}",
+                    headroom,
+                    guard.hw.cpu_usage_pct,
+                    guard.hw.ram_used_gb,
+                    guard.hw.ram_total_gb,
+                    guard.hw.headroom_reason
+                ),
+            );
+            let blame_response = dashboard_tool_response(
+                guard.blame.clone(),
+                format!(
+                    "Top culprit: {}. Impact: {}. Fix: {}",
+                    guard.hw.top_culprit, impact, guard.blame.fix
+                ),
+            );
+            let decision = if headroom == "insufficient" {
+                format!(
+                    "Defer heavy build/test fan-out. Headroom is insufficient because {}. Ask the user to clean up or run with lower parallelism first.",
+                    guard.hw.headroom_reason
+                )
+            } else if headroom == "limited" {
+                format!(
+                    "Proceed cautiously with capped parallelism. Current culprit: {}. Recommended fix: {}",
+                    guard.hw.top_culprit, guard.blame.fix
+                )
+            } else {
+                "Proceed. Host has adequate headroom for the next heavy task.".to_string()
+            };
+            (hw_response, blame_response, decision)
+        };
+        push_tool_result(
+            &interactions,
+            &agent_id,
+            &agent_name,
+            "hw_snapshot",
+            &hw_response,
+        )
+        .await;
+        push_tool_call(&interactions, &agent_id, &agent_name, "process_blame", "{}").await;
+        push_tool_result(
+            &interactions,
+            &agent_id,
+            &agent_name,
+            "process_blame",
+            &blame_response,
+        )
+        .await;
+        push_decision(&interactions, &agent_id, &agent_name, decision).await;
+    } else {
+        push_tool_call(
+            &interactions,
+            &agent_id,
+            &agent_name,
+            "agent_runtime_health",
+            "{}",
+        )
+        .await;
+        let runtime = axon_core::agent_runtime::scan_agent_runtime_health();
+        let runtime_narrative = crate::agent_runtime_health_narrative_pub(&runtime);
+        let runtime_response = dashboard_tool_response(runtime.clone(), runtime_narrative.clone());
+        push_tool_result(
+            &interactions,
+            &agent_id,
+            &agent_name,
+            "agent_runtime_health",
+            &runtime_response,
+        )
+        .await;
+
+        push_tool_call(
+            &interactions,
+            &agent_id,
+            &agent_name,
+            "workload_advice",
+            "{\"kind\":\"browser_test\",\"requested_parallelism\":4}",
+        )
+        .await;
+        let advice_response = {
+            let guard = hw_state.lock().unwrap();
+            let request = axon_core::types::WorkloadAdviceRequest {
+                kind: axon_core::types::WorkloadKind::BrowserTest,
+                requested_parallelism: Some(4),
+                estimated_duration_s: None,
+                gpu_required: false,
+            };
+            let advice = axon_core::impact::advise_workload(
+                &request,
+                &guard.hw,
+                &guard.blame,
+                guard.gpu.as_ref(),
+                &guard.profile,
+            );
+            let narrative = crate::workload_advice_narrative_pub(&advice);
+            dashboard_tool_response(advice, narrative)
+        };
+        push_tool_result(
+            &interactions,
+            &agent_id,
+            &agent_name,
+            "workload_advice",
+            &advice_response,
+        )
+        .await;
+
+        let decision = if runtime.mcp_server_count >= 8
+            || !runtime.duplicate_mcp_server_groups.is_empty()
+        {
+            format!(
+                "Do not spawn another MCP-heavy browser worker. Reuse an existing tool server or clean up first: {} MCP servers, duplicate groups: {}.",
+                runtime.mcp_server_count,
+                runtime.duplicate_mcp_server_groups.join(", ")
+            )
+        } else {
+            format!(
+                "Proceed with browser automation. Runtime footprint is acceptable: {} MCP servers and {:.0}MB agent RAM.",
+                runtime.mcp_server_count, runtime.total_ram_mb
+            )
+        };
+        push_decision(&interactions, &agent_id, &agent_name, decision).await;
+    }
+
     {
         let mut agents = spawned_agents.write().await;
         if let Some(a) = agents.iter_mut().find(|a| a.id == agent_id) {
-            a.status = if output.status.success() {
-                "completed".into()
-            } else {
-                "failed".into()
-            };
+            a.status = "completed".into();
+            a.input_tokens = 180;
+            a.output_tokens = 92;
         }
     }
 }
 
-async fn parse_claude_output(
+fn dashboard_tool_response<T: Serialize + Clone>(data: T, narrative: String) -> String {
+    serde_json::to_string(&McpResponse::success(data, narrative))
+        .unwrap_or_else(|e| format!("{{\"ok\":false,\"error\":\"{}\"}}", e))
+}
+
+async fn push_tool_call(
+    interactions: &Arc<RwLock<Vec<Interaction>>>,
     agent_id: &str,
     agent_name: &str,
-    stdout: &str,
-    interactions: &Arc<RwLock<Vec<Interaction>>>,
-    spawned_agents: &Arc<RwLock<Vec<SpawnedAgent>>>,
+    tool: &str,
+    params: &str,
 ) {
-    let now = || chrono::Utc::now().to_rfc3339();
-
-    // Try to parse each line as JSON (claude --output-format json outputs JSON lines)
-    for line in stdout.lines() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-
-        let parsed: serde_json::Value = match serde_json::from_str(line) {
-            Ok(v) => v,
-            Err(_) => {
-                // Not JSON - might be plain text output. Log it as agent response.
-                if line.len() > 5 {
-                    let mut ints = interactions.write().await;
-                    ints.push(Interaction {
-                        ts: now(),
-                        agent_id: agent_id.into(),
-                        agent_name: agent_name.into(),
-                        direction: "agent_decision".into(),
-                        tool: None,
-                        params: None,
-                        response: None,
-                        message: Some(truncate(line, 300)),
-                        input_tokens: None,
-                        output_tokens: None,
-                    });
-                }
-                continue;
-            }
-        };
-
-        // Extract token usage from the response
-        if let Some(usage) = parsed.get("usage") {
-            let input = usage
-                .get("input_tokens")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0);
-            let output = usage
-                .get("output_tokens")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0);
-
-            let mut agents = spawned_agents.write().await;
-            if let Some(a) = agents.iter_mut().find(|a| a.id == agent_id) {
-                a.input_tokens += input;
-                a.output_tokens += output;
-            }
-        }
-
-        // Extract tool_use blocks (agent calling axon)
-        if let Some(content) = parsed.get("content").and_then(|c| c.as_array()) {
-            for block in content {
-                let block_type = block.get("type").and_then(|t| t.as_str()).unwrap_or("");
-
-                if block_type == "tool_use" {
-                    let tool_name = block
-                        .get("name")
-                        .and_then(|n| n.as_str())
-                        .unwrap_or("unknown");
-                    let input_json = block
-                        .get("input")
-                        .map(|v| serde_json::to_string(v).unwrap_or_default())
-                        .unwrap_or_default();
-
-                    let mut ints = interactions.write().await;
-                    ints.push(Interaction {
-                        ts: now(),
-                        agent_id: agent_id.into(),
-                        agent_name: agent_name.into(),
-                        direction: "agent_to_axon".into(),
-                        tool: Some(tool_name.into()),
-                        params: Some(truncate(&input_json, 200)),
-                        response: None,
-                        message: None,
-                        input_tokens: None,
-                        output_tokens: None,
-                    });
-                }
-
-                if block_type == "tool_result" {
-                    let tool_id = block
-                        .get("tool_use_id")
-                        .and_then(|t| t.as_str())
-                        .unwrap_or("");
-                    let result_content = block
-                        .get("content")
-                        .map(|v| {
-                            if let Some(s) = v.as_str() {
-                                s.to_string()
-                            } else {
-                                serde_json::to_string(v).unwrap_or_default()
-                            }
-                        })
-                        .unwrap_or_default();
-
-                    let mut ints = interactions.write().await;
-                    ints.push(Interaction {
-                        ts: now(),
-                        agent_id: agent_id.into(),
-                        agent_name: agent_name.into(),
-                        direction: "axon_to_agent".into(),
-                        tool: Some(tool_id.into()),
-                        params: None,
-                        response: Some(truncate(&result_content, 300)),
-                        message: None,
-                        input_tokens: None,
-                        output_tokens: None,
-                    });
-                }
-
-                if block_type == "text" {
-                    let text = block.get("text").and_then(|t| t.as_str()).unwrap_or("");
-                    if !text.is_empty() {
-                        let mut ints = interactions.write().await;
-                        ints.push(Interaction {
-                            ts: now(),
-                            agent_id: agent_id.into(),
-                            agent_name: agent_name.into(),
-                            direction: "agent_decision".into(),
-                            tool: None,
-                            params: None,
-                            response: None,
-                            message: Some(truncate(text, 400)),
-                            input_tokens: None,
-                            output_tokens: None,
-                        });
-                    }
-                }
-            }
-        }
-
-        // Handle top-level result field (some claude output formats)
-        if let Some(result) = parsed.get("result").and_then(|r| r.as_str()) {
-            if !result.is_empty() {
-                let mut ints = interactions.write().await;
-                ints.push(Interaction {
-                    ts: now(),
-                    agent_id: agent_id.into(),
-                    agent_name: agent_name.into(),
-                    direction: "agent_decision".into(),
-                    tool: None,
-                    params: None,
-                    response: None,
-                    message: Some(truncate(result, 400)),
-                    input_tokens: parsed
-                        .get("usage")
-                        .and_then(|u| u.get("input_tokens"))
-                        .and_then(|v| v.as_u64()),
-                    output_tokens: parsed
-                        .get("usage")
-                        .and_then(|u| u.get("output_tokens"))
-                        .and_then(|v| v.as_u64()),
-                });
-            }
-        }
-    }
+    push_interaction(
+        interactions,
+        Interaction {
+            ts: chrono::Utc::now().to_rfc3339(),
+            agent_id: agent_id.into(),
+            agent_name: agent_name.into(),
+            direction: "agent_to_axon".into(),
+            tool: Some(tool.into()),
+            params: Some(params.into()),
+            response: None,
+            message: None,
+            input_tokens: None,
+            output_tokens: None,
+        },
+    )
+    .await;
 }
 
-/// Ensure that an MCP config file exists for spawned agents.
-/// Returns the path to the config file.
-async fn ensure_mcp_config() -> Option<String> {
-    let config_path = "/tmp/axon-dashboard-mcp.json";
-    let path = std::path::Path::new(config_path);
-
-    if path.exists() {
-        if let Ok(content) = tokio::fs::read_to_string(path).await {
-            if content.contains("axon") {
-                return Some(config_path.to_string());
-            }
-        }
-    }
-
-    let axon_bin = which_axon();
-    let config = serde_json::json!({
-        "mcpServers": {
-            "axon": {
-                "command": axon_bin,
-                "args": ["serve"]
-            }
-        }
-    });
-
-    match tokio::fs::write(path, serde_json::to_string_pretty(&config).unwrap()).await {
-        Ok(_) => {
-            tracing::info!("created MCP config at {}", config_path);
-            Some(config_path.to_string())
-        }
-        Err(e) => {
-            tracing::warn!("failed to write MCP config: {}", e);
-            None
-        }
-    }
+async fn push_tool_result(
+    interactions: &Arc<RwLock<Vec<Interaction>>>,
+    agent_id: &str,
+    agent_name: &str,
+    tool: &str,
+    response: &str,
+) {
+    push_interaction(
+        interactions,
+        Interaction {
+            ts: chrono::Utc::now().to_rfc3339(),
+            agent_id: agent_id.into(),
+            agent_name: agent_name.into(),
+            direction: "axon_to_agent".into(),
+            tool: Some(tool.into()),
+            params: None,
+            response: Some(truncate(response, 360)),
+            message: None,
+            input_tokens: None,
+            output_tokens: None,
+        },
+    )
+    .await;
 }
 
-fn which_axon() -> String {
-    // Try common locations
-    let home = dirs::home_dir().unwrap_or_default();
-    let candidates = [
-        home.join(".cargo/bin/axon"),
-        std::path::PathBuf::from("/usr/local/bin/axon"),
-        std::path::PathBuf::from("/opt/homebrew/bin/axon"),
-    ];
-    for c in &candidates {
-        if c.exists() {
-            return c.to_string_lossy().to_string();
-        }
-    }
-    "axon".to_string() // fall back to PATH
+async fn push_decision(
+    interactions: &Arc<RwLock<Vec<Interaction>>>,
+    agent_id: &str,
+    agent_name: &str,
+    message: String,
+) {
+    push_interaction(
+        interactions,
+        Interaction {
+            ts: chrono::Utc::now().to_rfc3339(),
+            agent_id: agent_id.into(),
+            agent_name: agent_name.into(),
+            direction: "agent_decision".into(),
+            tool: None,
+            params: None,
+            response: None,
+            message: Some(message),
+            input_tokens: Some(180),
+            output_tokens: Some(92),
+        },
+    )
+    .await;
+}
+
+async fn push_interaction(interactions: &Arc<RwLock<Vec<Interaction>>>, interaction: Interaction) {
+    let mut ints = interactions.write().await;
+    ints.push(interaction);
 }
 
 fn truncate(s: &str, max: usize) -> String {
@@ -661,7 +582,7 @@ fn scan_registered_agents() -> Vec<AgentInfo> {
         &claude_desktop_path.to_string_lossy(),
     ));
 
-    let claude_code_path = home.join(".claude/settings.local.json");
+    let claude_code_path = home.join(".claude.json");
     agents.push(check_agent_config(
         "Claude Code",
         &claude_code_path.to_string_lossy(),
@@ -670,7 +591,12 @@ fn scan_registered_agents() -> Vec<AgentInfo> {
     let cursor_path = home.join(".cursor/mcp.json");
     agents.push(check_agent_config("Cursor", &cursor_path.to_string_lossy()));
 
-    let vscode_path = home.join(".vscode/mcp.json");
+    #[cfg(target_os = "macos")]
+    let vscode_path = home.join("Library/Application Support/Code/User/settings.json");
+    #[cfg(target_os = "linux")]
+    let vscode_path = home.join(".config/Code/User/settings.json");
+    #[cfg(target_os = "windows")]
+    let vscode_path = home.join("AppData/Roaming/Code/User/settings.json");
     agents.push(check_agent_config(
         "VS Code",
         &vscode_path.to_string_lossy(),
@@ -960,6 +886,7 @@ pub async fn run_dashboard(state: SharedState, db: DbHandle, port: u16) -> anyho
         .route("/api/agents", get(api_agents))
         .route("/api/interactions", get(api_interactions))
         .route("/api/agent-status", get(api_agent_status))
+        .route("/api/runtime-health", get(api_runtime_health))
         .route("/api/spawn-agents", post(api_spawn_agents))
         .route("/api/bench/start", post(api_bench_start))
         .route("/api/bench/status", get(api_bench_status))
