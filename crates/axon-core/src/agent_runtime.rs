@@ -128,18 +128,20 @@ pub fn scan_agent_runtime_health() -> AgentRuntimeHealth {
 
     let recommendations = recommendations(
         process_count,
-        stale_process_count,
-        mcp_server_count,
-        total_ram_mb,
-        total_cpu_pct,
-        codex_stale_process_count,
-        orphaned_mcp_server_count,
-        &duplicate_mcp_server_groups,
-        stale_mcp_server_count,
-        mcp_total_ram_mb,
-        renderer_cpu_pct,
-        gpu_helper_cpu_pct,
-        high_cpu_ui_process_count,
+        AgentRuntimeSignals {
+            stale_process_count,
+            mcp_server_count,
+            orphaned_mcp_server_count,
+            duplicate_mcp_server_groups: &duplicate_mcp_server_groups,
+            stale_mcp_server_count,
+            mcp_total_ram_mb,
+            renderer_cpu_pct,
+            gpu_helper_cpu_pct,
+            high_cpu_ui_process_count,
+            codex_stale_process_count,
+            total_ram_mb,
+            total_cpu_pct,
+        },
     );
 
     AgentRuntimeHealth {
@@ -203,19 +205,18 @@ pub fn classify_runtime(
         || hay.contains("/codex app-server")
         || hay.contains("com.openai.codex")
     {
-        let role = if hay.contains("--analytics-default-enabled") {
-            AgentRuntimeRole::AppServer
-        } else if hay.contains("--listen stdio://") {
-            AgentRuntimeRole::AppServer
-        } else if hay.contains("--type=renderer") {
-            AgentRuntimeRole::Renderer
-        } else if hay.contains("--type=gpu-process") {
-            AgentRuntimeRole::GpuHelper
-        } else if hay.contains("sparkle") || hay.contains("updater.app") {
-            AgentRuntimeRole::Updater
-        } else {
-            AgentRuntimeRole::HostApp
-        };
+        let role =
+            if hay.contains("--analytics-default-enabled") || hay.contains("--listen stdio://") {
+                AgentRuntimeRole::AppServer
+            } else if hay.contains("--type=renderer") {
+                AgentRuntimeRole::Renderer
+            } else if hay.contains("--type=gpu-process") {
+                AgentRuntimeRole::GpuHelper
+            } else if hay.contains("sparkle") || hay.contains("updater.app") {
+                AgentRuntimeRole::Updater
+            } else {
+                AgentRuntimeRole::HostApp
+            };
         return Some((AgentRuntimeProvider::Codex, role));
     }
 
@@ -439,75 +440,69 @@ fn workflow_impacts(signals: AgentRuntimeSignals<'_>) -> Vec<AgentRuntimeImpact>
     impacts
 }
 
-fn recommendations(
-    process_count: u32,
-    stale_process_count: u32,
-    mcp_server_count: u32,
-    total_ram_mb: f64,
-    total_cpu_pct: f64,
-    codex_stale_process_count: u32,
-    orphaned_mcp_server_count: u32,
-    duplicate_mcp_server_groups: &[String],
-    stale_mcp_server_count: u32,
-    mcp_total_ram_mb: f64,
-    renderer_cpu_pct: f64,
-    gpu_helper_cpu_pct: f64,
-    high_cpu_ui_process_count: u32,
-) -> Vec<String> {
+fn recommendations(process_count: u32, signals: AgentRuntimeSignals<'_>) -> Vec<String> {
     let mut out = Vec::new();
-    if high_cpu_ui_process_count > 0 || renderer_cpu_pct >= 50.0 || gpu_helper_cpu_pct >= 30.0 {
+    if signals.high_cpu_ui_process_count > 0
+        || signals.renderer_cpu_pct >= 50.0
+        || signals.gpu_helper_cpu_pct >= 30.0
+    {
         out.push(format!(
             "Agent UI process pressure detected: renderer {:.0}% CPU, GPU helper {:.0}% CPU; restart or hide the desktop app before heavy local work.",
-            renderer_cpu_pct, gpu_helper_cpu_pct
+            signals.renderer_cpu_pct, signals.gpu_helper_cpu_pct
         ));
     }
-    if orphaned_mcp_server_count > 0 {
+    if signals.orphaned_mcp_server_count > 0 {
         out.push(format!(
-            "{orphaned_mcp_server_count} MCP servers are orphaned under PID 1; restart the owning agent or clean up stale MCP processes."
+            "{} MCP servers are orphaned under PID 1; restart the owning agent or clean up stale MCP processes.",
+            signals.orphaned_mcp_server_count
         ));
     }
-    if !duplicate_mcp_server_groups.is_empty() {
+    if !signals.duplicate_mcp_server_groups.is_empty() {
         out.push(format!(
             "Duplicate MCP server groups detected: {}; check for per-session MCP stack duplication.",
-            duplicate_mcp_server_groups.join(", ")
+            signals.duplicate_mcp_server_groups.join(", ")
         ));
     }
-    if stale_process_count >= 8 {
+    if signals.stale_process_count >= 8 {
         out.push(format!(
-            "{stale_process_count} agent runtime processes are older than 4h; restart the agent host to release stale tool servers."
+            "{} agent runtime processes are older than 4h; restart the agent host to release stale tool servers.",
+            signals.stale_process_count
         ));
     }
-    if codex_stale_process_count >= 4 {
+    if signals.codex_stale_process_count >= 4 {
         out.push(format!(
-            "{codex_stale_process_count} stale Codex runtime processes detected; restart Codex after saving work."
+            "{} stale Codex runtime processes detected; restart Codex after saving work.",
+            signals.codex_stale_process_count
         ));
     }
-    if mcp_server_count >= 12 {
+    if signals.mcp_server_count >= 12 {
         out.push(format!(
-            "{mcp_server_count} MCP servers are running; avoid spawning more tools/subagents until cleanup."
+            "{} MCP servers are running; avoid spawning more tools/subagents until cleanup.",
+            signals.mcp_server_count
         ));
     }
-    if stale_mcp_server_count >= 8 {
+    if signals.stale_mcp_server_count >= 8 {
         out.push(format!(
-            "{stale_mcp_server_count} MCP servers are older than 4h; prefer a clean agent restart over opening more sessions."
+            "{} MCP servers are older than 4h; prefer a clean agent restart over opening more sessions.",
+            signals.stale_mcp_server_count
         ));
     }
-    if mcp_total_ram_mb >= 1_000.0 {
+    if signals.mcp_total_ram_mb >= 1_000.0 {
         out.push(format!(
             "MCP servers alone are using {:.0}MB RAM; close duplicated browser/tool MCP stacks.",
-            mcp_total_ram_mb
+            signals.mcp_total_ram_mb
         ));
     }
-    if total_ram_mb >= 1_000.0 {
+    if signals.total_ram_mb >= 1_000.0 {
         out.push(format!(
             "Agent runtimes are using {:.0}MB RAM; close stale sessions before heavy work.",
-            total_ram_mb
+            signals.total_ram_mb
         ));
     }
-    if total_cpu_pct >= 50.0 {
+    if signals.total_cpu_pct >= 50.0 {
         out.push(format!(
             "Agent runtimes are using {:.0}% CPU; defer builds/tests until CPU settles.",
-            total_cpu_pct
+            signals.total_cpu_pct
         ));
     }
     if out.is_empty() && process_count > 0 {

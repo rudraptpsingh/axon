@@ -1,5 +1,8 @@
 # axon
 
+[![CI](https://github.com/rudraptpsingh/axon/actions/workflows/ci.yml/badge.svg)](https://github.com/rudraptpsingh/axon/actions/workflows/ci.yml)
+[![Pages](https://github.com/rudraptpsingh/axon/actions/workflows/pages.yml/badge.svg)](https://github.com/rudraptpsingh/axon/actions/workflows/pages.yml)
+
 **Your AI agent has no idea when the machine under it is the bottleneck.**
 
 Your laptop is thermal throttling. Cursor has old helper processes hanging around. Codex has multiple MCP servers still alive from earlier sessions. A single build pegs the CPU, the agent keeps spawning tool workers, and it burns tokens trying to debug "slow code" when the real problem is local runtime pressure.
@@ -191,9 +194,18 @@ Key design decisions:
 - macOS (Apple Silicon or Intel), Linux, and Windows.
 - Rust 1.75+ (for building from source)
 
+## Contributing
+
+Axon is being built as a community project for developers, agent IDEs, local
+runners, and hardware-aware agent workflows. See [CONTRIBUTING.md](CONTRIBUTING.md)
+for setup, test commands, and contribution guidelines.
+
+Please keep the core privacy boundary intact: no telemetry, no analytics, and
+no automatic outbound network calls.
+
 ## See also
 
-- [Public website](docs/index.html) -- GitHub Pages-ready landing page for Axon
+- [Public website](https://rudraptpsingh.github.io/axon/) -- GitHub Pages landing page for Axon
 - [The evidence: 15 GitHub issues and research](docs/problem-validation.md) -- why this problem exists
 - [Agent platform demo](docs/agent-platform-demo.md) -- live local demo narrative for agent IDEs, app builders, and local agent runtimes
 - [Value scorecard](docs/value-scorecard.md) -- metric-driven scorecard for cost, time, and performance impact
