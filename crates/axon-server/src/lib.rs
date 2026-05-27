@@ -1127,17 +1127,16 @@ fn blame_narrative(blame: &ProcessBlame) -> String {
 
         // Context window risk: early warning before large_session_file_mb threshold.
         match agent.ctx_window_risk.as_deref() {
-            Some("critical") => {
-                // Only report if large_session_file_mb isn't already firing (avoids duplicate)
-                if agent.large_session_file_mb.is_none() {
-                    base.push_str(&format!(
-                        " [WARN] PID {} session file > 20MB — context window near saturation. \
-                         Run /compact NOW to compress history before a synchronous load hang \
-                         occurs at ~40MB (#21022). Check: ls -lh ~/.claude/projects/",
-                        agent.pid
-                    ));
-                }
+            // Only report if large_session_file_mb isn't already firing (avoids duplicate).
+            Some("critical") if agent.large_session_file_mb.is_none() => {
+                base.push_str(&format!(
+                    " [WARN] PID {} session file > 20MB — context window near saturation. \
+                     Run /compact NOW to compress history before a synchronous load hang \
+                     occurs at ~40MB (#21022). Check: ls -lh ~/.claude/projects/",
+                    agent.pid
+                ));
             }
+            Some("critical") => {}
             Some("warn") => {
                 base.push_str(&format!(
                     " [INFO] PID {} session file > 5MB — context is growing. \
