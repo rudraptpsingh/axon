@@ -3,13 +3,19 @@ description: Report a reproducible Axon problem
 title: "[Bug]: "
 labels: ["bug"]
 body:
-  - type: textarea
-    id: what-happened
+  - type: markdown
     attributes:
-      label: What happened?
-      description: Describe the bug and the expected behavior.
+      value: |
+        Thanks for reporting an issue. Do not include secrets, credentials, or private machine data. Security vulnerabilities should use the private reporting path in `SECURITY.md`, not a public issue.
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What happened, and what did you expect instead?
     validations:
       required: true
+
   - type: input
     id: version
     attributes:
@@ -17,6 +23,7 @@ body:
       placeholder: "v0.2.6 or git SHA"
     validations:
       required: true
+
   - type: dropdown
     id: os
     attributes:
@@ -28,6 +35,23 @@ body:
         - Other
     validations:
       required: true
+
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Affected surface
+      options:
+        - CLI
+        - MCP server
+        - Agent setup
+        - Alerts/webhooks
+        - GPU monitoring
+        - Dashboard
+        - Documentation
+        - Other
+    validations:
+      required: true
+
   - type: textarea
     id: reproduce
     attributes:
@@ -37,9 +61,18 @@ body:
         2. Observe ...
     validations:
       required: true
+
   - type: textarea
     id: logs
     attributes:
-      label: Logs
-      description: Paste relevant stderr logs. Do not include secrets or private data.
+      label: Relevant output or logs
+      description: Paste relevant stderr logs or command output. Redact private data.
       render: text
+
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy check
+      options:
+        - label: I have removed secrets, credentials, and private machine data from this report.
+          required: true

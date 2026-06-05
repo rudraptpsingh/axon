@@ -1,218 +1,243 @@
-# axon
+# Axon
 
 [![CI](https://github.com/rudraptpsingh/axon/actions/workflows/ci.yml/badge.svg)](https://github.com/rudraptpsingh/axon/actions/workflows/ci.yml)
 [![Pages](https://github.com/rudraptpsingh/axon/actions/workflows/pages.yml/badge.svg)](https://github.com/rudraptpsingh/axon/actions/workflows/pages.yml)
 
-**Your AI agent has no idea when the machine under it is the bottleneck.**
+Axon is a zero-cloud MCP server that gives local coding agents hardware and
+runtime context before they start more work.
 
-Your laptop is thermal throttling. Cursor has old helper processes hanging around. Codex has multiple MCP servers still alive from earlier sessions. A single build pegs the CPU, the agent keeps spawning tool workers, and it burns tokens trying to debug "slow code" when the real problem is local runtime pressure.
+It runs on the developer's machine, exposes structured MCP tools over stdio,
+and reports signals such as CPU pressure, RAM pressure, thermal throttling,
+GPU state, stale agent sessions, duplicate MCP servers, and safe parallelism.
 
-This is not theoretical. There are [15 open GitHub issues](docs/problem-validation.md) documenting OOM crashes, kernel panics, runaway session files, stuck tool calls, and RAM accumulation from idle agent sessions. A [METR study](https://metr.org/blog/2025-07-10-early-2025-ai-experienced-os-dev-study/) found developers using AI tools were 19% slower -- but thought they were 20% faster. The bottleneck moved to the hardware, and nobody told the agent.
+The goal is not to be a prettier system monitor. The goal is to let an agent
+decide whether to run, reduce parallelism, defer, reuse existing tools, or ask
+the user to clean up the local environment.
 
-axon is an [MCP](https://modelcontextprotocol.io/) server that gives AI agents real-time local runtime awareness. It tells the agent what process is slowing things down, whether the host can handle the next task, how much parallelism is safe, and whether accumulated agent runtimes are creating business-impacting waste. One tool call. Structured JSON. No cloud.
+- Public site: <https://rudraptpsingh.github.io/axon/>
+- Source: <https://github.com/rudraptpsingh/axon>
+- License: [MIT](LICENSE)
 
-Works with Claude Desktop, Claude Code, Cursor, and VS Code. macOS, Linux, and Windows.
+## Why
 
-## Privacy
+Local coding agents often operate without knowing whether the host machine is
+already saturated. That leads to predictable failure modes:
 
-Zero network calls. Your process names, load patterns, and hardware state never leave your machine. This is not a config option -- it is enforced as a hard design constraint. No telemetry, no analytics, no cloud. Ever.
+- slow builds misdiagnosed as code problems
+- parallel test or browser runs launched on a pressured machine
+- stale MCP servers and helper processes accumulating across sessions
+- long-running agent sessions growing memory without a clear warning
+- thermal throttling and battery pressure that the agent cannot see
 
----
+Axon gives the agent a compact, structured answer instead of forcing it to run
+shell diagnostics and parse free-form output.
 
-![axon diagnose](tapes/demo.gif)
+## Privacy Boundary
 
-```
-$ axon diagnose
+Axon is local-first by design:
 
-[warn] Cursor (2 processes)  --  204% CPU,  0.2GB RAM
-       Impact: System is under load. You may notice minor slowdowns.
-       Fix:    Restart Cursor or close unused editor tabs (Cmd+W).
-       Temp:   73C
-       Battery: Battery at 80% and charging.
-```
+- no telemetry
+- no analytics
+- no automatic outbound network calls
+- stdio transport for MCP clients
+- local SQLite persistence for snapshots and alert history
+
+Hardware and process data stay on the machine unless the user explicitly
+exports or forwards it.
 
 ## Install
 
-![Install and setup](tapes/demo-setup.gif)
+Homebrew:
 
 ```bash
-# Homebrew (recommended)
 brew install rudraptpsingh/tap/axon
+```
 
-# From source (requires Rust toolchain)
+From source:
+
+```bash
 cargo install --path crates/axon-cli
 ```
 
-After installing, configure your agents:
+Requirements:
+
+- macOS, Linux, or Windows
+- Rust 1.75+ when building from source
+
+## Configure Agents
+
+Run setup after installing:
 
 ```bash
-axon setup              # configures all detected agents
-axon setup claude-code  # or configure a specific agent
+axon setup              # configure detected agents
+axon setup claude-code
 axon setup cursor
 axon setup vscode
 ```
 
-Then restart your agent.
-
-## What happens when your agent has axon
-
-**Your build is slow.** The agent calls `process_blame` and gets back: Cursor is eating 204% CPU across 2 processes. Impact: degrading. Fix: restart Cursor or close unused tabs. 200 tokens. Done. Without axon, the agent runs `ps aux`, `top -l 1`, `vm_stat`, parses the output, guesses wrong, and burns 2,000-3,000 tokens.
-
-**You are about to run a test suite.** The agent calls `workload_advice` with `{"kind":"test","requested_parallelism":4}`. Axon returns `defer`, `safe_parallelism: 1`, and concrete reasons: too many MCP servers, stale agent sessions, RAM pressure, or UI process CPU burn. The agent still performs useful lightweight work, but avoids spawning a parallel test storm on a pressured host.
-
-**Your agent environment has accumulated.** The agent calls `agent_runtime_health` and sees Codex, Claude, Cursor, MCP servers, renderers, tool workers, stale processes, duplicate MCP groups, and workflow impact. It can say: "Do not spawn another browser MCP. Reuse the existing one or clean up stale sessions first." This is the difference between one productive agent and a workstation slowly filling with invisible helpers.
-
-**Your session has been running 6 hours.** The agent calls `session_health` and sees: 3 alerts fired, peak RAM 14GB, worst impact level was Strained. It tells you: "This session has been rough on your machine. Consider restarting before the next heavy task." Without axon, it has no idea.
-
-**In app-development A/B testing**, the same app task was run with and without Axon policy. Both versions produced identical app output. Axon avoided 4 extra MCP/tool helpers, capped risky parallelism from 4 to 1, preserved useful validation time, and app runtime did not degrade in the measured run. See [app_dev_ab_report.md](app_dev_ab_report.md).
-
-**For business demos**, Axon can produce a scorecard with risky tool spawns avoided, parallel workers avoided, estimated credits saved, estimated developer time protected, and stale local runtime count. See [docs/value-scorecard.md](docs/value-scorecard.md) and [docs/agent-platform-demo.md](docs/agent-platform-demo.md).
-
-### Tool reference
-
-| Tool | What the agent gets |
-|---|---|
-| `process_blame` | Top culprit process, anomaly type, impact severity, specific fix. Detects multi-instance agent accumulation (Claude, Cursor, Windsurf, VS Code, Zed) |
-| `hw_snapshot` | CPU %, die temp, RAM/disk pressure levels, throttling state, `headroom` field (adequate/limited/insufficient) for pre-task gating |
-| `workload_advice` | A run/defer/degrade recommendation for builds, tests, Docker, browser automation, GPU jobs, subagents, or MCP-heavy workflows. Includes safe parallelism and risk reasons |
-| `agent_runtime_health` | Cross-agent local runtime inventory: Codex/Claude/Cursor/Windsurf/Zed processes, MCP server count, stale sessions, duplicate MCP groups, UI/renderer pressure, and business workflow impact |
-| `battery_status` | Battery percentage, charging state, time remaining |
-| `system_profile` | Machine model, chip, core count, total RAM, OS version |
-| `hardware_trend` | CPU/RAM/temp trends over time (last_1h to last_30d) |
-| `session_health` | Alert count, worst impact level, peak CPU/RAM/temp since a given timestamp |
-| `gpu_snapshot` | Local GPU detection, utilization, VRAM usage/allocation, and a narrative for ML or graphics-heavy work |
-
-All tools return structured JSON with an `ok` boolean, timestamp, data payload, and a human-readable `narrative` field.
-
-![Detect, blame, fix, verify](tapes/demo-detect.gif)
-
-## For AI Agents
-
-If you are an AI agent with axon available:
-
-- **Session start** -- call `system_profile` to know the machine (chip, cores, RAM)
-- **Before heavy tasks** -- call `hw_snapshot`, check `headroom`. Defer if `insufficient`, proceed with caution if `limited`
-- **Before builds/tests/Docker/browser automation/subagents** -- call `workload_advice` with the workload kind and requested parallelism. Use `safe_parallelism` instead of guessing
-- **When tool workers or MCP servers accumulate** -- call `agent_runtime_health` before spawning more local servers, browser controllers, or subagents
-- **Slow build or lag** -- call `process_blame` for the culprit and a specific fix
-- **Battery concerns** -- call `battery_status` before long-running work
-- **Performance patterns** -- call `hardware_trend` to correlate failures with resource anomalies
-- **End of long session** -- call `session_health` for a retrospective summary
-
-## How It Works
-
-1. A background collector refreshes hardware state every 2 seconds via `sysinfo`
-2. Per-process EWMA baselines detect anomalous resource usage -- transient spikes are filtered out
-3. Process grouping aggregates child processes by app (47 Chrome helpers become one "Google Chrome" group)
-4. Agent-runtime scanning groups Codex, Claude, Cursor, Windsurf, Zed, MCP servers, renderers, tool workers, and stale processes into workflow impact
-5. Workload advice converts hardware and runtime pressure into concrete actions: run, degrade, or defer
-6. Multi-signal scoring (RAM + CPU + swap) classifies system health into 4 tiers: Healthy, Degrading, Strained, Critical
-
-## CLI Commands
-
-```bash
-axon serve              # Start MCP stdio server (default, used by agents)
-axon serve --dashboard  # Start local dashboard at http://127.0.0.1:7670
-axon diagnose           # One-shot: collect 4s of data, print the culprit
-axon status             # Print current hardware snapshot as JSON
-axon query <tool>       # Call an MCP tool directly (e.g., axon query agent_runtime_health)
-axon setup <target>     # Configure an agent (claude-desktop, claude-code, cursor, vscode)
-```
-
-Useful direct queries:
-
-```bash
-axon query agent_runtime_health
-axon query workload_advice
-axon query process_blame
-```
-
-## Agent Setup
-
-Run `axon setup` after installing to configure your agents:
-
-```bash
-axon setup claude-desktop   # Writes claude_desktop_config.json
-axon setup claude-code      # Runs: claude mcp add axon
-axon setup cursor           # Writes ~/.cursor/mcp.json
-axon setup vscode           # Writes VS Code user settings
-```
-
-Or add to any MCP-compatible agent's config manually:
+Manual MCP configuration:
 
 ```json
 {
   "mcpServers": {
     "axon": {
-      "command": "/path/to/axon",
+      "command": "/absolute/path/to/axon",
       "args": ["serve"]
     }
   }
 }
 ```
 
-## Alerts
+Restart the agent after changing MCP configuration.
 
-axon fires edge-triggered alerts on state transitions -- not every tick. RAM pressure spikes, disk pressure warnings, thermal throttle onset, impact escalation. Delivered via webhook POST or MCP logging notifications.
+## Quick Check
 
-![Live alert firing](tapes/demo-alerts-live.gif)
-
-Configure with a one-line flag or a config file:
-
-![Alert config](tapes/demo-alerts-config.gif)
+Run a one-shot diagnosis:
 
 ```bash
-# One-line flag
-axon serve --alert-webhook myapp=https://yourapp.com/alerts
-
-# Or config file at ~/.config/axon/alert-dispatch.json
+axon diagnose
 ```
 
-After an alert fires, the agent queries full context:
+Call an MCP tool directly:
 
-![Agent queries blame after alert](tapes/demo-alerts-query.gif)
+```bash
+axon query hw_snapshot
+axon query process_blame
+axon query workload_advice
+axon query agent_runtime_health
+```
+
+Example response shape:
+
+```json
+{
+  "ok": true,
+  "ts": "2026-06-05T07:00:00Z",
+  "data": {
+    "headroom": "limited"
+  },
+  "narrative": "RAM pressure is elevated. Cap parallelism before starting heavy local work."
+}
+```
+
+All MCP tools return JSON with an `ok` flag, timestamp, data payload, and a
+human-readable `narrative`.
+
+## MCP Tools
+
+| Tool | Purpose |
+| --- | --- |
+| `hw_snapshot` | Current CPU, RAM, disk, thermal, swap, and headroom state. |
+| `process_blame` | Top process or process group causing local pressure, with impact and fix guidance. |
+| `battery_status` | Battery percentage, charging state, and estimated time remaining. |
+| `system_profile` | Machine model, chip, core count, RAM, OS, and Axon version. |
+| `hardware_trend` | CPU, RAM, temperature, pressure, and anomaly trends over time. |
+| `session_health` | Alert count, worst impact, and resource peaks since a timestamp. |
+| `gpu_snapshot` | GPU detection, utilization, VRAM state, and GPU-specific narrative. |
+| `workload_advice` | Run/degrade/defer policy and safe parallelism for local work. |
+| `agent_runtime_health` | Inventory of local agent processes, MCP servers, stale sessions, and duplicate tool groups. |
+
+Suggested agent policy:
+
+- call `system_profile` once at session start
+- call `hw_snapshot` before heavy local work
+- call `workload_advice` before builds, tests, Docker, browser automation,
+  subagents, or GPU work
+- call `agent_runtime_health` before spawning additional MCP servers or browser
+  controllers
+- call `process_blame` when the system feels slow or a local task stalls
+- call `session_health` near the end of long sessions
+
+## CLI
+
+```bash
+axon serve              # start MCP stdio server
+axon serve --dashboard  # start local dashboard at http://127.0.0.1:7670
+axon diagnose           # collect a short sample and print the likely culprit
+axon status             # print current hardware snapshot as JSON
+axon query <tool>       # call an MCP tool directly
+axon setup <target>     # configure claude-desktop, claude-code, cursor, or vscode
+```
+
+## Alerts
+
+Axon can emit edge-triggered alerts when system state changes, for example when
+RAM pressure escalates or thermal throttling starts. Alerts are not periodic
+pings.
+
+Webhook example:
+
+```bash
+axon serve --alert-webhook myapp=https://example.com/alerts
+```
+
+Config file location:
+
+```text
+~/.config/axon/alert-dispatch.json
+```
+
+Set `AXON_CONFIG_DIR` to load `alert-dispatch.json` from a different directory,
+or pass `axon serve --config-dir <dir>`.
 
 ## Architecture
 
-```
+```text
 crates/
-  axon-core/     # Types, EWMA tracker, impact engine, agent runtime scanner, collector loop, alert dispatch, SQLite persistence
-  axon-server/   # MCP server (9 tools via rmcp)
-  axon-cli/      # Binary entry point
-  dashboard/     # Local zero-cloud dashboard
+  axon-core/     # data types, collector, EWMA baselines, impact engine, persistence
+  axon-server/   # MCP server, tool handlers, response narratives
+  axon-cli/      # serve, diagnose, status, setup, query
+dashboard/       # local zero-cloud dashboard
+docs/            # public website and engineering notes
 ```
 
-Key design decisions:
-- **Privacy by architecture** -- no network calls, no telemetry, no cloud
-- **stdio transport** -- universal MCP compatibility with all current agents
-- **SQLite persistence** -- snapshots every 10s, alerts on state transitions, powers trend queries
-- **Edge-triggered alerts** -- fire once on state transitions (Normal->Warn, Healthy->Strained), not on every tick
-- **Business-impact layer** -- converts raw hardware signals into task-level advice an agent can actually use
+Key implementation details:
 
-## Requirements
+- collector refreshes hardware/process state every 2 seconds
+- per-process EWMA baselines reduce false positives from transient spikes
+- process grouping collapses helper processes into useful app-level blame
+- agent-runtime scanner detects accumulated Codex, Claude, Cursor, Zed,
+  Windsurf, MCP server, renderer, and tool-worker processes
+- SQLite stores local snapshots and alerts for trend/session queries
+- stdout is reserved for MCP JSON-RPC on the server path; logs go to stderr
 
-- macOS (Apple Silicon or Intel), Linux, and Windows.
-- Rust 1.75+ (for building from source)
+## Development
+
+```bash
+cargo build
+cargo fmt --all -- --check
+cargo clippy --workspace -- -D warnings
+cargo test --workspace
+```
+
+Useful smoke checks:
+
+```bash
+cargo run -p axon -- diagnose
+cargo run -p axon -- query hw_snapshot
+cargo run -p axon -- query workload_advice
+python3 scripts/mcp_exercise_all_tools.py target/debug/axon
+```
+
+## Project Materials
+
+- [Public website](https://rudraptpsingh.github.io/axon/)
+- [Problem validation](docs/problem-validation.md)
+- [App-development A/B analysis](docs/app-development-ab-analysis.md)
+- [Agent platform demo](docs/agent-platform-demo.md)
+- [Value scorecard](docs/value-scorecard.md)
+- [Roadmap](docs/roadmap.md)
+- [Testing guide](docs/testing-guide.md)
 
 ## Contributing
 
-Axon is being built as a community project for developers, agent IDEs, local
-runners, and hardware-aware agent workflows. See [CONTRIBUTING.md](CONTRIBUTING.md)
-for setup, test commands, and contribution guidelines.
+Contributions are welcome when they preserve the local privacy boundary. Start
+with [CONTRIBUTING.md](CONTRIBUTING.md), keep changes scoped, and include tests
+when behavior changes.
 
-Please keep the core privacy boundary intact: no telemetry, no analytics, and
-no automatic outbound network calls.
-
-## See also
-
-- [Public website](https://rudraptpsingh.github.io/axon/) -- GitHub Pages landing page for Axon
-- [The evidence: 15 GitHub issues and research](docs/problem-validation.md) -- why this problem exists
-- [Agent platform demo](docs/agent-platform-demo.md) -- live local demo narrative for agent IDEs, app builders, and local agent runtimes
-- [Value scorecard](docs/value-scorecard.md) -- metric-driven scorecard for cost, time, and performance impact
-- [App-development A/B report](app_dev_ab_report.md) -- with/without Axon proof, including no-degradation checks
-- [Agent adaptation test](agent_behavior_report.md) -- 50.3% latency reduction under stress
-- [Parallel agent comparison](comparative_stress_test_results/comparison_report.md) -- blind vs informed agents on one machine
+Security reports should follow [SECURITY.md](SECURITY.md). Please do not open
+public issues for vulnerabilities.
 
 ## License
 
-MIT
+MIT. See [LICENSE](LICENSE).

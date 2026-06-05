@@ -1,5 +1,5 @@
 name: Feature request
-description: Suggest a capability or integration
+description: Suggest a capability, platform signal, or integration
 title: "[Feature]: "
 labels: ["enhancement"]
 body:
@@ -7,9 +7,10 @@ body:
     id: problem
     attributes:
       label: Problem
-      description: What agent workflow or local runtime issue should Axon help with?
+      description: What local runtime or agent workflow problem should Axon help with?
     validations:
       required: true
+
   - type: textarea
     id: proposal
     attributes:
@@ -17,17 +18,36 @@ body:
       description: What should Axon do?
     validations:
       required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - MCP tool behavior
+        - CLI/setup
+        - macOS signal coverage
+        - Linux signal coverage
+        - Windows signal coverage
+        - GPU monitoring
+        - Alerts/webhooks
+        - Documentation
+        - Other
+    validations:
+      required: true
+
   - type: textarea
     id: value
     attributes:
       label: User value
-      description: How would this improve cost, speed, reliability, or developer experience?
+      description: How would this improve reliability, speed, cost, safety, or developer experience?
     validations:
       required: true
+
   - type: checkboxes
     id: privacy
     attributes:
       label: Privacy boundary
       options:
-        - label: This can work without telemetry or cloud calls.
+        - label: This can work without telemetry, analytics, or automatic cloud calls.
           required: true
