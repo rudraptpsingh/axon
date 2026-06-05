@@ -54,7 +54,7 @@ jobs:
           cp target/${{ matrix.target }}/release/axon dist/axon-${{ matrix.target }}
           cd dist && shasum -a 256 axon-${{ matrix.target }} > axon-${{ matrix.target }}.sha256
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: axon-${{ matrix.target }}
           path: dist/
@@ -92,7 +92,7 @@ jobs:
           cp target/${{ matrix.target }}/release/axon dist/axon-${{ matrix.target }}
           cd dist && sha256sum axon-${{ matrix.target }} > axon-${{ matrix.target }}.sha256
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: axon-${{ matrix.target }}
           path: dist/
@@ -120,7 +120,7 @@ jobs:
             -output dist/axon-universal-apple-darwin
           cd dist && shasum -a 256 axon-universal-apple-darwin > axon-universal-apple-darwin.sha256
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: axon-universal-apple-darwin
           path: dist/
