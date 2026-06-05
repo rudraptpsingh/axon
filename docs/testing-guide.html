@@ -1,0 +1,263 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Post-integration verification guide for Axon changes.">
+  <link rel="icon" href="data:,">
+  <title>Axon - Testing Guide</title>
+  <style>*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:#090a0a;color:#f4f1e8;font-family:"Avenir Next","Helvetica Neue",Helvetica,Arial,sans-serif;-webkit-font-smoothing:antialiased;text-rendering:geometricPrecision}:root{--line:rgba(244,241,232,.14);--line2:rgba(244,241,232,.22);--ink:#f4f1e8;--muted:#aaa49b;--faint:#706b63;--green:#59d68c;--amber:#d9a84f;--panel:#111211;--panel2:#171817;--r:10px}a{color:var(--green);text-decoration:none}a:hover{text-decoration:underline}.page{min-height:100vh;background:linear-gradient(90deg,rgba(255,255,255,.026) 1px,transparent 1px),linear-gradient(0deg,rgba(255,255,255,.018) 1px,transparent 1px);background-size:76px 76px}.wrap{width:min(900px,calc(100% - 40px));margin:0 auto}.mono,code{font-family:"SF Mono","Menlo",monospace}nav{position:sticky;top:0;z-index:20;border-bottom:1px solid var(--line);background:rgba(9,10,10,.86);backdrop-filter:blur(18px)}.nav-inner{height:64px;display:flex;align-items:center;justify-content:space-between;gap:18px}.brand{display:flex;align-items:center;gap:12px;color:var(--ink);font-weight:850;letter-spacing:2.6px;text-decoration:none}.mark{width:32px;height:32px;border:1px solid var(--line2);border-radius:8px;display:grid;place-items:center;background:#111}.back{font-size:13px;color:var(--muted)}article{padding:82px 0 96px}.eyebrow{font-size:11px;text-transform:uppercase;letter-spacing:1.6px;color:var(--amber);font-weight:850;margin-bottom:18px}h1{font-size:58px;line-height:.98;letter-spacing:-.045em;margin:0 0 20px;color:var(--ink)}h2{font-size:34px;line-height:1.08;letter-spacing:-.03em;margin:54px 0 16px;color:var(--ink)}h3{font-size:22px;letter-spacing:-.015em;margin:34px 0 12px;color:var(--ink)}h4,h5,h6{color:var(--ink);margin:28px 0 10px}p{color:var(--muted);font-size:16px;line-height:1.75;margin:16px 0}.lead{font-size:20px;max-width:760px}ul,ol{color:var(--muted);font-size:16px;line-height:1.7;padding-left:23px}li{margin:7px 0}strong{color:var(--ink)}em{color:var(--ink)}code{background:rgba(244,241,232,.08);border:1px solid rgba(244,241,232,.1);border-radius:5px;padding:1px 5px;color:#dfe9de;font-size:.92em}pre{max-width:100%;background:#050606;border:1px solid var(--line);border-radius:var(--r);padding:18px;overflow:auto;color:#dfe9de;line-height:1.65;margin:22px 0}pre code{display:block;background:transparent;border:0;border-radius:0;padding:0;font-size:13px}.table-wrap{overflow:auto;border:1px solid var(--line);border-radius:var(--r);margin:22px 0;background:rgba(17,18,17,.42)}table{width:100%;border-collapse:collapse;min-width:620px}th,td{padding:13px 14px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}th{font-size:11px;color:var(--faint);text-transform:uppercase;letter-spacing:1px;background:rgba(244,241,232,.03)}td{color:var(--muted);line-height:1.55}tr:last-child td{border-bottom:0}blockquote{border-left:3px solid var(--green);margin:24px 0;padding:4px 0 4px 18px;background:rgba(89,214,140,.045)}blockquote p{color:var(--ink)}hr{border:0;border-top:1px solid var(--line);margin:38px 0}.doc-card{border:1px solid var(--line);border-radius:var(--r);background:rgba(17,18,17,.58);padding:20px;margin:24px 0 34px}.doc-card p{margin:0;color:var(--muted)}footer{border-top:1px solid var(--line);padding:24px 0;color:var(--faint);font-size:12px}.foot{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}@media(max-width:760px){h1{font-size:42px}h2{font-size:28px}.nav-inner{height:58px}.back{display:none}article{padding-top:58px}}</style>
+</head>
+<body>
+  <div class="page">
+    <nav>
+      <div class="wrap nav-inner">
+        <a class="brand" href="index.html"><span class="mark">A</span><span>AXON</span></a>
+        <a class="back" href="index.html#analysis">Back to public page</a>
+      </div>
+    </nav>
+    <article class="wrap">
+      <div class="eyebrow">Axon public docs</div>
+      <h1>Axon Testing Guide — Post-Integration Verification</h1>
+      <div class="doc-card"><p>Post-integration verification guide for Axon changes.</p></div>
+      <h2 id="context">Context</h2>
+<p>This document covers changes made in the <code>claude/research-axon-claude-integration-gQIbC</code> branch. Three roadmap features (P1-P3) were implemented along with cross-platform (Linux) support. All changes were tested on Linux (Ubuntu 24.04, Intel Xeon, 16GB). macOS code paths compile but have not been executed yet. This guide is for verifying on a real Mac.</p>
+<h3 id="what-changed-10-files-883-107-lines">What Changed (10 files, +883 / -107 lines)</h3>
+<div class="table-wrap"><table><thead><tr><th>Area</th><th>Files</th><th>Summary</th></tr></thead><tbody><tr><td><strong>Headroom (P1)</strong></td><td><code>types.rs</code>, <code>impact.rs</code>, <code>collector.rs</code></td><td><code>HeadroomLevel</code> enum (adequate/limited/insufficient) added to <code>HwSnapshot</code>. <code>compute_headroom()</code> evaluates RAM/disk pressure, throttling, CPU.</td></tr><tr><td><strong>Agent Accumulation (P2)</strong></td><td><code>types.rs</code>, <code>impact.rs</code>, <code>collector.rs</code></td><td><code>AgentAccumulation</code> variant in <code>AnomalyType</code>. Detects &gt;1 instance of Claude, Cursor, Windsurf, VS Code, Zed.</td></tr><tr><td><strong>Session Health (P3)</strong></td><td><code>types.rs</code>, <code>persistence.rs</code>, <code>lib.rs</code> (server), <code>main.rs</code> (CLI)</td><td>New <code>session_health</code> MCP tool. <code>query_session_health()</code> aggregates snapshots + alerts from SQLite.</td></tr><tr><td><strong>Cross-platform</strong></td><td><code>collector.rs</code>, <code>main.rs</code></td><td>Platform-gated system profile, battery, setup/uninstall paths. Linux reads <code>/proc/cpuinfo</code>, <code>/sys/class/power_supply/</code>, <code>~/.config/</code> paths. macOS paths unchanged.</td></tr><tr><td><strong>Tests</strong></td><td><code>impact.rs</code>, <code>setup_uninstall.rs</code>, <code>persistence.rs</code></td><td>20 new unit tests. Setup/uninstall tests use <code>#[cfg]</code> for platform-aware paths.</td></tr><tr><td><strong>MCP Server</strong></td><td><code>lib.rs</code> (server), <code>Cargo.toml</code> (server)</td><td>Enhanced tool descriptions. 6-tool workflow in server instructions. <code>session_health</code> tool registered. <code>chrono</code> added as dependency.</td></tr></tbody></table></div>
+<hr>
+<h2 id="step-1-build-and-basic-smoke-test">Step 1: Build and Basic Smoke Test</h2>
+<pre><code class="language-bash">cd /path/to/axon
+git checkout claude/research-axon-claude-integration-gQIbC
+git pull origin claude/research-axon-claude-integration-gQIbC
+
+cargo build
+cargo test --workspace</code></pre>
+<p><strong>Expected</strong>: All tests pass. On macOS, the previously-failing <code>test_uninstall_purges_data_dirs</code> should now pass (it was failing on Linux before the fix, but was already fine on macOS with the old code; the new code uses platform-aware paths).</p>
+<hr>
+<h2 id="step-2-verify-system-profile-macos-path">Step 2: Verify System Profile (macOS Path)</h2>
+<pre><code class="language-bash">cargo run -- query system_profile</code></pre>
+<p><strong>Expected output</strong> (on your MacBook Air M2, 8GB):</p>
+<pre><code class="language-json">{
+  &quot;ok&quot;: true,
+  &quot;data&quot;: {
+    &quot;model_id&quot;: &quot;Mac14,15&quot;,
+    &quot;chip&quot;: &quot;Apple Silicon (...)&quot;,
+    &quot;core_count&quot;: 8,
+    &quot;ram_total_gb&quot;: 8.0,
+    &quot;os_version&quot;: &quot;macOS ...&quot;,
+    &quot;axon_version&quot;: &quot;0.2.0&quot;
+  }
+}</code></pre>
+<p><strong>What to check</strong>:</p>
+<ul>
+<li><code>model_id</code> should NOT be empty or "Unknown" — it comes from <code>sysctl -n hw.model</code></li>
+<li><code>chip</code> should contain "Apple Silicon" — from <code>sysctl -n hw.perflevel0.name</code> fallback</li>
+<li><code>core_count</code> should be 8</li>
+<li><code>ram_total_gb</code> should be ~8.0</li>
+</ul>
+<p><strong>If <code>model_id</code> or <code>chip</code> is wrong</strong>: The <code>detect_platform_info()</code> function at <code>crates/axon-core/src/collector.rs:557</code> is the macOS path. Debug with:</p>
+<pre><code class="language-bash">sysctl -n hw.model
+sysctl -n machdep.cpu.brand_string
+sysctl -n hw.perflevel0.name</code></pre>
+<hr>
+<h2 id="step-3-verify-headroom-field-p1">Step 3: Verify Headroom Field (P1)</h2>
+<pre><code class="language-bash">cargo run -- query hw_snapshot</code></pre>
+<p><strong>Expected</strong>: JSON response now includes two new fields:</p>
+<pre><code class="language-json">{
+  &quot;headroom&quot;: &quot;adequate&quot;,
+  &quot;headroom_reason&quot;: &quot;System has headroom&quot;
+}</code></pre>
+<p><strong>Headroom rules (priority order)</strong>:</p>
+<div class="table-wrap"><table><thead><tr><th>Condition</th><th>Level</th><th>Example reason</th></tr></thead><tbody><tr><td>RAM pressure = Critical</td><td>insufficient</td><td>"RAM at 78% (Critical)"</td></tr><tr><td>Disk pressure = Critical</td><td>insufficient</td><td>"Disk at 92% (Critical)"</td></tr><tr><td>Throttling = true</td><td>insufficient</td><td>"CPU thermal throttling at 91C"</td></tr><tr><td>RAM Warn + CPU &gt;= 70%</td><td>insufficient</td><td>"RAM warn + CPU at 74%"</td></tr><tr><td>RAM pressure = Warn</td><td>limited</td><td>"RAM at 61% (Warn)"</td></tr><tr><td>Disk pressure = Warn</td><td>limited</td><td>"Disk at 85% (Warn)"</td></tr><tr><td>CPU &gt;= 70%</td><td>limited</td><td>"CPU at 74%"</td></tr><tr><td>Everything else</td><td>adequate</td><td>"System has headroom"</td></tr></tbody></table></div>
+<p><strong>To force different headroom levels</strong>, generate load:</p>
+<pre><code class="language-bash"># Eat memory to push RAM into warn/critical
+python3 -c &quot;x = bytearray(4 * 1024**3); input(&#x27;holding 4GB...&#x27;)&quot;
+
+# In another terminal:
+cargo run -- query hw_snapshot | grep headroom</code></pre>
+<p>On an 8GB MacBook Air M2, allocating 4GB should push RAM to ~75%+ (critical).</p>
+<p><strong>Narrative check</strong>: The <code>narrative</code> field should end with one of:</p>
+<ul>
+<li><code>Headroom: adequate.</code></li>
+<li><code>Headroom: limited.</code></li>
+<li><code>Headroom: INSUFFICIENT -- defer heavy tasks.</code></li>
+</ul>
+<hr>
+<h2 id="step-4-verify-agent-accumulation-detection-p2">Step 4: Verify Agent Accumulation Detection (P2)</h2>
+<pre><code class="language-bash"># Open 2+ terminal windows, each running:
+cargo run -- serve
+# (they will block on stdin)
+
+# In another terminal:
+cargo run -- query process_blame</code></pre>
+<p><strong>Expected</strong> when multiple <code>axon serve</code> (or <code>claude</code>, <code>Cursor</code>) processes are running:</p>
+<pre><code class="language-json">{
+  &quot;anomaly_type&quot;: &quot;agent_accumulation&quot;,
+  &quot;culprit_group&quot;: {
+    &quot;name&quot;: &quot;axon&quot;,
+    &quot;process_count&quot;: 2,
+    ...
+  },
+  &quot;impact&quot;: &quot;Multiple AI agent instances detected. Combined resource usage is growing.&quot;,
+  &quot;fix&quot;: &quot;2 axon instances are running. Close unused sessions to free ~0.1GB...&quot;
+}</code></pre>
+<p>Note: <code>axon</code> itself is not in the known agent list (only claude, cursor, windsurf, code, zed). To test accumulation detection properly:</p>
+<ul>
+<li>Open multiple Claude Code sessions (<code>claude</code> CLI in different terminals)</li>
+<li>Or open multiple Cursor windows</li>
+<li>Then run <code>cargo run -- query process_blame</code></li>
+</ul>
+<p><strong>Known agent names</strong> (after normalization, case-insensitive): <code>claude</code>, <code>claude code</code>, <code>cursor</code>, <code>windsurf</code>, <code>code</code>, <code>zed</code>.</p>
+<p><strong>If no accumulation is detected</strong>: The detector is at <code>crates/axon-core/src/impact.rs:101</code>. It checks <code>g.process_count &gt; 1 &amp;&amp; is_known_agent(&amp;g.name)</code>. Debug with:</p>
+<pre><code class="language-bash">cargo run -- query process_blame 2&gt;&amp;1 | python3 -m json.tool
+# Check the culprit_group.name — does it match a known agent?</code></pre>
+<hr>
+<h2 id="step-5-verify-session-health-tool-p3">Step 5: Verify Session Health Tool (P3)</h2>
+<pre><code class="language-bash"># Let axon collect data for a bit first:
+cargo run -- serve &amp;
+sleep 30
+kill %1
+
+# Then query:
+cargo run -- query session_health</code></pre>
+<p><strong>Expected</strong>:</p>
+<pre><code class="language-json">{
+  &quot;ok&quot;: true,
+  &quot;data&quot;: {
+    &quot;since&quot;: &quot;...&quot;,
+    &quot;snapshot_count&quot;: 3,
+    &quot;alert_count&quot;: 0,
+    &quot;worst_impact_level&quot;: &quot;healthy&quot;,
+    &quot;worst_anomaly_type&quot;: &quot;none&quot;,
+    &quot;avg_cpu_pct&quot;: 12.5,
+    &quot;avg_ram_gb&quot;: 5.2,
+    &quot;peak_cpu_pct&quot;: 25.0,
+    &quot;peak_ram_gb&quot;: 5.8,
+    &quot;peak_temp_celsius&quot;: 45.0,
+    &quot;throttle_event_count&quot;: 0
+  }
+}</code></pre>
+<p><strong>What to check</strong>:</p>
+<ul>
+<li><code>snapshot_count</code> &gt; 0 (needs prior <code>axon serve</code> to populate the DB)</li>
+<li><code>peak_temp_celsius</code> should be non-null on a real Mac (reads die temperature)</li>
+<li><code>avg_cpu_pct</code> and <code>avg_ram_gb</code> should be reasonable values</li>
+</ul>
+<p><strong>If snapshot_count is 0</strong>: The DB may not have data in the last hour. Run <code>axon serve</code> for at least 10 seconds, then try again.</p>
+<hr>
+<h2 id="step-6-verify-battery-status-macos-path">Step 6: Verify Battery Status (macOS Path)</h2>
+<pre><code class="language-bash">cargo run -- query battery_status</code></pre>
+<p><strong>Expected</strong> on a MacBook:</p>
+<pre><code class="language-json">{
+  &quot;ok&quot;: true,
+  &quot;data&quot;: {
+    &quot;percentage&quot;: 75.0,
+    &quot;is_charging&quot;: false,
+    &quot;time_to_empty_min&quot;: 180,
+    &quot;narrative&quot;: &quot;Battery at 75% (~3h 0m remaining).&quot;
+  }
+}</code></pre>
+<p><strong>If battery returns <code>ok: false</code></strong>: Check that <code>pmset -g batt</code> works in Terminal.</p>
+<hr>
+<h2 id="step-7-verify-setup-uninstall-paths-macos">Step 7: Verify Setup/Uninstall Paths (macOS)</h2>
+<pre><code class="language-bash"># Check what agents are detected:
+cargo run -- setup --list
+
+# Setup Claude Desktop (writes to ~/Library/Application Support/Claude/):
+cargo run -- setup claude-desktop
+
+# Verify the config was written:
+cat ~/Library/Application\ Support/Claude/claude_desktop_config.json | python3 -m json.tool
+
+# Uninstall and verify cleanup:
+cargo run -- uninstall claude-desktop</code></pre>
+<p><strong>Expected paths on macOS</strong>:</p>
+<ul>
+<li>Claude Desktop: <code>~/Library/Application Support/Claude/claude_desktop_config.json</code></li>
+<li>VS Code: <code>~/Library/Application Support/Code/User/settings.json</code></li>
+<li>Cursor: <code>~/.cursor/mcp.json</code></li>
+<li>Data: <code>~/Library/Application Support/axon/hardware.db</code></li>
+<li>Config: <code>~/.config/axon/alert-dispatch.json</code></li>
+</ul>
+<hr>
+<h2 id="step-8-mcp-protocol-test-full-e2e">Step 8: MCP Protocol Test (Full E2E)</h2>
+<pre><code class="language-bash">python3 scripts/mcp_exercise_all_tools.py $(which axon || echo ./target/debug/axon)</code></pre>
+<p>This script exercises all MCP tools via stdio. After our changes, there are now <strong>6 tools</strong> (was 5). The script may need updating to call <code>session_health</code> — if it only tests the original 5, that is fine. The new tool can be tested manually:</p>
+<pre><code class="language-bash"># Manual MCP test for session_health:
+echo &#x27;{&quot;jsonrpc&quot;:&quot;2.0&quot;,&quot;id&quot;:1,&quot;method&quot;:&quot;initialize&quot;,&quot;params&quot;:{&quot;protocolVersion&quot;:&quot;2024-11-05&quot;,&quot;capabilities&quot;:{},&quot;clientInfo&quot;:{&quot;name&quot;:&quot;test&quot;,&quot;version&quot;:&quot;1.0&quot;}}}
+{&quot;jsonrpc&quot;:&quot;2.0&quot;,&quot;id&quot;:2,&quot;method&quot;:&quot;tools/call&quot;,&quot;params&quot;:{&quot;name&quot;:&quot;session_health&quot;,&quot;arguments&quot;:{}}}&#x27; | cargo run -- serve 2&gt;/dev/null</code></pre>
+<hr>
+<h2 id="step-9-run-full-test-suite">Step 9: Run Full Test Suite</h2>
+<pre><code class="language-bash">cargo test --workspace
+cargo test -p axon --test smoke -- --ignored      # ~5s, needs real binary</code></pre>
+<p><strong>Expected</strong>: All tests pass. The new tests are:</p>
+<h3 id="headroom-tests-in-crates-axon-core-src-impact-rs">Headroom tests (in <code>crates/axon-core/src/impact.rs</code>):</h3>
+<ul>
+<li><code>test_headroom_insufficient_ram_critical</code></li>
+<li><code>test_headroom_insufficient_disk_critical</code></li>
+<li><code>test_headroom_insufficient_throttling</code></li>
+<li><code>test_headroom_insufficient_warn_plus_high_cpu</code></li>
+<li><code>test_headroom_limited_ram_warn</code></li>
+<li><code>test_headroom_limited_high_cpu</code></li>
+<li><code>test_headroom_adequate</code></li>
+<li><code>test_headroom_cpu_boundary</code></li>
+<li><code>test_headroom_ram_warn_cpu_boundary</code></li>
+</ul>
+<h3 id="agent-accumulation-tests-in-crates-axon-core-src-impact-rs">Agent accumulation tests (in <code>crates/axon-core/src/impact.rs</code>):</h3>
+<ul>
+<li><code>test_agent_accumulation_claude</code></li>
+<li><code>test_agent_accumulation_cursor</code></li>
+<li><code>test_agent_accumulation_single_is_normal</code></li>
+<li><code>test_agent_accumulation_ignores_non_agents</code></li>
+<li><code>test_suggest_fix_agent_accumulation</code></li>
+<li><code>test_impact_message_agent_accumulation</code></li>
+</ul>
+<h3 id="setup-uninstall-tests-in-crates-axon-cli-tests-setup-uninstall-rs">Setup/uninstall tests (in <code>crates/axon-cli/tests/setup_uninstall.rs</code>):</h3>
+<p>All 10 tests now use <code>#[cfg(target_os = "macos")]</code> / <code>#[cfg(target_os = "linux")]</code> for platform-aware paths.</p>
+<hr>
+<h2 id="risk-areas">Risk Areas</h2>
+<ol>
+<li><strong>macOS cfg blocks not executed in CI</strong> — The <code>#[cfg(target_os = "macos")]</code> functions</li>
+</ol>
+<p>(<code>detect_platform_info</code>, <code>read_battery_macos</code>) were not changed in logic, only moved into cfg-gated functions. But a typo inside them would only surface on macOS compilation.</p>
+<ol>
+<li><strong>8GB MacBook Air</strong> — With only 8GB RAM, the thresholds (RAM_PCT_WARN=55%,</li>
+</ol>
+<p>RAM_PCT_CRITICAL=75%) will fire more easily. 4.4GB used = warn, 6GB used = critical. This is by design and useful — the headroom field will correctly report "limited" or "insufficient" when your Mac is under memory pressure.</p>
+<ol>
+<li><strong>Agent accumulation false positives</strong> — The <code>is_known_agent()</code> function uses</li>
+</ol>
+<p><code>contains()</code> matching. A process named "encoder" would NOT match "code" because the check is <code>lower == a || lower.contains(a)</code> where <code>a</code> is the full agent name. However, "vscode-server" would match "code". This is intentional — VS Code server processes are legitimate agent processes.</p>
+<ol>
+<li><strong>Session health with empty DB</strong> — If <code>axon serve</code> has never run, <code>session_health</code></li>
+</ol>
+<p>returns <code>snapshot_count: 0</code> gracefully. Not an error.</p>
+<hr>
+<h2 id="architecture-reference-post-changes">Architecture Reference (Post-Changes)</h2>
+<pre><code>6 MCP Tools (was 5):
+  hw_snapshot      → HwSnapshot + headroom + headroom_reason
+  process_blame    → ProcessBlame + AgentAccumulation detection
+  battery_status   → BatteryStatus (macOS pmset / Linux sysfs)
+  system_profile   → SystemProfile (macOS sysctl / Linux /proc + DMI)
+  hardware_trend   → TrendData (unchanged)
+  session_health   → SessionHealth (NEW: since, peaks, worst levels, alerts)
+
+New types:
+  HeadroomLevel    → adequate | limited | insufficient
+  AgentAccumulation → new AnomalyType variant
+  SessionHealth    → retrospective session summary struct
+
+Platform support:
+  macOS  → #[cfg(target_os = &quot;macos&quot;)]  — original behavior preserved
+  Linux  → #[cfg(target_os = &quot;linux&quot;)]  — new code paths
+  Other  → #[cfg(not(any(...)))]        — graceful fallbacks</code></pre>
+    </article>
+    <footer>
+      <div class="wrap foot">
+        <span>Axon. Zero-cloud local runtime intelligence for AI agents.</span>
+        <span><a href="index.html">Home</a> / <a href="problem-validation.html">Problem validation</a> / <a href="roadmap.html">Roadmap</a></span>
+      </div>
+    </footer>
+  </div>
+</body>
+</html>

@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Evidence that AI coding agents need local hardware awareness.">
+  <link rel="icon" href="data:,">
+  <title>Axon - Problem Validation</title>
+  <style>*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:#090a0a;color:#f4f1e8;font-family:"Avenir Next","Helvetica Neue",Helvetica,Arial,sans-serif;-webkit-font-smoothing:antialiased;text-rendering:geometricPrecision}:root{--line:rgba(244,241,232,.14);--line2:rgba(244,241,232,.22);--ink:#f4f1e8;--muted:#aaa49b;--faint:#706b63;--green:#59d68c;--amber:#d9a84f;--panel:#111211;--panel2:#171817;--r:10px}a{color:var(--green);text-decoration:none}a:hover{text-decoration:underline}.page{min-height:100vh;background:linear-gradient(90deg,rgba(255,255,255,.026) 1px,transparent 1px),linear-gradient(0deg,rgba(255,255,255,.018) 1px,transparent 1px);background-size:76px 76px}.wrap{width:min(900px,calc(100% - 40px));margin:0 auto}.mono,code{font-family:"SF Mono","Menlo",monospace}nav{position:sticky;top:0;z-index:20;border-bottom:1px solid var(--line);background:rgba(9,10,10,.86);backdrop-filter:blur(18px)}.nav-inner{height:64px;display:flex;align-items:center;justify-content:space-between;gap:18px}.brand{display:flex;align-items:center;gap:12px;color:var(--ink);font-weight:850;letter-spacing:2.6px;text-decoration:none}.mark{width:32px;height:32px;border:1px solid var(--line2);border-radius:8px;display:grid;place-items:center;background:#111}.back{font-size:13px;color:var(--muted)}article{padding:82px 0 96px}.eyebrow{font-size:11px;text-transform:uppercase;letter-spacing:1.6px;color:var(--amber);font-weight:850;margin-bottom:18px}h1{font-size:58px;line-height:.98;letter-spacing:-.045em;margin:0 0 20px;color:var(--ink)}h2{font-size:34px;line-height:1.08;letter-spacing:-.03em;margin:54px 0 16px;color:var(--ink)}h3{font-size:22px;letter-spacing:-.015em;margin:34px 0 12px;color:var(--ink)}h4,h5,h6{color:var(--ink);margin:28px 0 10px}p{color:var(--muted);font-size:16px;line-height:1.75;margin:16px 0}.lead{font-size:20px;max-width:760px}ul,ol{color:var(--muted);font-size:16px;line-height:1.7;padding-left:23px}li{margin:7px 0}strong{color:var(--ink)}em{color:var(--ink)}code{background:rgba(244,241,232,.08);border:1px solid rgba(244,241,232,.1);border-radius:5px;padding:1px 5px;color:#dfe9de;font-size:.92em}pre{max-width:100%;background:#050606;border:1px solid var(--line);border-radius:var(--r);padding:18px;overflow:auto;color:#dfe9de;line-height:1.65;margin:22px 0}pre code{display:block;background:transparent;border:0;border-radius:0;padding:0;font-size:13px}.table-wrap{overflow:auto;border:1px solid var(--line);border-radius:var(--r);margin:22px 0;background:rgba(17,18,17,.42)}table{width:100%;border-collapse:collapse;min-width:620px}th,td{padding:13px 14px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}th{font-size:11px;color:var(--faint);text-transform:uppercase;letter-spacing:1px;background:rgba(244,241,232,.03)}td{color:var(--muted);line-height:1.55}tr:last-child td{border-bottom:0}blockquote{border-left:3px solid var(--green);margin:24px 0;padding:4px 0 4px 18px;background:rgba(89,214,140,.045)}blockquote p{color:var(--ink)}hr{border:0;border-top:1px solid var(--line);margin:38px 0}.doc-card{border:1px solid var(--line);border-radius:var(--r);background:rgba(17,18,17,.58);padding:20px;margin:24px 0 34px}.doc-card p{margin:0;color:var(--muted)}footer{border-top:1px solid var(--line);padding:24px 0;color:var(--faint);font-size:12px}.foot{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}@media(max-width:760px){h1{font-size:42px}h2{font-size:28px}.nav-inner{height:58px}.back{display:none}article{padding-top:58px}}</style>
+</head>
+<body>
+  <div class="page">
+    <nav>
+      <div class="wrap nav-inner">
+        <a class="brand" href="index.html"><span class="mark">A</span><span>AXON</span></a>
+        <a class="back" href="index.html#analysis">Back to public page</a>
+      </div>
+    </nav>
+    <article class="wrap">
+      <div class="eyebrow">Axon public docs</div>
+      <h1>The Evidence: AI Coding Agents vs Your Hardware</h1>
+      <div class="doc-card"><p>Evidence that AI coding agents need local hardware awareness.</p></div>
+      <p>A developer left 4 Claude Code sessions idle overnight. By morning, they had consumed 60GB of RAM. The macOS OOM killer fired. Full system crash. No warning. No signal. No self-regulation.</p>
+<p><a href="https://github.com/anthropics/claude-code/issues/18859">Issue #18859</a>.</p>
+<p>This is not a one-off. It is a pattern. AI coding agents -- Claude Code, Cursor, VS Code with Copilot -- operate completely blind to the hardware they run on. They have no CPU meter, no RAM gauge, no temperature reading. When your machine is dying, they keep going. They have no way to know.</p>
+<p>This page collects the evidence: real crash reports, academic research, and industry data. If you have experienced any of these problems, <a href="https://github.com/rudraptpsingh/axon#readme">axon</a> exists to fix them.</p>
+<hr>
+<h2 id="my-machine-crashed">"My machine crashed"</h2>
+<p>These are not edge cases. These are developers losing work because their AI agent ate the machine alive.</p>
+<p><strong><a href="https://github.com/anthropics/claude-code/issues/24960">Issue #24960</a></strong> -- 3 Claude processes hit 17.3GB on an 18GB machine. Fan noise was the only warning. Kernel panic. Forced power-off. Watchdog timeout after 93 seconds.</p>
+<p><strong><a href="https://github.com/anthropics/claude-code/issues/18859">Issue #18859</a></strong> -- 4 idle Claude Code sessions accumulated 60GB total over 18 hours with no user interaction. macOS Jetsam OOM killer triggered. Full system crash.</p>
+<p><strong><a href="https://github.com/anthropics/claude-code/issues/11377">Issue #11377</a></strong> -- After 14 hours of runtime, a single Claude process consumed 23GB RAM and 143% CPU. The system became completely unresponsive.</p>
+<p>In every case, the agent continued issuing tool calls, spawning processes, and running tasks while the machine was failing. There was no interrupt. No signal. No self-regulation.</p>
+<hr>
+<h2 id="my-laptop-is-on-fire">"My laptop is on fire"</h2>
+<p>Thermal throttling is invisible to the agent. It keeps pushing while the hardware slows everything down.</p>
+<p><strong><a href="https://github.com/anthropics/claude-code/issues/17563">Issue #17563</a></strong> -- MacBook Air M4 overheats during Claude Code sessions. Battery life drops from 8 hours to 2. Thermal throttling degrades all work on the machine, not just the agent's tasks.</p>
+<p><strong><a href="https://github.com/anthropics/claude-code/issues/11615">Issue #11615</a></strong> -- Code Helper (Renderer) consuming 99.8% CPU during Claude Code sessions. Affects VS Code and Cursor simultaneously.</p>
+<p><strong><a href="https://github.com/anthropics/claude-code/issues/9897">Issue #9897</a></strong> -- "Claude Code is using massive amounts of memory and heating up my computer." The developer noticed. The agent did not.</p>
+<hr>
+<h2 id="everything-is-slow-and-i-do-not-know-why">"Everything is slow and I do not know why"</h2>
+<p>The most insidious failure mode. The machine degrades gradually. The developer feels it but cannot pinpoint it. The agent has no idea.</p>
+<p><strong><a href="https://github.com/anthropics/claude-code/issues/11122">Issue #11122</a></strong> -- Multiple Claude CLI processes accumulate across sessions, compounding CPU usage. Developers report "computer is slow" without realizing multiple instances are running.</p>
+<p><strong><a href="https://github.com/anthropics/claude-code/issues/17148">Issue #17148</a></strong> -- Claude Code consumes 100%+ CPU while idle due to a busy-poll loop (<code>setImmediate()</code> calls without yielding). The agent is doing nothing useful but the machine is maxed out.</p>
+<hr>
+<h2 id="what-the-research-says">What the research says</h2>
+<p>The problems above are not unique to Claude Code. They reflect a structural gap in how AI coding tools interact with hardware.</p>
+<p><strong>METR randomized controlled trial</strong> (2025): Experienced open-source developers using AI tools took 19% longer to complete tasks than without. Before the study, they predicted AI would make them 24% faster. After experiencing the slowdown, they still estimated a 20% improvement -- a complete inversion of reality. Much of the gap comes from agents and developers spending time gathering context that should be automatic. <a href="https://metr.org/blog/2025-07-10-early-2025-ai-experienced-os-dev-study/">metr.org</a></p>
+<p><strong>Qodo "State of AI Code Quality 2025"</strong>: 65% of developers cite missing context as the top failure mode during refactoring and test generation. "Missing context" includes system context -- the agent has no idea the machine is under load. <a href="https://www.qodo.ai/reports/state-of-ai-code-quality/">qodo.ai</a></p>
+<p><strong>IEEE Spectrum "AI Coding Degrades"</strong>: Flaky tests are increasingly misattributed to race conditions or concurrency bugs when the actual cause is memory pressure mid-test. Wrong diagnosis, wasted context, wrong fix. <a href="https://spectrum.ieee.org/ai-coding-degrades">spectrum.ieee.org</a></p>
+<p><strong>"Your AI Coding Assistant Just Moved the Bottleneck"</strong> (Michael Henderson): AI accelerates code generation but exposes new bottlenecks in hardware, review, and CI. The bottleneck does not disappear -- it moves. <a href="https://medium.com/@michaelhenderson/your-ai-coding-assistant-just-moved-the-bottleneck-and-made-it-worse-3780f1c415eb">medium.com</a></p>
+<hr>
+<h2 id="the-token-cost">The token cost</h2>
+<p>Without axon, an agent diagnosing slowness runs <code>ps aux | sort -rk 3 | head -20</code>, <code>top -l 1 | head -30</code>, <code>vm_stat</code>, parses free-form text, then reasons about it. That is approximately 2,000-3,000 tokens of confused exploration producing an approximate answer.</p>
+<p>With axon's <code>process_blame</code> tool, the agent gets a structured JSON response in ~200 tokens: anomaly type, impact level, culprit process with PID and resource usage, and a specific fix string. 10-15x token reduction. Deterministic output.</p>
+<hr>
+<h2 id="what-axon-does-about-it">What axon does about it</h2>
+<p>Axon is an <a href="https://modelcontextprotocol.io/">MCP</a> server that gives agents real-time hardware awareness. Zero network calls -- your process names, load patterns, and hardware state never leave your machine.</p>
+<div class="table-wrap"><table><thead><tr><th>Symptom</th><th>Axon tool</th><th>What the agent gets</th></tr></thead><tbody><tr><td>Machine crashes (OOM, kernel panic)</td><td>Edge-triggered RAM alerts</td><td>Immediate notification on state transition (Normal to Warn to Critical)</td></tr><tr><td>Thermal throttling, overheating</td><td><code>hw_snapshot</code></td><td>Throttle flag, die temperature, headroom level</td></tr><tr><td>Slow performance misdiagnosed as code</td><td><code>process_blame</code></td><td>Culprit process, anomaly type, impact level, specific fix string</td></tr><tr><td>Context burned on shell diagnostics</td><td><code>process_blame</code></td><td>Structured JSON in 200 tokens vs 3,000 tokens of shell parsing</td></tr><tr><td>Flaky tests blamed on code</td><td><code>hardware_trend</code></td><td>Anomaly count and resource peaks correlated with test window</td></tr><tr><td>No interrupt during long sessions</td><td>Edge alerts + <code>session_health</code></td><td>Worst state, alert count, peak CPU/RAM/temp since session start</td></tr><tr><td>Accumulated agent processes</td><td><code>process_blame</code></td><td>Detects N instances of Claude/Cursor/Windsurf running simultaneously</td></tr></tbody></table></div>
+<p>Install axon, run <code>axon setup</code>, and your agent gets hardware eyes. Details in the <a href="https://github.com/rudraptpsingh/axon#readme">README</a>.</p>
+<p>See the test results: <a href="https://github.com/rudraptpsingh/axon/blob/master/agent_behavior_report.md">single-agent adaptation</a> (50.3% latency reduction) and <a href="https://github.com/rudraptpsingh/axon/blob/master/comparative_stress_test_results/comparison_report.md">parallel agent comparison</a> (blind vs informed).</p>
+    </article>
+    <footer>
+      <div class="wrap foot">
+        <span>Axon. Zero-cloud local runtime intelligence for AI agents.</span>
+        <span><a href="index.html">Home</a> / <a href="problem-validation.html">Problem validation</a> / <a href="roadmap.html">Roadmap</a></span>
+      </div>
+    </footer>
+  </div>
+</body>
+</html>

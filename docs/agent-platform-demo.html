@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="How Axon gives app-building agents a local runtime governor.">
+  <link rel="icon" href="data:,">
+  <title>Axon - Agent Platform Demo</title>
+  <style>*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:#090a0a;color:#f4f1e8;font-family:"Avenir Next","Helvetica Neue",Helvetica,Arial,sans-serif;-webkit-font-smoothing:antialiased;text-rendering:geometricPrecision}:root{--line:rgba(244,241,232,.14);--line2:rgba(244,241,232,.22);--ink:#f4f1e8;--muted:#aaa49b;--faint:#706b63;--green:#59d68c;--amber:#d9a84f;--panel:#111211;--panel2:#171817;--r:10px}a{color:var(--green);text-decoration:none}a:hover{text-decoration:underline}.page{min-height:100vh;background:linear-gradient(90deg,rgba(255,255,255,.026) 1px,transparent 1px),linear-gradient(0deg,rgba(255,255,255,.018) 1px,transparent 1px);background-size:76px 76px}.wrap{width:min(900px,calc(100% - 40px));margin:0 auto}.mono,code{font-family:"SF Mono","Menlo",monospace}nav{position:sticky;top:0;z-index:20;border-bottom:1px solid var(--line);background:rgba(9,10,10,.86);backdrop-filter:blur(18px)}.nav-inner{height:64px;display:flex;align-items:center;justify-content:space-between;gap:18px}.brand{display:flex;align-items:center;gap:12px;color:var(--ink);font-weight:850;letter-spacing:2.6px;text-decoration:none}.mark{width:32px;height:32px;border:1px solid var(--line2);border-radius:8px;display:grid;place-items:center;background:#111}.back{font-size:13px;color:var(--muted)}article{padding:82px 0 96px}.eyebrow{font-size:11px;text-transform:uppercase;letter-spacing:1.6px;color:var(--amber);font-weight:850;margin-bottom:18px}h1{font-size:58px;line-height:.98;letter-spacing:-.045em;margin:0 0 20px;color:var(--ink)}h2{font-size:34px;line-height:1.08;letter-spacing:-.03em;margin:54px 0 16px;color:var(--ink)}h3{font-size:22px;letter-spacing:-.015em;margin:34px 0 12px;color:var(--ink)}h4,h5,h6{color:var(--ink);margin:28px 0 10px}p{color:var(--muted);font-size:16px;line-height:1.75;margin:16px 0}.lead{font-size:20px;max-width:760px}ul,ol{color:var(--muted);font-size:16px;line-height:1.7;padding-left:23px}li{margin:7px 0}strong{color:var(--ink)}em{color:var(--ink)}code{background:rgba(244,241,232,.08);border:1px solid rgba(244,241,232,.1);border-radius:5px;padding:1px 5px;color:#dfe9de;font-size:.92em}pre{max-width:100%;background:#050606;border:1px solid var(--line);border-radius:var(--r);padding:18px;overflow:auto;color:#dfe9de;line-height:1.65;margin:22px 0}pre code{display:block;background:transparent;border:0;border-radius:0;padding:0;font-size:13px}.table-wrap{overflow:auto;border:1px solid var(--line);border-radius:var(--r);margin:22px 0;background:rgba(17,18,17,.42)}table{width:100%;border-collapse:collapse;min-width:620px}th,td{padding:13px 14px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}th{font-size:11px;color:var(--faint);text-transform:uppercase;letter-spacing:1px;background:rgba(244,241,232,.03)}td{color:var(--muted);line-height:1.55}tr:last-child td{border-bottom:0}blockquote{border-left:3px solid var(--green);margin:24px 0;padding:4px 0 4px 18px;background:rgba(89,214,140,.045)}blockquote p{color:var(--ink)}hr{border:0;border-top:1px solid var(--line);margin:38px 0}.doc-card{border:1px solid var(--line);border-radius:var(--r);background:rgba(17,18,17,.58);padding:20px;margin:24px 0 34px}.doc-card p{margin:0;color:var(--muted)}footer{border-top:1px solid var(--line);padding:24px 0;color:var(--faint);font-size:12px}.foot{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}@media(max-width:760px){h1{font-size:42px}h2{font-size:28px}.nav-inner{height:58px}.back{display:none}article{padding-top:58px}}</style>
+</head>
+<body>
+  <div class="page">
+    <nav>
+      <div class="wrap nav-inner">
+        <a class="brand" href="index.html"><span class="mark">A</span><span>AXON</span></a>
+        <a class="back" href="index.html#analysis">Back to public page</a>
+      </div>
+    </nav>
+    <article class="wrap">
+      <div class="eyebrow">Axon public docs</div>
+      <h1>Axon Agent Platform Demo</h1>
+      <div class="doc-card"><p>How Axon gives app-building agents a local runtime governor.</p></div>
+      <h2 id="one-liner">One-liner</h2>
+<p>Axon is a local runtime governor for AI app-building agents: it helps an agent worker decide when to proceed, reduce parallelism, reuse tools, or pause before wasting credits on unhealthy build/debug/deploy loops.</p>
+<h2 id="why-agent-platforms-should-care">Why Agent Platforms Should Care</h2>
+<p>Modern agent platforms turn natural-language prompts into app changes, automation, tests, browser runs, deployments, and code reviews. That requires agents to plan, code, run tools, test, debug, and often spawn multiple MCP servers or tool workers. The expensive failure mode is not just "high CPU"; it is a worker repeatedly spawning local processes, running parallel retries, or continuing a doomed debug loop while credits and user patience burn.</p>
+<p>Axon makes that worker state visible and actionable before the agent spends more time or credits.</p>
+<h2 id="live-demo-command">Live Demo Command</h2>
+<pre><code class="language-bash">python3 scripts/demo_agent_platform_live.py /Users/rp/github/axon/target/debug/axon</code></pre>
+<h2 id="what-the-demo-proves">What The Demo Proves</h2>
+<ol>
+<li><strong>Without Axon policy</strong>, an app-builder worker can spawn additional</li>
+</ol>
+<p>tool/MCP-like processes and increase runtime pressure.</p>
+<ol>
+<li><strong>With Axon policy</strong>, the agent avoids new risky tool fan-out.</li>
+<li>Axon still allows useful work by capping parallelism rather than blocking</li>
+</ol>
+<p>everything.</p>
+<ol>
+<li>Axon detects desktop/runtime CPU pressure that would make the builder feel</li>
+</ol>
+<p>slow or stuck.</p>
+<ol>
+<li>Temporary proof processes are cleaned up and the runtime returns to baseline.</li>
+</ol>
+<h2 id="example-output">Example Output</h2>
+<pre><code class="language-text">[without Axon policy] spawned 4 extra tool workers; MCP 45-&gt;49; playwright group 3-&gt;7
+[with Axon policy] requested 4 new tool workers; spawned 0; avoided 4
+[parallel build/debug loop] without Axon concurrency=4; with Axon concurrency=1; capped 4-&gt;1
+[runtime UX guard] renderer CPU 6%-&gt;49%; high_cpu_ui=1
+PITCH TAKEAWAY
+Axon lets an app-building agent continue safe work while avoiding wasted credits.</code></pre>
+<h2 id="pitch-narrative">Pitch Narrative</h2>
+<blockquote><p>Agent platforms already know how to plan and execute work. Axon is the local runtime guardrail that tells those agents when the machine is healthy enough to spend more credits. In this demo, the same agent behavior without Axon spawns four extra tool workers. With Axon, it spawns zero, caps parallel work, and still allows safe local progress.</p></blockquote>
+<h2 id="integration-sketch">Integration Sketch</h2>
+<p>Run Axon as a sidecar in each build VM or sandbox:</p>
+<pre><code class="language-text">User prompt
+  -&gt; planning agent
+  -&gt; Axon preflight
+  -&gt; build/test/deploy worker
+  -&gt; Axon runtime guard
+  -&gt; user-visible outcome: proceed / reduce / reuse / pause</code></pre>
+<p>Agent policy:</p>
+<pre><code class="language-text">if Axon says &quot;defer&quot;:
+  run only lightweight inspection and ask user before spending more credits
+if Axon says &quot;safe_parallelism=1&quot;:
+  cap build/test/debug retries to one worker
+if Axon reports duplicate tool stacks:
+  reuse existing tools or restart the sandbox before spawning more
+if Axon reports runtime UI/tool pressure:
+  pause desktop-heavy/browser-heavy workflows</code></pre>
+<h2 id="metrics-to-show-in-a-partner-call">Metrics To Show In A Partner Call</h2>
+<ul>
+<li>Extra tool workers avoided</li>
+<li>Parallelism cap applied</li>
+<li>Stale worker/tool count before and after cleanup</li>
+<li>Failed/retried build loops avoided</li>
+<li>Time or credits saved by not starting doomed work</li>
+<li>Proof that safe work still continues</li>
+</ul>
+    </article>
+    <footer>
+      <div class="wrap foot">
+        <span>Axon. Zero-cloud local runtime intelligence for AI agents.</span>
+        <span><a href="index.html">Home</a> / <a href="problem-validation.html">Problem validation</a> / <a href="roadmap.html">Roadmap</a></span>
+      </div>
+    </footer>
+  </div>
+</body>
+</html>

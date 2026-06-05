@@ -1,0 +1,391 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Planned Axon work grounded in documented developer pain.">
+  <link rel="icon" href="data:,">
+  <title>Axon - Roadmap</title>
+  <style>*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:#090a0a;color:#f4f1e8;font-family:"Avenir Next","Helvetica Neue",Helvetica,Arial,sans-serif;-webkit-font-smoothing:antialiased;text-rendering:geometricPrecision}:root{--line:rgba(244,241,232,.14);--line2:rgba(244,241,232,.22);--ink:#f4f1e8;--muted:#aaa49b;--faint:#706b63;--green:#59d68c;--amber:#d9a84f;--panel:#111211;--panel2:#171817;--r:10px}a{color:var(--green);text-decoration:none}a:hover{text-decoration:underline}.page{min-height:100vh;background:linear-gradient(90deg,rgba(255,255,255,.026) 1px,transparent 1px),linear-gradient(0deg,rgba(255,255,255,.018) 1px,transparent 1px);background-size:76px 76px}.wrap{width:min(900px,calc(100% - 40px));margin:0 auto}.mono,code{font-family:"SF Mono","Menlo",monospace}nav{position:sticky;top:0;z-index:20;border-bottom:1px solid var(--line);background:rgba(9,10,10,.86);backdrop-filter:blur(18px)}.nav-inner{height:64px;display:flex;align-items:center;justify-content:space-between;gap:18px}.brand{display:flex;align-items:center;gap:12px;color:var(--ink);font-weight:850;letter-spacing:2.6px;text-decoration:none}.mark{width:32px;height:32px;border:1px solid var(--line2);border-radius:8px;display:grid;place-items:center;background:#111}.back{font-size:13px;color:var(--muted)}article{padding:82px 0 96px}.eyebrow{font-size:11px;text-transform:uppercase;letter-spacing:1.6px;color:var(--amber);font-weight:850;margin-bottom:18px}h1{font-size:58px;line-height:.98;letter-spacing:-.045em;margin:0 0 20px;color:var(--ink)}h2{font-size:34px;line-height:1.08;letter-spacing:-.03em;margin:54px 0 16px;color:var(--ink)}h3{font-size:22px;letter-spacing:-.015em;margin:34px 0 12px;color:var(--ink)}h4,h5,h6{color:var(--ink);margin:28px 0 10px}p{color:var(--muted);font-size:16px;line-height:1.75;margin:16px 0}.lead{font-size:20px;max-width:760px}ul,ol{color:var(--muted);font-size:16px;line-height:1.7;padding-left:23px}li{margin:7px 0}strong{color:var(--ink)}em{color:var(--ink)}code{background:rgba(244,241,232,.08);border:1px solid rgba(244,241,232,.1);border-radius:5px;padding:1px 5px;color:#dfe9de;font-size:.92em}pre{max-width:100%;background:#050606;border:1px solid var(--line);border-radius:var(--r);padding:18px;overflow:auto;color:#dfe9de;line-height:1.65;margin:22px 0}pre code{display:block;background:transparent;border:0;border-radius:0;padding:0;font-size:13px}.table-wrap{overflow:auto;border:1px solid var(--line);border-radius:var(--r);margin:22px 0;background:rgba(17,18,17,.42)}table{width:100%;border-collapse:collapse;min-width:620px}th,td{padding:13px 14px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}th{font-size:11px;color:var(--faint);text-transform:uppercase;letter-spacing:1px;background:rgba(244,241,232,.03)}td{color:var(--muted);line-height:1.55}tr:last-child td{border-bottom:0}blockquote{border-left:3px solid var(--green);margin:24px 0;padding:4px 0 4px 18px;background:rgba(89,214,140,.045)}blockquote p{color:var(--ink)}hr{border:0;border-top:1px solid var(--line);margin:38px 0}.doc-card{border:1px solid var(--line);border-radius:var(--r);background:rgba(17,18,17,.58);padding:20px;margin:24px 0 34px}.doc-card p{margin:0;color:var(--muted)}footer{border-top:1px solid var(--line);padding:24px 0;color:var(--faint);font-size:12px}.foot{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}@media(max-width:760px){h1{font-size:42px}h2{font-size:28px}.nav-inner{height:58px}.back{display:none}article{padding-top:58px}}</style>
+</head>
+<body>
+  <div class="page">
+    <nav>
+      <div class="wrap nav-inner">
+        <a class="brand" href="index.html"><span class="mark">A</span><span>AXON</span></a>
+        <a class="back" href="index.html#analysis">Back to public page</a>
+      </div>
+    </nav>
+    <article class="wrap">
+      <div class="eyebrow">Axon public docs</div>
+      <h1>Axon Roadmap</h1>
+      <div class="doc-card"><p>Planned Axon work grounded in documented developer pain.</p></div>
+      <p>Each item below is grounded in a specific, documented developer pain point. The "Problem" section gives an AI coding agent enough context to understand <em>why</em> a change exists before touching any code. The "Test Scenarios" section defines what must be verified after implementation.</p>
+<hr>
+<h2 id="item-1-multi-instance-agent-process-detection">Item 1: Multi-Instance Agent Process Detection</h2>
+<h3 id="status-done-v0-2-0">Status: Done (v0.2.0)</h3>
+<h3 id="problem-this-solves">Problem this solves</h3>
+<p>When developers run multiple Claude Code, Cursor, or Windsurf sessions simultaneously, the processes accumulate silently. Each instance consumes 270-370MB RAM and 1.7-2.2% CPU. The compounding effect causes thermal throttling and system slowdowns that users attribute to other causes.</p>
+<p>Documented in <code>anthropics/claude-code</code> GitHub issues:</p>
+<ul>
+<li>Issue #11122: Multiple Claude CLI processes accumulate, high CPU, no visual</li>
+</ul>
+<p>indicator that multiple instances are running.</p>
+<ul>
+<li>Issue #18859: 4 idle Claude Code sessions consumed 60GB total. macOS OOM</li>
+</ul>
+<p>crash. No mechanism detected or warned about the accumulation.</p>
+<ul>
+<li>Issue #24960: 3 Claude processes hit 17.3GB on an 18GB machine. Kernel panic.</li>
+</ul>
+<p>Current behavior: <code>process_blame</code> returns the top culprit by <code>blame_score</code>. If 4 Claude processes are running, it returns the one with the highest score but does not identify "you have 4 instances of Claude running" as its own named problem. The fix suggestion does not address accumulation.</p>
+<h3 id="what-to-build">What to build</h3>
+<p>Add <code>AgentAccumulation</code> as a new variant to <code>AnomalyType</code> in <code>crates/axon-core/src/types.rs</code>:</p>
+<pre><code class="language-rust">pub enum AnomalyType {
+    None,
+    MemoryPressure,
+    CpuSaturation,
+    ThermalThrottle,
+    GeneralSlowdown,
+    AgentAccumulation,   // &lt;-- new
+}</code></pre>
+<p>In <code>crates/axon-core/src/grouping.rs</code>, after <code>build_groups</code> produces its output, add a post-processing step that checks the resulting groups for known agent process names with <code>process_count &gt; 1</code>. Known agent group names to detect (after <code>normalize_process_name</code>): <code>"claude"</code>, <code>"Claude Code"</code>, <code>"Cursor"</code>, <code>"Windsurf"</code>, <code>"code"</code> (VS Code).</p>
+<p>In <code>crates/axon-core/src/impact.rs</code>, update <code>suggest_fix</code> to handle the <code>AgentAccumulation</code> anomaly type with a fix that names the agent and count:</p>
+<pre><code>&quot;3 Claude Code instances are running. Close unused terminals to free ~1.1GB
+and reduce background CPU.&quot;</code></pre>
+<p>In <code>crates/axon-core/src/impact.rs</code>, update <code>detect_anomaly_type</code> signature or add a separate <code>detect_agent_accumulation(groups: &amp;[ProcessGroup]) -&gt; bool</code> check so the collector can classify it. <code>AgentAccumulation</code> should take priority after <code>ThermalThrottle</code> in the classification order.</p>
+<p>In <code>crates/axon-core/src/impact.rs</code>, update <code>impact_message</code> to handle <code>(_, AnomalyType::AgentAccumulation)</code> cases.</p>
+<h3 id="files-to-change">Files to change</h3>
+<ul>
+<li><code>crates/axon-core/src/types.rs</code> -- add <code>AgentAccumulation</code> to <code>AnomalyType</code></li>
+<li><code>crates/axon-core/src/grouping.rs</code> -- add agent name detection list and</li>
+</ul>
+<p><code>detect_agent_accumulation(groups: &amp;[ProcessGroup]) -&gt; Option&lt;&amp;ProcessGroup&gt;</code></p>
+<ul>
+<li><code>crates/axon-core/src/impact.rs</code> -- update <code>detect_anomaly_type</code> or add</li>
+</ul>
+<p>separate detection, update <code>suggest_fix</code> and <code>impact_message</code></p>
+<ul>
+<li><code>crates/axon-core/src/collector.rs</code> -- integrate new detection into the</li>
+</ul>
+<p><code>ProcessBlame</code> construction path</p>
+<h3 id="test-scenarios">Test scenarios</h3>
+<p><strong>Unit tests in <code>crates/axon-core/src/grouping.rs</code>:</strong></p>
+<ol>
+<li><code>test_agent_accumulation_claude</code> -- build_groups with 3 processes named</li>
+</ol>
+<p>"claude" (different PIDs). Assert that a downstream accumulation check on the resulting groups identifies "claude" with process_count=3.</p>
+<ol>
+<li><code>test_agent_accumulation_cursor</code> -- 5 Cursor Helper (Renderer) processes.</li>
+</ol>
+<p>After normalize_process_name they all become "Cursor". Assert detection fires on process_count=5.</p>
+<ol>
+<li><code>test_agent_accumulation_single_instance</code> -- 1 claude process. Assert</li>
+</ol>
+<p>detection does NOT fire (single instance is normal).</p>
+<ol>
+<li><code>test_agent_accumulation_ignores_non_agents</code> -- 10 "node" processes. Assert</li>
+</ol>
+<p>detection does not fire (node is not a known agent process name).</p>
+<p><strong>Unit tests in <code>crates/axon-core/src/impact.rs</code>:</strong></p>
+<ol>
+<li><code>test_suggest_fix_agent_accumulation_claude</code> -- culprit_group name "claude",</li>
+</ol>
+<p>process_count=3, anomaly AgentAccumulation. Assert fix string contains "3" and "Claude".</p>
+<ol>
+<li><code>test_suggest_fix_agent_accumulation_cursor</code> -- culprit_group name "Cursor",</li>
+</ol>
+<p>process_count=4. Assert fix contains "4" and "Cursor".</p>
+<ol>
+<li><code>test_impact_message_agent_accumulation</code> -- Assert impact_message returns a</li>
+</ol>
+<p>non-empty, non-"No action needed" string for AgentAccumulation.</p>
+<p><strong>Integration behavior to verify manually:</strong></p>
+<ol>
+<li>Run <code>axon diagnose</code> with 2+ terminal sessions each running <code>axon serve</code>.</li>
+</ol>
+<p>Assert the culprit or narrative mentions the accumulation.</p>
+<hr>
+<h2 id="item-2-headroom-field-in-hw-snapshot">Item 2: Headroom Field in hw_snapshot</h2>
+<h3 id="status-done-v0-2-0">Status: Done (v0.2.0)</h3>
+<h3 id="problem-this-solves">Problem this solves</h3>
+<p>Agents need to pre-check "can I start this heavy task?" before launching <code>cargo test --workspace</code>, a Docker build, or a large code generation pass. Currently <code>hw_snapshot</code> provides <code>ram_pressure</code>, <code>disk_pressure</code>, <code>cpu_usage_pct</code>, and <code>throttling</code> as separate fields. The agent must interpret all four together and reason about the combined picture.</p>
+<p>This overhead is documented in:</p>
+<ul>
+<li>METR study (2025): 19% developer slowdown partly attributed to cognitive</li>
+</ul>
+<p>overhead of gathering context that should be automatic.</p>
+<ul>
+<li>GitHub issue #17563: MacBook Air M4 OOM during Claude Code session. An</li>
+</ul>
+<p>agent that pre-checked headroom could have warned: "Insufficient headroom -- do not start this task."</p>
+<ul>
+<li>GitHub issue #9897: "Claude Code using massive amounts of memory and heating</li>
+</ul>
+<p>up my computer." Pre-task headroom check would have gated the task.</p>
+<p>Current behavior: An agent must write logic like: "if ram_pressure == critical OR disk_pressure == critical OR (throttling == true AND cpu_usage_pct &gt; 80) then warn user." This is agent-side reasoning that should be pre-computed.</p>
+<h3 id="what-to-build">What to build</h3>
+<p>Add a <code>HeadroomLevel</code> enum and <code>headroom_reason</code> string to <code>HwSnapshot</code> in <code>crates/axon-core/src/types.rs</code>:</p>
+<pre><code class="language-rust">#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = &quot;snake_case&quot;)]
+pub enum HeadroomLevel {
+    Adequate,       // safe to start heavy tasks
+    Limited,        // proceed with caution, monitor closely
+    Insufficient,   // do not start heavy tasks
+}
+
+pub struct HwSnapshot {
+    // ... existing fields unchanged ...
+    pub headroom: HeadroomLevel,
+    pub headroom_reason: String,  // e.g. &quot;RAM at 78% (Critical)&quot;
+}</code></pre>
+<p>Add a <code>compute_headroom(snap: &amp;HwSnapshot) -&gt; (HeadroomLevel, String)</code> function in <code>crates/axon-core/src/impact.rs</code> using these rules (in priority order):</p>
+<div class="table-wrap"><table><thead><tr><th>Condition</th><th>Level</th><th>Example reason string</th></tr></thead><tbody><tr><td>ram_pressure == Critical OR disk_pressure == Critical</td><td>Insufficient</td><td>"RAM at 78% (Critical)"</td></tr><tr><td>throttling == true</td><td>Insufficient</td><td>"CPU thermal throttling at 91C"</td></tr><tr><td>ram_pressure == Warn AND cpu_usage_pct &gt; 70.0</td><td>Insufficient</td><td>"RAM warn + CPU at 74%"</td></tr><tr><td>ram_pressure == Warn OR disk_pressure == Warn</td><td>Limited</td><td>"RAM at 61% (Warn)"</td></tr><tr><td>cpu_usage_pct &gt; 70.0</td><td>Limited</td><td>"CPU at 74%"</td></tr><tr><td>(all else)</td><td>Adequate</td><td>"System has headroom"</td></tr></tbody></table></div>
+<p>Update wherever <code>HwSnapshot</code> is constructed (primarily <code>crates/axon-core/src/collector.rs</code>) to populate the two new fields by calling <code>compute_headroom</code>.</p>
+<p>The <code>hardware_trend</code> tool reads from SQLite snapshots. The <code>headroom</code> and <code>headroom_reason</code> fields are computed at snapshot time, not stored -- they are derived from the other fields. No schema change needed.</p>
+<h3 id="files-to-change">Files to change</h3>
+<ul>
+<li><code>crates/axon-core/src/types.rs</code> -- add <code>HeadroomLevel</code> enum, add <code>headroom</code></li>
+</ul>
+<p>and <code>headroom_reason</code> fields to <code>HwSnapshot</code></p>
+<ul>
+<li><code>crates/axon-core/src/impact.rs</code> -- add <code>compute_headroom</code> function</li>
+<li><code>crates/axon-core/src/collector.rs</code> -- call <code>compute_headroom</code> when building</li>
+</ul>
+<p><code>HwSnapshot</code></p>
+<ul>
+<li>Update any test fixtures that construct <code>HwSnapshot</code> directly</li>
+</ul>
+<h3 id="test-scenarios">Test scenarios</h3>
+<p><strong>Unit tests in <code>crates/axon-core/src/impact.rs</code>:</strong></p>
+<ol>
+<li><code>test_headroom_insufficient_ram_critical</code> -- ram_pressure=Critical,</li>
+</ol>
+<p>disk_pressure=Normal, throttling=false, cpu=50. Assert Insufficient, reason contains "RAM" and "Critical".</p>
+<ol>
+<li><code>test_headroom_insufficient_disk_critical</code> -- disk_pressure=Critical, RAM</li>
+</ol>
+<p>normal. Assert Insufficient, reason contains "Disk" and "Critical".</p>
+<ol>
+<li><code>test_headroom_insufficient_throttling</code> -- throttling=true, both pressures</li>
+</ol>
+<p>Normal. Assert Insufficient, reason mentions throttling or temperature.</p>
+<ol>
+<li><code>test_headroom_insufficient_warn_plus_high_cpu</code> -- ram_pressure=Warn,</li>
+</ol>
+<p>cpu_usage_pct=75.0. Assert Insufficient.</p>
+<ol>
+<li><code>test_headroom_limited_ram_warn</code> -- ram_pressure=Warn, cpu=40, no</li>
+</ol>
+<p>throttling, disk Normal. Assert Limited.</p>
+<ol>
+<li><code>test_headroom_limited_high_cpu</code> -- ram Normal, cpu_usage_pct=72.0. Assert</li>
+</ol>
+<p>Limited.</p>
+<ol>
+<li><code>test_headroom_adequate</code> -- ram Normal, disk Normal, throttling false,</li>
+</ol>
+<p>cpu=30. Assert Adequate, reason contains "headroom".</p>
+<ol>
+<li><code>test_headroom_reason_is_nonempty</code> -- all inputs. Assert headroom_reason is</li>
+</ol>
+<p>never an empty string.</p>
+<p><strong>Boundary tests:</strong></p>
+<ol>
+<li><code>test_headroom_cpu_boundary</code> -- cpu_usage_pct=69.9 → Adequate.</li>
+</ol>
+<p>cpu_usage_pct=70.0 → Limited.</p>
+<ol>
+<li><code>test_headroom_ram_warn_boundary</code> -- ram_pressure=Warn, cpu=69.9 →</li>
+</ol>
+<p>Limited. ram_pressure=Warn, cpu=70.0 → Insufficient.</p>
+<p><strong>Integration:</strong></p>
+<ol>
+<li>Run <code>axon query hw_snapshot</code>. Assert the JSON response contains</li>
+</ol>
+<p><code>"headroom"</code> and <code>"headroom_reason"</code> fields. Assert <code>headroom</code> is one of <code>"adequate"</code>, <code>"limited"</code>, <code>"insufficient"</code> (snake_case via serde).</p>
+<ol>
+<li>Run <code>axon status</code>. Confirm headroom is surfaced in the output.</li>
+</ol>
+<hr>
+<h2 id="item-3-session-scoped-health-summary">Item 3: Session-Scoped Health Summary</h2>
+<h3 id="status-done-v0-2-0">Status: Done (v0.2.0)</h3>
+<h3 id="problem-this-solves">Problem this solves</h3>
+<p>Long agentic sessions (multi-hour refactors, large test runs) degrade gradually. Edge-triggered alerts fire on transitions but give no retrospective view of "what happened during this session." An agent that runs for 6 hours cannot ask "how has the machine behaved since I started?" without querying <code>hardware_trend</code> and reasoning about raw buckets.</p>
+<p>Documented in:</p>
+<ul>
+<li>GitHub issue #11377: Claude process ran for 14 hours, consumed 23GB RAM /</li>
+</ul>
+<p>143% CPU. No periodic health summary existed that could have surfaced the accumulating problem.</p>
+<ul>
+<li>GitHub issue #18859: 4 sessions accumulated 60GB over 18 hours. An agent</li>
+</ul>
+<p>that could query "since session start, how many alerts have fired and what was the worst state?" would have surfaced this.</p>
+<ul>
+<li>METR study: Much of the 19% developer slowdown comes from cognitive overhead</li>
+</ul>
+<p>of gathering context that should be automatic. Session health is exactly this.</p>
+<p>Current behavior: <code>hardware_trend</code> returns bucketed CPU/RAM/temp/anomaly averages over a fixed time window (last_1h, last_6h, etc.). An agent must choose a window, receive N buckets, and compute the worst state itself. There is no "give me the summary since session start (a specific timestamp)" API, and no pre-computed "worst state" field.</p>
+<h3 id="what-to-build">What to build</h3>
+<p>Add a new MCP tool <code>session_health</code> in <code>crates/axon-server/src/tools.rs</code>.</p>
+<p>The tool accepts a single optional parameter <code>since: Option&lt;String&gt;</code> (ISO 8601 timestamp). If <code>since</code> is omitted, defaults to 1 hour ago. The tool queries SQLite for all snapshots and alerts since that timestamp and returns a <code>SessionHealth</code> struct.</p>
+<p>Add <code>SessionHealth</code> to <code>crates/axon-core/src/types.rs</code>:</p>
+<pre><code class="language-rust">#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionHealth {
+    pub since: DateTime&lt;Utc&gt;,
+    pub snapshot_count: u32,
+    pub alert_count: u32,
+    pub worst_impact_level: ImpactLevel,
+    pub worst_anomaly_type: AnomalyType,
+    pub avg_anomaly_score: f64,
+    pub avg_cpu_pct: f64,
+    pub avg_ram_pct: f64,
+    pub peak_cpu_pct: f64,
+    pub peak_ram_pct: f64,
+    pub peak_temp_celsius: Option&lt;f64&gt;,
+    pub throttle_event_count: u32,
+}</code></pre>
+<p>Add a <code>query_session_health(since: DateTime&lt;Utc&gt;) -&gt; anyhow::Result&lt;SessionHealth&gt;</code> function to <code>crates/axon-core/src/persistence.rs</code>. It runs a single SQL query over the <code>snapshots</code> table (and <code>alerts</code> table for <code>alert_count</code> and <code>throttle_event_count</code>).</p>
+<p>The <code>worst_impact_level</code> ordering for SQL aggregation: map Healthy=0, Degrading=1, Strained=2, Critical=3. Store as integer in SQLite, return the MAX. If SQLite schema does not currently store <code>impact_level</code> as an integer, add the column in a migration.</p>
+<p>Update <code>crates/axon-server/src/tools.rs</code> to register the new tool using the existing <code>#[tool_router]</code> / <code>#[tool_handler]</code> pattern.</p>
+<p>Update <code>crates/axon-cli/src/main.rs</code> (the <code>query</code> subcommand) to accept <code>session_health</code> as a valid tool name.</p>
+<h3 id="files-to-change">Files to change</h3>
+<ul>
+<li><code>crates/axon-core/src/types.rs</code> -- add <code>SessionHealth</code> struct</li>
+<li><code>crates/axon-core/src/persistence.rs</code> -- add <code>query_session_health</code> function;</li>
+</ul>
+<p>add <code>impact_level</code> integer column to <code>snapshots</code> table if not present</p>
+<ul>
+<li><code>crates/axon-server/src/tools.rs</code> -- register <code>session_health</code> tool with</li>
+</ul>
+<p><code>since</code> parameter, call <code>query_session_health</code>, wrap in <code>McpResponse</code></p>
+<ul>
+<li><code>crates/axon-cli/src/main.rs</code> -- add <code>session_health</code> to <code>query</code> subcommand</li>
+</ul>
+<p>valid tool names</p>
+<h3 id="test-scenarios">Test scenarios</h3>
+<p><strong>Unit tests in <code>crates/axon-core/src/persistence.rs</code>:</strong></p>
+<ol>
+<li><code>test_session_health_empty_window</code> -- query a window with no snapshots.</li>
+</ol>
+<p>Assert snapshot_count=0, alert_count=0, worst_impact_level=Healthy, avg_anomaly_score=0.0.</p>
+<ol>
+<li><code>test_session_health_single_snapshot</code> -- insert one snapshot. Assert</li>
+</ol>
+<p>snapshot_count=1, avg_cpu_pct matches the inserted value, avg_ram_pct matches.</p>
+<ol>
+<li><code>test_session_health_worst_impact_level</code> -- insert 3 snapshots with impact</li>
+</ol>
+<p>levels Healthy, Strained, Degrading. Assert worst_impact_level=Strained.</p>
+<ol>
+<li><code>test_session_health_worst_anomaly_type</code> -- insert snapshots with anomaly</li>
+</ol>
+<p>types None, MemoryPressure, ThermalThrottle. Assert worst_anomaly_type is the most severe observed (ThermalThrottle).</p>
+<ol>
+<li><code>test_session_health_alert_count</code> -- insert 3 alerts in the window and 2</li>
+</ol>
+<p>outside the window. Assert alert_count=3.</p>
+<ol>
+<li><code>test_session_health_throttle_events</code> -- insert 2 snapshots with</li>
+</ol>
+<p>throttling=true, 3 with throttling=false. Assert throttle_event_count=2.</p>
+<ol>
+<li><code>test_session_health_peak_values</code> -- insert snapshots with varying</li>
+</ol>
+<p>cpu_usage_pct. Assert peak_cpu_pct = the maximum observed value.</p>
+<ol>
+<li><code>test_session_health_since_filters_correctly</code> -- insert snapshots at T-2h</li>
+</ol>
+<p>and T-30m. Query with since=T-1h. Assert only the T-30m snapshot is counted.</p>
+<p><strong>Integration:</strong></p>
+<ol>
+<li>Run <code>axon query session_health</code>. Assert the JSON response contains all</li>
+</ol>
+<p><code>SessionHealth</code> fields. Assert <code>ok: true</code>.</p>
+<ol>
+<li>Run <code>axon query session_health</code> with <code>since</code> set to a future timestamp.</li>
+</ol>
+<p>Assert snapshot_count=0 and ok=true (empty window is not an error).</p>
+<ol>
+<li>Run <code>axon serve</code> as an MCP server and call <code>session_health</code> via the MCP</li>
+</ol>
+<p>protocol (using <code>scripts/mcp_exercise_all_tools.py</code> once updated). Assert the tool is listed in <code>tools/list</code> and returns a valid response.</p>
+<hr>
+<h2 id="item-4-linux-and-windows-support">Item 4: Linux and Windows Support</h2>
+<h3 id="status-linux-done-v0-2-0-windows-done-v0-2-6">Status: Linux done (v0.2.0), Windows done (v0.2.6)</h3>
+<h3 id="problem-this-solves">Problem this solves</h3>
+<p>The documented hardware failures (GitHub issues #17563, #11615, #9897, #18859, #24960) are not exclusive to macOS. Claude Code, Cursor, and VS Code are heavily used on Linux developer machines and Windows laptops. Developers on those platforms have no hardware-aware MCP tool.</p>
+<p>The underlying <code>sysinfo</code> crate (used in <code>crates/axon-core/src/collector.rs</code>) already supports Linux and Windows. The platform gap is in:</p>
+<ul>
+<li>Temperature reading: <code>sysinfo</code> component temperature support varies by</li>
+</ul>
+<p>platform. Linux uses hwmon sensors. Windows uses WMI or OpenHardwareMonitor.</p>
+<ul>
+<li>Battery: <code>battery</code> crate (if used) or <code>sysinfo</code> battery support.</li>
+<li>Process name normalization: <code>normalize_process_name</code> in</li>
+</ul>
+<p><code>crates/axon-core/src/grouping.rs</code> strips macOS-specific helper suffixes. Linux process names have different patterns.</p>
+<ul>
+<li>Agent setup paths: <code>axon setup</code> writes to macOS-specific config file</li>
+</ul>
+<p>locations.</p>
+<h3 id="what-to-build">What to build</h3>
+<p>This is tracked but not fully specified yet. The primary work is:</p>
+<ol>
+<li>Audit every <code>#[cfg(target_os = "macos")]</code> block in <code>axon-core</code> and</li>
+</ol>
+<p><code>axon-cli</code> for completeness.</p>
+<ol>
+<li>Test <code>sysinfo</code> component temperature on Linux (hwmon) and Windows (WMI).</li>
+<li>Extend <code>normalize_process_name</code> for Linux process name patterns (no</li>
+</ol>
+<p><code>.app</code> bundles, no <code>(Renderer)</code> suffix on all helpers).</p>
+<ol>
+<li>Update <code>axon setup</code> config file paths for Linux</li>
+</ol>
+<p>(<code>~/.config/Claude/claude_desktop_config.json</code>) and Windows equivalents.</p>
+<ol>
+<li>CI: add Linux runner to <code>.github/workflows</code>.</li>
+</ol>
+<h3 id="test-scenarios-deferred-until-implementation-is-specified">Test scenarios (deferred until implementation is specified)</h3>
+<ul>
+<li><code>axon diagnose</code> runs to completion on Ubuntu 22.04 LTS.</li>
+<li><code>axon diagnose</code> runs to completion on Windows 11.</li>
+<li><code>hw_snapshot</code> returns <code>die_temp_celsius: null</code> gracefully when no</li>
+</ul>
+<p>temperature sensor is available (not an error, just <code>None</code>).</p>
+<ul>
+<li><code>axon setup claude-desktop</code> writes the correct path on Linux.</li>
+</ul>
+<hr>
+<h2 id="prioritization">Prioritization</h2>
+<div class="table-wrap"><table><thead><tr><th>Item</th><th>Impact</th><th>Effort</th><th>Priority</th></tr></thead><tbody><tr><td>Item 2: Headroom field in hw_snapshot</td><td>High -- eliminates agent-side reasoning overhead for most common pre-task check</td><td>Low -- new field on existing struct, one function</td><td>1</td></tr><tr><td>Item 1: Multi-instance agent detection</td><td>High -- directly addresses documented OOM/crash scenarios</td><td>Medium -- new AnomalyType variant, grouping post-pass</td><td>2</td></tr><tr><td>Item 3: Session-scoped health summary</td><td>Medium -- improves long-session agent behavior</td><td>Medium -- new tool, DB query</td><td>3</td></tr><tr><td>Item 4: Linux/Windows support</td><td>High (market reach)</td><td>High (platform testing)</td><td>4</td></tr></tbody></table></div>
+<hr>
+<h2 id="what-is-not-on-this-roadmap">What is NOT on this roadmap</h2>
+<p>These were considered and explicitly excluded:</p>
+<ul>
+<li><strong>GPU monitoring</strong>: Requires platform-specific APIs (Metal Performance Shaders</li>
+</ul>
+<p>on macOS, NVML on Linux/Windows). Complex. Phase 3.</p>
+<ul>
+<li><strong>Fleet/team APIs</strong>: Requires privacy model rethink. Axon is zero-cloud by</li>
+</ul>
+<p>design. Any multi-machine feature must maintain that constraint. Phase 3.</p>
+<ul>
+<li><strong>Cloud telemetry or analytics</strong>: Permanent exclusion. Core design constraint.</li>
+</ul>
+<p>See <code>CLAUDE.md</code>.</p>
+<ul>
+<li><strong>Network-based alert delivery beyond webhooks</strong>: Webhooks are fire-and-forget</li>
+</ul>
+<p>to a user-controlled endpoint. No managed cloud relay.</p>
+    </article>
+    <footer>
+      <div class="wrap foot">
+        <span>Axon. Zero-cloud local runtime intelligence for AI agents.</span>
+        <span><a href="index.html">Home</a> / <a href="problem-validation.html">Problem validation</a> / <a href="roadmap.html">Roadmap</a></span>
+      </div>
+    </footer>
+  </div>
+</body>
+</html>

@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Turning runtime signals into user-facing value metrics.">
+  <link rel="icon" href="data:,">
+  <title>Axon - Value Scorecard</title>
+  <style>*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:#090a0a;color:#f4f1e8;font-family:"Avenir Next","Helvetica Neue",Helvetica,Arial,sans-serif;-webkit-font-smoothing:antialiased;text-rendering:geometricPrecision}:root{--line:rgba(244,241,232,.14);--line2:rgba(244,241,232,.22);--ink:#f4f1e8;--muted:#aaa49b;--faint:#706b63;--green:#59d68c;--amber:#d9a84f;--panel:#111211;--panel2:#171817;--r:10px}a{color:var(--green);text-decoration:none}a:hover{text-decoration:underline}.page{min-height:100vh;background:linear-gradient(90deg,rgba(255,255,255,.026) 1px,transparent 1px),linear-gradient(0deg,rgba(255,255,255,.018) 1px,transparent 1px);background-size:76px 76px}.wrap{width:min(900px,calc(100% - 40px));margin:0 auto}.mono,code{font-family:"SF Mono","Menlo",monospace}nav{position:sticky;top:0;z-index:20;border-bottom:1px solid var(--line);background:rgba(9,10,10,.86);backdrop-filter:blur(18px)}.nav-inner{height:64px;display:flex;align-items:center;justify-content:space-between;gap:18px}.brand{display:flex;align-items:center;gap:12px;color:var(--ink);font-weight:850;letter-spacing:2.6px;text-decoration:none}.mark{width:32px;height:32px;border:1px solid var(--line2);border-radius:8px;display:grid;place-items:center;background:#111}.back{font-size:13px;color:var(--muted)}article{padding:82px 0 96px}.eyebrow{font-size:11px;text-transform:uppercase;letter-spacing:1.6px;color:var(--amber);font-weight:850;margin-bottom:18px}h1{font-size:58px;line-height:.98;letter-spacing:-.045em;margin:0 0 20px;color:var(--ink)}h2{font-size:34px;line-height:1.08;letter-spacing:-.03em;margin:54px 0 16px;color:var(--ink)}h3{font-size:22px;letter-spacing:-.015em;margin:34px 0 12px;color:var(--ink)}h4,h5,h6{color:var(--ink);margin:28px 0 10px}p{color:var(--muted);font-size:16px;line-height:1.75;margin:16px 0}.lead{font-size:20px;max-width:760px}ul,ol{color:var(--muted);font-size:16px;line-height:1.7;padding-left:23px}li{margin:7px 0}strong{color:var(--ink)}em{color:var(--ink)}code{background:rgba(244,241,232,.08);border:1px solid rgba(244,241,232,.1);border-radius:5px;padding:1px 5px;color:#dfe9de;font-size:.92em}pre{max-width:100%;background:#050606;border:1px solid var(--line);border-radius:var(--r);padding:18px;overflow:auto;color:#dfe9de;line-height:1.65;margin:22px 0}pre code{display:block;background:transparent;border:0;border-radius:0;padding:0;font-size:13px}.table-wrap{overflow:auto;border:1px solid var(--line);border-radius:var(--r);margin:22px 0;background:rgba(17,18,17,.42)}table{width:100%;border-collapse:collapse;min-width:620px}th,td{padding:13px 14px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}th{font-size:11px;color:var(--faint);text-transform:uppercase;letter-spacing:1px;background:rgba(244,241,232,.03)}td{color:var(--muted);line-height:1.55}tr:last-child td{border-bottom:0}blockquote{border-left:3px solid var(--green);margin:24px 0;padding:4px 0 4px 18px;background:rgba(89,214,140,.045)}blockquote p{color:var(--ink)}hr{border:0;border-top:1px solid var(--line);margin:38px 0}.doc-card{border:1px solid var(--line);border-radius:var(--r);background:rgba(17,18,17,.58);padding:20px;margin:24px 0 34px}.doc-card p{margin:0;color:var(--muted)}footer{border-top:1px solid var(--line);padding:24px 0;color:var(--faint);font-size:12px}.foot{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}@media(max-width:760px){h1{font-size:42px}h2{font-size:28px}.nav-inner{height:58px}.back{display:none}article{padding-top:58px}}</style>
+</head>
+<body>
+  <div class="page">
+    <nav>
+      <div class="wrap nav-inner">
+        <a class="brand" href="index.html"><span class="mark">A</span><span>AXON</span></a>
+        <a class="back" href="index.html#analysis">Back to public page</a>
+      </div>
+    </nav>
+    <article class="wrap">
+      <div class="eyebrow">Axon public docs</div>
+      <h1>Axon Value Scorecard</h1>
+      <div class="doc-card"><p>Turning runtime signals into user-facing value metrics.</p></div>
+      <p>The value scorecard turns Axon runtime signals into user-facing business metrics: avoided tool spawns, capped parallelism, estimated credits saved, estimated time saved, and workflow impacts.</p>
+<h2 id="run">Run</h2>
+<pre><code class="language-bash">python3 scripts/axon_value_scorecard.py target/debug/axon --prove --out agent_value_scorecard.md</code></pre>
+<p><code>--prove</code> temporarily starts local MCP-like helper processes to show what would happen without an Axon policy, then cleans them up and verifies the runtime returns to baseline.</p>
+<h2 id="example-output">Example Output</h2>
+<pre><code class="language-text">Risky tool spawns avoided: 4
+Parallel workers avoided: 3
+Estimated credits saved: 4.75
+Estimated time saved: 4.5 min
+No-policy MCP count: 39 -&gt; 43
+Cleanup MCP count: 39</code></pre>
+<h2 id="why-it-matters">Why It Matters</h2>
+<p>Users do not buy a process list. They buy fewer failed runs, fewer wasted credits, less waiting, and agents that know when to reduce or reuse instead of blindly spawning more work.</p>
+<p>The scorecard is designed to answer:</p>
+<ul>
+<li>What would the agent have done without Axon?</li>
+<li>What did Axon prevent?</li>
+<li>What safe work was still allowed?</li>
+<li>How much time or credit burn was avoided?</li>
+<li>What should the user or agent do next?</li>
+</ul>
+<h2 id="tunable-assumptions">Tunable Assumptions</h2>
+<pre><code class="language-bash">python3 scripts/axon_value_scorecard.py target/debug/axon \
+  --requested-tool-spawns 4 \
+  --requested-parallelism 4 \
+  --credit-per-tool-spawn 1.0 \
+  --credit-per-parallel-worker 0.25 \
+  --seconds-per-tool-spawn 45 \
+  --seconds-per-parallel-worker 30 \
+  --hourly-developer-cost 100 \
+  --prove</code></pre>
+<p>These defaults are intentionally conservative placeholders. For an app-builder platform, replace them with real credit pricing, average retry duration, and support/developer cost assumptions.</p>
+    </article>
+    <footer>
+      <div class="wrap foot">
+        <span>Axon. Zero-cloud local runtime intelligence for AI agents.</span>
+        <span><a href="index.html">Home</a> / <a href="problem-validation.html">Problem validation</a> / <a href="roadmap.html">Roadmap</a></span>
+      </div>
+    </footer>
+  </div>
+</body>
+</html>

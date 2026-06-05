@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="The same app task with and without Axon runtime policy.">
+  <link rel="icon" href="data:,">
+  <title>Axon - App Development A/B</title>
+  <style>*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:#090a0a;color:#f4f1e8;font-family:"Avenir Next","Helvetica Neue",Helvetica,Arial,sans-serif;-webkit-font-smoothing:antialiased;text-rendering:geometricPrecision}:root{--line:rgba(244,241,232,.14);--line2:rgba(244,241,232,.22);--ink:#f4f1e8;--muted:#aaa49b;--faint:#706b63;--green:#59d68c;--amber:#d9a84f;--panel:#111211;--panel2:#171817;--r:10px}a{color:var(--green);text-decoration:none}a:hover{text-decoration:underline}.page{min-height:100vh;background:linear-gradient(90deg,rgba(255,255,255,.026) 1px,transparent 1px),linear-gradient(0deg,rgba(255,255,255,.018) 1px,transparent 1px);background-size:76px 76px}.wrap{width:min(900px,calc(100% - 40px));margin:0 auto}.mono,code{font-family:"SF Mono","Menlo",monospace}nav{position:sticky;top:0;z-index:20;border-bottom:1px solid var(--line);background:rgba(9,10,10,.86);backdrop-filter:blur(18px)}.nav-inner{height:64px;display:flex;align-items:center;justify-content:space-between;gap:18px}.brand{display:flex;align-items:center;gap:12px;color:var(--ink);font-weight:850;letter-spacing:2.6px;text-decoration:none}.mark{width:32px;height:32px;border:1px solid var(--line2);border-radius:8px;display:grid;place-items:center;background:#111}.back{font-size:13px;color:var(--muted)}article{padding:82px 0 96px}.eyebrow{font-size:11px;text-transform:uppercase;letter-spacing:1.6px;color:var(--amber);font-weight:850;margin-bottom:18px}h1{font-size:58px;line-height:.98;letter-spacing:-.045em;margin:0 0 20px;color:var(--ink)}h2{font-size:34px;line-height:1.08;letter-spacing:-.03em;margin:54px 0 16px;color:var(--ink)}h3{font-size:22px;letter-spacing:-.015em;margin:34px 0 12px;color:var(--ink)}h4,h5,h6{color:var(--ink);margin:28px 0 10px}p{color:var(--muted);font-size:16px;line-height:1.75;margin:16px 0}.lead{font-size:20px;max-width:760px}ul,ol{color:var(--muted);font-size:16px;line-height:1.7;padding-left:23px}li{margin:7px 0}strong{color:var(--ink)}em{color:var(--ink)}code{background:rgba(244,241,232,.08);border:1px solid rgba(244,241,232,.1);border-radius:5px;padding:1px 5px;color:#dfe9de;font-size:.92em}pre{max-width:100%;background:#050606;border:1px solid var(--line);border-radius:var(--r);padding:18px;overflow:auto;color:#dfe9de;line-height:1.65;margin:22px 0}pre code{display:block;background:transparent;border:0;border-radius:0;padding:0;font-size:13px}.table-wrap{overflow:auto;border:1px solid var(--line);border-radius:var(--r);margin:22px 0;background:rgba(17,18,17,.42)}table{width:100%;border-collapse:collapse;min-width:620px}th,td{padding:13px 14px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}th{font-size:11px;color:var(--faint);text-transform:uppercase;letter-spacing:1px;background:rgba(244,241,232,.03)}td{color:var(--muted);line-height:1.55}tr:last-child td{border-bottom:0}blockquote{border-left:3px solid var(--green);margin:24px 0;padding:4px 0 4px 18px;background:rgba(89,214,140,.045)}blockquote p{color:var(--ink)}hr{border:0;border-top:1px solid var(--line);margin:38px 0}.doc-card{border:1px solid var(--line);border-radius:var(--r);background:rgba(17,18,17,.58);padding:20px;margin:24px 0 34px}.doc-card p{margin:0;color:var(--muted)}footer{border-top:1px solid var(--line);padding:24px 0;color:var(--faint);font-size:12px}.foot{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}@media(max-width:760px){h1{font-size:42px}h2{font-size:28px}.nav-inner{height:58px}.back{display:none}article{padding-top:58px}}</style>
+</head>
+<body>
+  <div class="page">
+    <nav>
+      <div class="wrap nav-inner">
+        <a class="brand" href="index.html"><span class="mark">A</span><span>AXON</span></a>
+        <a class="back" href="index.html#analysis">Back to public page</a>
+      </div>
+    </nav>
+    <article class="wrap">
+      <div class="eyebrow">Axon public docs</div>
+      <h1>With and Without Axon: App Development A/B</h1>
+      <div class="doc-card"><p>The same app task with and without Axon runtime policy.</p></div>
+      <h2 id="scenario">Scenario</h2>
+<p>The same small app-development task was run in independent temporary workspaces. The blind run spawned all requested helper processes and ran checks in parallel. The Axon-informed run queried workload advice first, avoided risky tool fan-out, and capped concurrency.</p>
+<h2 id="results">Results</h2>
+<div class="table-wrap"><table><thead><tr><th>Metric</th><th>Blind agent</th><th>Axon-informed agent</th></tr></thead><tbody><tr><td>App tests passed</td><td>true</td><td>true</td></tr><tr><td>Tool helpers spawned</td><td>4</td><td>0</td></tr><tr><td>Max check concurrency</td><td>4</td><td>1</td></tr><tr><td>Subprocesses started</td><td>8</td><td>4</td></tr><tr><td>App output hash</td><td><code>ad1ca7d958b3d975</code></td><td><code>ad1ca7d958b3d975</code></td></tr><tr><td>App runtime benchmark ms</td><td>95.09</td><td>52.78</td></tr></tbody></table></div>
+<h2 id="interpretation">Interpretation</h2>
+<p>Axon did not make the agent "do less work" in a vague way. It changed the execution policy before unnecessary local workers were spawned:</p>
+<ul>
+<li>avoided 4 extra tool helpers</li>
+<li>reduced max concurrency from 4 to 1</li>
+<li>preserved the same app output hash</li>
+<li>kept tests passing</li>
+<li>made the tradeoff explicit when the machine was already pressured</li>
+</ul>
+<p>The Axon-informed path intentionally took longer wall-clock time in the pressured run because it chose safer execution over blind fan-out. That is the point of the policy: spend fewer local resources when the machine is already in a state where more parallel work is likely to create failures, noise, or false debugging paths.</p>
+<h2 id="no-degradation-fast-path">No-Degradation Fast Path</h2>
+<p>A separate lightweight edit and smoke-check path showed that Axon does not have to slow useful validation work. Useful validation time stayed effectively the same while unnecessary helper setup was avoided.</p>
+<div class="table-wrap"><table><thead><tr><th>Metric</th><th>Blind agent</th><th>Axon-informed agent</th></tr></thead><tbody><tr><td>Smoke checks passed</td><td>true</td><td>true</td></tr><tr><td>Useful validation seconds</td><td>0.73</td><td>0.73</td></tr><tr><td>Tool helpers spawned</td><td>4</td><td>0</td></tr></tbody></table></div>
+<h2 id="why-this-matters">Why This Matters</h2>
+<p>For agent IDEs, app builders, local runners, and hardware vendors, the value is not a prettier system monitor. The value is an execution primitive:</p>
+<pre><code class="language-text">before expensive local work:
+  ask Axon for host and agent-runtime state
+  choose run, degrade, defer, or cleanup
+  expose the reason to the user</code></pre>
+<p>That makes agentic workflows easier to trust because they can explain when the machine, not the code, is the bottleneck.</p>
+    </article>
+    <footer>
+      <div class="wrap foot">
+        <span>Axon. Zero-cloud local runtime intelligence for AI agents.</span>
+        <span><a href="index.html">Home</a> / <a href="problem-validation.html">Problem validation</a> / <a href="roadmap.html">Roadmap</a></span>
+      </div>
+    </footer>
+  </div>
+</body>
+</html>
