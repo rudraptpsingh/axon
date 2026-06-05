@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Axon">
+  <rect width="64" height="64" rx="14" fill="#090a0a"/>
+  <rect x="8" y="8" width="48" height="48" rx="10" fill="#111211" stroke="#3b3f3b"/>
+  <path d="M20 45 31.5 18h3L46 45h-5.5l-2.4-6H27.9l-2.4 6H20Zm9.6-10.5h6.8L33 25.8l-3.4 8.7Z" fill="#f4f1e8"/>
+  <path d="M18 50h28" stroke="#59d68c" stroke-width="3" stroke-linecap="round"/>
+</svg>

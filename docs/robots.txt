@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://rudraptpsingh.github.io/axon/sitemap.xml
