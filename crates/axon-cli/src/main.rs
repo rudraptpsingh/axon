@@ -366,7 +366,7 @@ async fn run_query(tool: &str) -> Result<()> {
                 serde_json::to_string_pretty(&response)?
             }
             "agent_runtime_health" => {
-                let health = axon_core::agent_runtime::scan_agent_runtime_health();
+                let health = axon_core::agent_runtime::scan_agent_runtime_health(None);
                 let narrative = axon_server::agent_runtime_health_narrative_pub(&health);
                 let response = axon_core::types::McpResponse::success(health, narrative);
                 serde_json::to_string_pretty(&response)?

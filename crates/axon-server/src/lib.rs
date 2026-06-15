@@ -289,10 +289,14 @@ impl AxonServer {
     }
 
     #[tool(
-        description = "Inspect local AI agent runtime footprint. Returns running Codex/Claude/Cursor/MCP host processes, stale tool servers, total agent CPU/RAM, and cleanup recommendations. Call when the machine is slow, before spawning subagents/tools, or when users ask why Codex/ChatGPT agent sessions feel heavy."
+        description = "Inspect local AI agent runtime footprint. Returns running Codex/Claude/Cursor/MCP host processes, stale tool servers, total agent CPU/RAM, cleanup recommendations, and the aggregate OOM trajectory across all running sessions (time_to_oom_min, oom_trajectory). Call when the machine is slow, before spawning subagents/tools, or when users ask why agent sessions feel heavy."
     )]
     async fn agent_runtime_health(&self, _p: Parameters<EmptyParams>) -> String {
-        let health = axon_core::agent_runtime::scan_agent_runtime_health();
+        let hw = {
+            let guard = self.state.lock().unwrap();
+            guard.hw.clone()
+        };
+        let health = axon_core::agent_runtime::scan_agent_runtime_health(Some(&hw));
         let narrative = agent_runtime_health_narrative(&health);
         let response = McpResponse::success(health, narrative);
         serde_json::to_string(&response)
@@ -386,6 +390,35 @@ fn workload_advice_narrative(advice: &WorkloadAdvice) -> String {
     if let Some(retry) = advice.retry_after_seconds {
         parts.push(format!("retry_after={}s", retry));
     }
+    // OOM trajectory forward-look: surfaces the aggregate leak countdown.
+    match &advice.oom_trajectory {
+        OomTrajectory::Imminent => {
+            if let Some(t) = advice.time_to_oom_min {
+                parts.push(format!(
+                    "[CRITICAL] OOM in ~{} min from aggregate agent memory leaks — \
+                     launching new workloads risks accelerating this",
+                    t
+                ));
+            }
+        }
+        OomTrajectory::Soon => {
+            if let Some(t) = advice.time_to_oom_min {
+                parts.push(format!(
+                    "[WARN] OOM trajectory: ~{} min at current aggregate leak rate",
+                    t
+                ));
+            }
+        }
+        OomTrajectory::Building => {
+            if let Some(r) = advice.aggregate_agent_leak_rate_mb_per_hr {
+                parts.push(format!(
+                    "agent sessions leaking {:.0} MB/hr aggregate — monitor if launching more subagents",
+                    r
+                ));
+            }
+        }
+        OomTrajectory::Safe => {}
+    }
     parts.join(". ") + "."
 }
 
@@ -444,6 +477,41 @@ fn agent_runtime_health_narrative(health: &AgentRuntimeHealth) -> String {
             "recommendation: {}",
             health.recommendations.join("; ")
         ));
+    }
+    // OOM trajectory from the hw snapshot, surfaced here for the agent-focused tool.
+    match &health.oom_trajectory {
+        OomTrajectory::Imminent => {
+            let pid_str = health.worst_leaking_pid
+                .map(|p| format!(" Restart PID {} now.", p))
+                .unwrap_or_default();
+            let eta = health.time_to_oom_min
+                .map(|t| format!("~{} min", t))
+                .unwrap_or_else(|| "imminent".to_string());
+            parts.push(format!(
+                "[CRITICAL] OOM in {} from aggregate agent memory leaks.{}",
+                eta, pid_str
+            ));
+        }
+        OomTrajectory::Soon => {
+            if let Some(t) = health.time_to_oom_min {
+                parts.push(format!(
+                    "[WARN] OOM trajectory: ~{} min at current aggregate leak rate — \
+                     reduce parallel agent count",
+                    t
+                ));
+            }
+        }
+        OomTrajectory::Building => {
+            if let Some(r) = health.aggregate_agent_leak_rate_mb_per_hr {
+                if r > 100.0 {
+                    parts.push(format!(
+                        "agent sessions accumulating {:.0} MB/hr — monitor for growth",
+                        r
+                    ));
+                }
+            }
+        }
+        OomTrajectory::Safe => {}
     }
     parts.join(". ") + "."
 }
@@ -629,8 +697,80 @@ fn hw_narrative(hw: &HwSnapshot) -> String {
         ),
         _ => String::new(),
     };
+    // Aggregate OOM trajectory across all running agent sessions.
+    let oom_trajectory_str = match &hw.oom_trajectory {
+        OomTrajectory::Imminent => {
+            let pid_str = hw.worst_leaking_agent_pid
+                .map(|p| format!(" Restart PID {} immediately.", p))
+                .unwrap_or_default();
+            let eta_str = hw.oom_time_to_impact_min
+                .map(|t| format!("~{} min", t))
+                .unwrap_or_else(|| "imminent".to_string());
+            format!(
+                " [CRITICAL] Aggregate agent memory leak: OOM in {} — \
+                 sum of leaking sessions × 3x peak burst exceeds available RAM.{}",
+                eta_str, pid_str
+            )
+        }
+        OomTrajectory::Soon => {
+            let rate_str = hw.aggregate_agent_leak_rate_mb_per_hr
+                .map(|r| format!("{:.0} MB/hr aggregate", r))
+                .unwrap_or_default();
+            let eta_str = hw.oom_time_to_impact_min
+                .map(|t| format!("{} min", t))
+                .unwrap_or_default();
+            format!(
+                " [WARN] Agent memory leak trajectory: OOM in {} ({}).",
+                eta_str, rate_str
+            )
+        }
+        OomTrajectory::Building => {
+            let rate_str = hw.aggregate_agent_leak_rate_mb_per_hr
+                .map(|r| format!("{:.0} MB/hr", r))
+                .unwrap_or_default();
+            if !rate_str.is_empty() {
+                format!(" [INFO] Agent memory accumulating at {} — watch trend.", rate_str)
+            } else {
+                String::new()
+            }
+        }
+        OomTrajectory::Safe => String::new(),
+    };
+    // Disk runaway source attribution (only emitted when fast-path trigger fires).
+    let disk_runaway_str = match &hw.disk_runaway_source {
+        Some(DiskRunawaySource::TmpTaskOutput) => {
+            " [WARN] Disk fill attributed to /tmp/claude-{uid}/tasks/ — \
+             task .output files accumulating. Run: rm -rf /tmp/claude-$(id -u)/tasks/"
+                .to_string()
+        }
+        Some(DiskRunawaySource::DebugLogLoop) => {
+            " [CRITICAL] Disk fill attributed to ~/.claude/debug/ — \
+             recursive debug log loop (#16093). Run: rm -rf ~/.claude/debug/ \
+             and restart the agent immediately."
+                .to_string()
+        }
+        Some(DiskRunawaySource::SessionFiles) => {
+            " [WARN] Disk fill attributed to ~/.claude/projects/ — \
+             session files growing. Run: du -sh ~/.claude/projects/**/*.jsonl | sort -rh | head"
+                .to_string()
+        }
+        Some(DiskRunawaySource::Unknown) => {
+            " [WARN] Disk filling rapidly — source unknown. \
+             Run: du -sh ~/.claude/debug/ ~/.claude/projects/ /tmp/claude-$(id -u)/"
+                .to_string()
+        }
+        None => String::new(),
+    };
+    // Recursive log loop risk: debug/ growing faster than projects/ and >40% of total.
+    let log_loop_str = if hw.recursive_log_loop_risk == Some(true) {
+        " [CRITICAL] ~/.claude/debug/ growing >500 MB/hr and is >40% of ~/.claude/ total — \
+         recursive debug log loop active. Run: rm -rf ~/.claude/debug/ immediately."
+            .to_string()
+    } else {
+        String::new()
+    };
     format!(
-        "CPU {:.0}% {}, die {}{} RAM {:.1}/{:.0}GB {} ({} pressure).{}{}{}{}{}{}{}{}{}{}{}  {} | {}",
+        "CPU {:.0}% {}, die {}{} RAM {:.1}/{:.0}GB {} ({} pressure).{}{}{}{}{}{}{}{}{}{}{}{}{}{}  {} | {}",
         hw.cpu_usage_pct,
         hw.cpu_trend,
         temp_str,
@@ -650,6 +790,9 @@ fn hw_narrative(hw: &HwSnapshot) -> String {
         mcp_str,
         time_wait_str,
         inotify_str,
+        oom_trajectory_str,
+        disk_runaway_str,
+        log_loop_str,
         headroom_str,
         hw.one_liner,
     )

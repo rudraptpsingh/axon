@@ -235,7 +235,7 @@ async fn api_agent_status(State(state): State<DashboardState>) -> Json<Vec<Spawn
 }
 
 async fn api_runtime_health() -> Json<axon_core::types::AgentRuntimeHealth> {
-    Json(axon_core::agent_runtime::scan_agent_runtime_health())
+    Json(axon_core::agent_runtime::scan_agent_runtime_health(None))
 }
 
 async fn api_spawn_agents(
@@ -397,7 +397,8 @@ async fn run_local_axon_agent(
             "{}",
         )
         .await;
-        let runtime = axon_core::agent_runtime::scan_agent_runtime_health();
+        let hw_snap = { hw_state.lock().unwrap().hw.clone() };
+        let runtime = axon_core::agent_runtime::scan_agent_runtime_health(Some(&hw_snap));
         let runtime_narrative = crate::agent_runtime_health_narrative_pub(&runtime);
         let runtime_response = dashboard_tool_response(runtime.clone(), runtime_narrative.clone());
         push_tool_result(

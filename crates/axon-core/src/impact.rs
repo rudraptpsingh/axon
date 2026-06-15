@@ -1,8 +1,8 @@
 use crate::thresholds;
 use crate::types::{
     AnomalyType, ClaudeAgentInfo, CulpritCategory, DiskPressure, GpuSnapshot, HeadroomLevel,
-    HwSnapshot, ImpactLevel, ProcessBlame, ProcessGroup, ProcessInfo, RamPressure, SystemProfile,
-    TrendDirection, Urgency, WorkloadAdvice, WorkloadAdviceRequest, WorkloadKind,
+    HwSnapshot, ImpactLevel, OomTrajectory, ProcessBlame, ProcessGroup, ProcessInfo, RamPressure,
+    SystemProfile, TrendDirection, Urgency, WorkloadAdvice, WorkloadAdviceRequest, WorkloadKind,
     WorkloadRecommendation, WorkloadRisk,
 };
 
@@ -292,6 +292,65 @@ pub fn advise_workload(
         _ => None,
     };
 
+    // ── OOM trajectory escalation ────────────────────────────────────────────
+    // If the aggregate leak trajectory predicts imminent OOM, override the
+    // recommendation regardless of current snapshot headroom. An agent session
+    // may look fine right now while leaking 800 MB/hr in the background.
+    let oom_trajectory = hw.oom_trajectory.clone();
+    let oom_escalated = match &oom_trajectory {
+        OomTrajectory::Imminent => {
+            reasons.push(format!(
+                "OOM imminent in ~{} min (aggregate agent leak rate {:.0} MB/hr)",
+                hw.oom_time_to_impact_min.unwrap_or(0),
+                hw.aggregate_agent_leak_rate_mb_per_hr.unwrap_or(0.0),
+            ));
+            if let Some(pid) = hw.worst_leaking_agent_pid {
+                actions.push(format!(
+                    "restart the worst-leaking session (PID {}) before launching new work",
+                    pid
+                ));
+            } else {
+                actions.push("restart leaking agent sessions before launching new work".to_string());
+            }
+            recommendation = WorkloadRecommendation::Defer;
+            risk = WorkloadRisk::Critical;
+            true
+        }
+        OomTrajectory::Soon => {
+            reasons.push(format!(
+                "OOM in ~{} min at current agent leak rate — reduce session count first",
+                hw.oom_time_to_impact_min.unwrap_or(0),
+            ));
+            if recommendation == WorkloadRecommendation::Proceed {
+                recommendation = WorkloadRecommendation::ProceedWithCaution;
+            }
+            if risk == WorkloadRisk::Low {
+                risk = WorkloadRisk::Moderate;
+            }
+            true
+        }
+        OomTrajectory::Building => {
+            if hw.aggregate_agent_leak_rate_mb_per_hr.is_some_and(|r| r > 200.0) {
+                reasons.push(format!(
+                    "agents leaking {:.0} MB/hr combined — OOM in ~{} min if trend continues",
+                    hw.aggregate_agent_leak_rate_mb_per_hr.unwrap_or(0.0),
+                    hw.oom_time_to_impact_min.unwrap_or(0),
+                ));
+            }
+            false
+        }
+        OomTrajectory::Safe => false,
+    };
+
+    // When OOM is imminent, safe_parallelism = 0 means "don't spawn at all."
+    let final_safe_parallelism = if oom_escalated && oom_trajectory == OomTrajectory::Imminent {
+        Some(0)
+    } else if oom_trajectory == OomTrajectory::Soon && safe_parallelism > 1 {
+        Some(safe_parallelism - 1)
+    } else {
+        Some(safe_parallelism)
+    };
+
     let confidence = match (&recommendation, reasons.len()) {
         (WorkloadRecommendation::Proceed, _) => 0.78,
         (_, n) if n >= 3 => 0.90,
@@ -302,11 +361,14 @@ pub fn advise_workload(
         kind: req.kind.clone(),
         recommendation,
         risk,
-        safe_parallelism: Some(safe_parallelism),
+        safe_parallelism: final_safe_parallelism,
         retry_after_seconds,
         reasons: dedupe_nonempty(reasons),
         suggested_actions: dedupe_nonempty(actions),
         confidence,
+        aggregate_agent_leak_rate_mb_per_hr: hw.aggregate_agent_leak_rate_mb_per_hr,
+        time_to_oom_min: hw.oom_time_to_impact_min,
+        oom_trajectory,
     }
 }
 
@@ -1476,6 +1538,15 @@ mod tests {
             process_spawn_rate_per_sec: None,
             net_time_wait_count: None,
             inotify_watch_count: None,
+            aggregate_agent_leak_rate_mb_per_hr: None,
+            oom_time_to_impact_min: None,
+            oom_trajectory: OomTrajectory::Safe,
+            worst_leaking_agent_pid: None,
+            dot_claude_debug_size_gb: None,
+            dot_claude_projects_size_gb: None,
+            tmp_claude_tasks_size_gb: None,
+            recursive_log_loop_risk: None,
+            disk_runaway_source: None,
         }
     }
 

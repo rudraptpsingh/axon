@@ -51,6 +51,52 @@ pub enum HeadroomLevel {
     Insufficient,
 }
 
+// ── OOM Trajectory ────────────────────────────────────────────────────────────
+
+/// Predicted time-to-OOM based on aggregate agent leak rates.
+/// Computed with a 3x peak-burst multiplier (AgentCgroup arXiv:2602.09345 found
+/// up to 15.4x peak-to-average; 3x is conservative for pre-emptive alerting).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum OomTrajectory {
+    /// No active leaks or >120 min until exhaustion — safe to proceed.
+    #[default]
+    Safe,
+    /// 30–120 min until exhaustion — monitor; avoid spawning new sessions.
+    Building,
+    /// 10–30 min until exhaustion — act soon; restart the worst-leaking session.
+    Soon,
+    /// <10 min until exhaustion — act now; OOM freeze risk imminent.
+    Imminent,
+}
+
+impl std::fmt::Display for OomTrajectory {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            OomTrajectory::Safe => write!(f, "safe"),
+            OomTrajectory::Building => write!(f, "building"),
+            OomTrajectory::Soon => write!(f, "soon"),
+            OomTrajectory::Imminent => write!(f, "imminent"),
+        }
+    }
+}
+
+// ── Disk Runaway Source ───────────────────────────────────────────────────────
+
+/// Attribution for a high-rate disk fill event (disk_fill_rate > 50 MB/s).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum DiskRunawaySource {
+    /// /tmp/claude-{uid}/tasks/ is the dominant grower (task .output files, #41737).
+    TmpTaskOutput,
+    /// ~/.claude/debug/ is dominant and growing — recursive log-loop pattern (#16093).
+    DebugLogLoop,
+    /// ~/.claude/projects/ is growing — session JSONL files at scale.
+    SessionFiles,
+    /// High fill rate but source could not be attributed to a known pattern.
+    Unknown,
+}
+
 // ── Workload Advice ─────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -129,6 +175,17 @@ pub struct WorkloadAdvice {
     pub reasons: Vec<String>,
     pub suggested_actions: Vec<String>,
     pub confidence: f64,
+    /// Sum of positive rss_growth_rate_mb_per_hr across all active agent sessions.
+    /// None when no sessions are leaking. Feeds directly into safe_parallelism reduction.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aggregate_agent_leak_rate_mb_per_hr: Option<f64>,
+    /// Predicted minutes until system RAM is exhausted at current collective leak rate
+    /// (with 3x peak-burst multiplier). None when trajectory is safe (>120 min).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub time_to_oom_min: Option<u64>,
+    /// OOM trajectory classification. Safe = no action; Imminent = act now.
+    #[serde(default)]
+    pub oom_trajectory: OomTrajectory,
 }
 
 // ── Agent Runtime Health ────────────────────────────────────────────────────
@@ -201,6 +258,23 @@ pub struct AgentRuntimeHealth {
     pub stale_processes: Vec<AgentRuntimeProcess>,
     pub workflow_impacts: Vec<AgentRuntimeImpact>,
     pub recommendations: Vec<String>,
+    /// Aggregate RAM leak rate across all active agent sessions (MB/hr).
+    /// Sourced from per-session EWMA slow-delta measurements in the collector.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aggregate_agent_leak_rate_mb_per_hr: Option<f64>,
+    /// Predicted minutes until system RAM exhaustion at current collective leak rate
+    /// (3x peak-burst multiplier applied). None when trajectory is safe.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub time_to_oom_min: Option<u64>,
+    /// OOM trajectory classification based on aggregate EWMA-derived leak rates.
+    #[serde(default)]
+    pub oom_trajectory: OomTrajectory,
+    /// PID of the agent session currently leaking the most RAM (MB/hr).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worst_leaking_pid: Option<u32>,
+    /// rss_growth_rate_mb_per_hr of the worst-leaking session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worst_leaking_rate_mb_per_hr: Option<f64>,
 }
 
 // ── Trend Direction ──────────────────────────────────────────────────────────
@@ -514,6 +588,46 @@ pub struct HwSnapshot {
     /// before the FD table is exhausted. See: github.com/anthropics/claude-code/issues/11136.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inotify_watch_count: Option<u32>,
+
+    // ── Multi-agent OOM trajectory ────────────────────────────────────────────
+    /// Sum of positive rss_growth_rate_mb_per_hr across all running agent sessions.
+    /// None when no sessions are actively leaking. Computed every tick from EWMA baselines.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aggregate_agent_leak_rate_mb_per_hr: Option<f64>,
+    /// Predicted time until system RAM exhaustion given aggregate leak trajectory.
+    /// Uses 3x peak-burst multiplier (AgentCgroup: up to 15.4x observed; 3x is conservative).
+    /// None when trajectory is safe (>120 min) or no active leaks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oom_time_to_impact_min: Option<u64>,
+    /// OOM trajectory: safe / building / soon / imminent. Default: safe.
+    #[serde(default)]
+    pub oom_trajectory: OomTrajectory,
+    /// PID of the session leaking the most RAM per hour.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worst_leaking_agent_pid: Option<u32>,
+
+    // ── Disk runaway sub-directory attribution ────────────────────────────────
+    /// Size of ~/.claude/debug/ in GB (sampled every 30 ticks, ~60s).
+    /// Rapid growth here signals the recursive logging feedback loop (#16093).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dot_claude_debug_size_gb: Option<f64>,
+    /// Size of ~/.claude/projects/ in GB (sampled every 30 ticks).
+    /// Steady growth is normal; runaway growth signals unbounded session files.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dot_claude_projects_size_gb: Option<f64>,
+    /// Size of /tmp/claude-{uid}/tasks/ in GB (30-tick cadence, plus fast-path
+    /// when disk_fill_rate > 50 MB/s for 2+ consecutive ticks).
+    /// The #41737 failure mode (278 GB in 12 min) manifests here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tmp_claude_tasks_size_gb: Option<f64>,
+    /// True when ~/.claude/debug/ growth rate exceeds 500 MB/hr AND debug is >40%
+    /// of total ~/.claude/ size. Specific indicator of the recursive log-loop (#16093).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recursive_log_loop_risk: Option<bool>,
+    /// Source attribution when disk fill rate exceeds 50 MB/s for 2+ ticks.
+    /// None when disk fill rate is below the crisis threshold.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disk_runaway_source: Option<DiskRunawaySource>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

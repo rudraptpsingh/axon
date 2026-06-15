@@ -4,12 +4,15 @@ use sysinfo::{System, MINIMUM_CPU_UPDATE_INTERVAL};
 
 use crate::types::{
     AgentRuntimeHealth, AgentRuntimeImpact, AgentRuntimeProcess, AgentRuntimeProvider,
-    AgentRuntimeRole,
+    AgentRuntimeRole, HwSnapshot, OomTrajectory,
 };
 
 const STALE_RUNTIME_SECS: u64 = 4 * 60 * 60;
 
-pub fn scan_agent_runtime_health() -> AgentRuntimeHealth {
+/// Scan the agent runtime footprint. Accepts an optional hw snapshot from the
+/// collector so OOM trajectory data (computed from EWMA baselines) can be
+/// forwarded without re-deriving it from a fresh sysinfo scrape.
+pub fn scan_agent_runtime_health(hw_state: Option<&HwSnapshot>) -> AgentRuntimeHealth {
     let mut sys = System::new_all();
     sys.refresh_all();
     std::thread::sleep(MINIMUM_CPU_UPDATE_INTERVAL);
@@ -144,6 +147,24 @@ pub fn scan_agent_runtime_health() -> AgentRuntimeHealth {
         },
     );
 
+    // Pull OOM trajectory from the shared hw state (EWMA-derived, can't recompute here).
+    let (aggregate_leak, time_to_oom, oom_traj, worst_pid, worst_rate) =
+        if let Some(hw) = hw_state {
+            (
+                hw.aggregate_agent_leak_rate_mb_per_hr,
+                hw.oom_time_to_impact_min,
+                hw.oom_trajectory.clone(),
+                hw.worst_leaking_agent_pid,
+                hw.aggregate_agent_leak_rate_mb_per_hr.and_then(|_| {
+                    // worst_leaking_rate is not directly on HwSnapshot yet; approximate as
+                    // the total rate since that's what most callers care about.
+                    hw.aggregate_agent_leak_rate_mb_per_hr
+                }),
+            )
+        } else {
+            (None, None, OomTrajectory::Safe, None, None)
+        };
+
     AgentRuntimeHealth {
         process_count,
         stale_process_count,
@@ -165,6 +186,11 @@ pub fn scan_agent_runtime_health() -> AgentRuntimeHealth {
         stale_processes,
         workflow_impacts,
         recommendations,
+        aggregate_agent_leak_rate_mb_per_hr: aggregate_leak,
+        time_to_oom_min: time_to_oom,
+        oom_trajectory: oom_traj,
+        worst_leaking_pid: worst_pid,
+        worst_leaking_rate_mb_per_hr: worst_rate,
     }
 }
 

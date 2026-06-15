@@ -207,6 +207,15 @@ impl AppState {
                 process_spawn_rate_per_sec: None,
                 net_time_wait_count: None,
                 inotify_watch_count: None,
+                aggregate_agent_leak_rate_mb_per_hr: None,
+                oom_time_to_impact_min: None,
+                oom_trajectory: OomTrajectory::Safe,
+                worst_leaking_agent_pid: None,
+                dot_claude_debug_size_gb: None,
+                dot_claude_projects_size_gb: None,
+                tmp_claude_tasks_size_gb: None,
+                recursive_log_loop_risk: None,
+                disk_runaway_source: None,
             },
             blame: ProcessBlame {
                 anomaly_type: AnomalyType::None,
@@ -446,6 +455,174 @@ fn read_tmp_claude_size_gb() -> Option<f64> {
 #[cfg(not(unix))]
 fn read_tmp_claude_size_gb() -> Option<f64> {
     None
+}
+
+/// Walk a directory tree and return total file bytes. Returns 0 if the path
+/// does not exist or cannot be read.
+fn walk_dir_bytes(root: std::path::PathBuf) -> u64 {
+    let mut total: u64 = 0;
+    if !root.exists() {
+        return total;
+    }
+    let mut stack = vec![root];
+    while let Some(dir) = stack.pop() {
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        for entry in entries.flatten() {
+            let meta = match entry.metadata() {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
+            if meta.is_dir() {
+                stack.push(entry.path());
+            } else {
+                total += meta.len();
+            }
+        }
+    }
+    total
+}
+
+/// Read sub-directory sizes within ~/.claude/ in a single shallow pass.
+/// Returns (debug_gb, projects_gb).
+/// Called every 30 ticks (slow path) or when disk fill rate is crisis-level (fast path).
+fn read_dot_claude_subdir_sizes() -> (Option<f64>, Option<f64>) {
+    let home = match std::env::var("HOME") {
+        Ok(h) => h,
+        Err(_) => return (None, None),
+    };
+    let dot_claude = std::path::PathBuf::from(&home).join(".claude");
+    if !dot_claude.exists() {
+        return (None, None);
+    }
+
+    let debug_bytes = walk_dir_bytes(dot_claude.join("debug"));
+    let projects_bytes = walk_dir_bytes(dot_claude.join("projects"));
+
+    let to_gb = |b: u64| -> Option<f64> {
+        let gb = b as f64 / 1_073_741_824.0;
+        if gb > 0.0001 { Some(gb) } else { None }
+    };
+    (to_gb(debug_bytes), to_gb(projects_bytes))
+}
+
+/// Read the size of /tmp/claude-{uid}/tasks/ (one level deep, fast).
+/// Called on the same cadence as read_tmp_claude_size_gb, plus the fast-path trigger.
+#[cfg(unix)]
+fn read_tmp_claude_tasks_size_gb() -> Option<f64> {
+    let uid = unsafe { libc::getuid() };
+    #[cfg(target_os = "macos")]
+    let tasks_dir = std::path::PathBuf::from(format!("/private/tmp/claude-{}/tasks", uid));
+    #[cfg(not(target_os = "macos"))]
+    let tasks_dir = std::path::PathBuf::from(format!("/tmp/claude-{}/tasks", uid));
+
+    if !tasks_dir.exists() {
+        return None;
+    }
+    let mut total_bytes: u64 = 0;
+    let mut stack = vec![tasks_dir];
+    while let Some(dir) = stack.pop() {
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        for entry in entries.flatten() {
+            let meta = match entry.metadata() {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
+            if meta.is_dir() {
+                stack.push(entry.path());
+            } else {
+                total_bytes += meta.len();
+            }
+        }
+    }
+    let gb = total_bytes as f64 / 1_073_741_824.0;
+    if gb > 0.0001 { Some(gb) } else { None }
+}
+
+#[cfg(not(unix))]
+fn read_tmp_claude_tasks_size_gb() -> Option<f64> {
+    None
+}
+
+/// Classify what is driving a high disk fill rate based on sub-directory sizes.
+/// Called when disk_fill_rate > 50 MB/s for 2+ consecutive ticks.
+pub fn classify_disk_runaway_source(
+    tasks_gb: f64,
+    debug_gb: f64,
+    projects_gb: f64,
+    fill_rate_gb_per_sec: f64,
+) -> DiskRunawaySource {
+    // tmp task output: extreme fill rate AND tasks subdir is substantial.
+    // #41737: 278 GB in 12 min = 0.39 GB/s — tasks/ is always the culprit at this rate.
+    if fill_rate_gb_per_sec >= 0.05 && tasks_gb > 0.5 {
+        return DiskRunawaySource::TmpTaskOutput;
+    }
+    // Recursive log loop: debug subdir dominates ~/.claude/ total.
+    // #16093: logger logs its own write latencies → feedback loop.
+    let total = debug_gb + projects_gb;
+    if total > 0.1 && debug_gb / total > 0.4 && debug_gb > 0.2 {
+        return DiskRunawaySource::DebugLogLoop;
+    }
+    if projects_gb > 1.0 {
+        return DiskRunawaySource::SessionFiles;
+    }
+    DiskRunawaySource::Unknown
+}
+
+/// Compute multi-agent OOM trajectory from per-session leak rates.
+/// Returns (aggregate_rate_mb_hr, time_to_oom_min, trajectory, worst_pid).
+/// Peak multiplier = 3x (conservative; AgentCgroup observed up to 15.4x).
+pub fn compute_oom_trajectory(
+    claude_agents: &[ClaudeAgentInfo],
+    ram_available_gb: f64,
+) -> (Option<f64>, Option<u64>, OomTrajectory, Option<u32>) {
+    const PEAK_MULTIPLIER: f64 = 3.0;
+
+    // Collect positive leak rates only (shrinking sessions don't reduce OOM risk).
+    let mut worst_pid: Option<u32> = None;
+    let mut worst_rate: f64 = 0.0;
+    let aggregate: f64 = claude_agents
+        .iter()
+        .filter_map(|a| {
+            let r = a.rss_growth_rate_mb_per_hr?;
+            if r > 0.0 {
+                if r > worst_rate {
+                    worst_rate = r;
+                    worst_pid = Some(a.pid);
+                }
+                Some(r)
+            } else {
+                None
+            }
+        })
+        .sum();
+
+    if aggregate < 1.0 {
+        return (None, None, OomTrajectory::Safe, None);
+    }
+
+    let available_mb = ram_available_gb * 1024.0;
+    let effective_rate_mb_per_min = (aggregate * PEAK_MULTIPLIER) / 60.0;
+    let time_min = (available_mb / effective_rate_mb_per_min) as u64;
+
+    let trajectory = match time_min {
+        t if t > 120 => OomTrajectory::Safe,
+        t if t > 30 => OomTrajectory::Building,
+        t if t > 10 => OomTrajectory::Soon,
+        _ => OomTrajectory::Imminent,
+    };
+
+    let time_opt = match trajectory {
+        OomTrajectory::Safe => None, // suppress noise when not actionable
+        _ => Some(time_min),
+    };
+
+    (Some(aggregate), time_opt, trajectory, worst_pid)
 }
 
 /// Return the open file-descriptor count for a process on macOS using proc_pidinfo.
@@ -697,6 +874,15 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
     let mut cached_dot_claude_size_gb: Option<f64> = None;
     // Tmp-claude size (/tmp/claude-{uid}/): sampled infrequently to avoid fs overhead.
     let mut cached_tmp_claude_size_gb: Option<f64> = None;
+    // Sub-directory attribution caches for disk runaway detection.
+    let mut cached_dot_claude_debug_size_gb: Option<f64> = None;
+    let mut cached_dot_claude_projects_size_gb: Option<f64> = None;
+    let mut cached_tmp_claude_tasks_size_gb: Option<f64> = None;
+    // Fast-path disk fill trigger: track consecutive ticks with fill > 50 MB/s.
+    let mut high_fill_ticks: u32 = 0;
+    // Previous debug-dir size for recursive-log-loop growth rate computation.
+    let mut prev_debug_size_gb: Option<f64> = None;
+    let mut cached_recursive_log_loop_risk: Option<bool> = None;
     // Previous VRAM reading for growth rate computation.
     let mut prev_vram_bytes: Option<u64> = None;
     // Total process count from last tick for spawn rate computation.
@@ -908,7 +1094,72 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
             },
             #[cfg(not(target_os = "linux"))]
             inotify_watch_count: None,
+
+            // ── Disk runaway attribution (fast-path + 30-tick slow-path) ─────
+            // Fast-path: when disk fill rate exceeds 50 MB/s for 2+ consecutive ticks,
+            // re-scan sub-directories immediately rather than waiting for the 30-tick cadence.
+            // At 320 MB/s (#41737) the 60s cadence would miss 19 GB of fill.
+            dot_claude_debug_size_gb: cached_dot_claude_debug_size_gb,
+            dot_claude_projects_size_gb: cached_dot_claude_projects_size_gb,
+            tmp_claude_tasks_size_gb: cached_tmp_claude_tasks_size_gb,
+            recursive_log_loop_risk: cached_recursive_log_loop_risk,
+            disk_runaway_source: None, // filled after fast-path check below
+
+            // OOM trajectory: filled after claude_agents are built (second pass below).
+            aggregate_agent_leak_rate_mb_per_hr: None,
+            oom_time_to_impact_min: None,
+            oom_trajectory: OomTrajectory::Safe,
+            worst_leaking_agent_pid: None,
         };
+
+        // ── Disk fill fast-path trigger ───────────────────────────────────────
+        // Track consecutive ticks with high disk fill rate. If 2+ ticks in a row
+        // exceed 50 MB/s, trigger an immediate sub-directory attribution scan.
+        let current_fill_rate = hw.disk_fill_rate_gb_per_sec.unwrap_or(0.0);
+        if current_fill_rate >= 0.05 {
+            high_fill_ticks += 1;
+        } else {
+            high_fill_ticks = 0;
+        }
+
+        // Slow-path: refresh sub-dir attribution every 30 ticks (~60s).
+        // Fast-path: override on 2+ consecutive high-fill-rate ticks.
+        if tick_count % 30 == 4 || high_fill_ticks >= 2 {
+            let (debug_gb, projects_gb) = read_dot_claude_subdir_sizes();
+            cached_dot_claude_debug_size_gb = debug_gb;
+            cached_dot_claude_projects_size_gb = projects_gb;
+            cached_tmp_claude_tasks_size_gb = read_tmp_claude_tasks_size_gb();
+
+            // Recursive log loop detection: growth rate > 500 MB/hr AND debug dominates.
+            if let (Some(cur_debug), Some(prev_debug)) = (debug_gb, prev_debug_size_gb) {
+                // Two 30-tick samples = 60s interval; compute growth rate.
+                let growth_mb_per_hr = (cur_debug - prev_debug) * 1024.0 * 60.0;
+                let total = debug_gb.unwrap_or(0.0) + projects_gb.unwrap_or(0.0);
+                let debug_pct = if total > 0.0 { cur_debug / total } else { 0.0 };
+                cached_recursive_log_loop_risk = if growth_mb_per_hr > 500.0 && debug_pct > 0.4 {
+                    Some(true)
+                } else {
+                    None
+                };
+            }
+            prev_debug_size_gb = cached_dot_claude_debug_size_gb;
+
+            hw.dot_claude_debug_size_gb = cached_dot_claude_debug_size_gb;
+            hw.dot_claude_projects_size_gb = cached_dot_claude_projects_size_gb;
+            hw.tmp_claude_tasks_size_gb = cached_tmp_claude_tasks_size_gb;
+            hw.recursive_log_loop_risk = cached_recursive_log_loop_risk;
+        }
+
+        // Disk runaway source attribution when fill rate is crisis-level.
+        if high_fill_ticks >= 2 {
+            hw.disk_runaway_source = Some(classify_disk_runaway_source(
+                hw.tmp_claude_tasks_size_gb.unwrap_or(0.0),
+                hw.dot_claude_debug_size_gb.unwrap_or(0.0),
+                hw.dot_claude_projects_size_gb.unwrap_or(0.0),
+                current_fill_rate,
+            ));
+        }
+
         prev_disk_used_gb = Some(disk_used_gb);
         let (headroom, headroom_reason) = impact::compute_headroom(&hw);
         hw.headroom = headroom;
@@ -1790,6 +2041,20 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
         );
         hw.headroom = elevated_headroom;
         hw.headroom_reason = elevated_reason;
+
+        // ── OOM trajectory: aggregate across all active agent sessions ──────
+        // Computed after claude_agents are built so we have per-session EWMA rates.
+        // Uses a 3x peak-burst multiplier (AgentCgroup: memory spikes 15.4x peak-to-average
+        // on tool calls; 3x is conservative for pre-emptive alerting before the spike).
+        {
+            let available_gb = ram_total_gb - ram_used_gb;
+            let (agg_rate, time_min, trajectory, worst_pid) =
+                compute_oom_trajectory(&blame.claude_agents, available_gb);
+            hw.aggregate_agent_leak_rate_mb_per_hr = agg_rate;
+            hw.oom_time_to_impact_min = time_min;
+            hw.oom_trajectory = trajectory;
+            hw.worst_leaking_agent_pid = worst_pid;
+        }
 
         // ── Enrich hw snapshot with post-process fields ──────────────────
         // Top culprit summary
@@ -2990,5 +3255,143 @@ mod tests {
         assert!(spawn.is_some(), "spawn rate should fire");
         assert!(stall.is_some(), "stall should fire");
         // These are independent signals on different entities.
+    }
+
+    // ── Tests: compute_oom_trajectory ────────────────────────────────────
+
+    fn make_agent(pid: u32, rate_mb_hr: f64) -> ClaudeAgentInfo {
+        ClaudeAgentInfo {
+            pid,
+            session_id: None,
+            is_orchestrator: false,
+            ram_gb: 0.5,
+            cpu_pct: 5.0,
+            ram_growth_gb_per_sec: None,
+            suspected_spin_loop: None,
+            gc_pressure: None,
+            uptime_s: None,
+            ram_spike: None,
+            suspected_io_block: None,
+            suspected_alloc_thrash: None,
+            fd_leak: None,
+            child_churn_rate_per_sec: None,
+            io_read_mb_per_sec: None,
+            idle_cpu_spin_secs: None,
+            rss_growth_rate_mb_per_hr: Some(rate_mb_hr),
+            large_session_file_mb: None,
+            bun_crash_trajectory: None,
+            zombie_child_count: None,
+            agent_stall_secs: None,
+            session_file_growth_mb_per_hr: None,
+            pipe_stall_secs: None,
+            ctx_window_risk: None,
+            tool_call_depth: None,
+        }
+    }
+
+    #[test]
+    fn oom_trajectory_no_agents_is_safe() {
+        let (rate, eta, traj, pid) = compute_oom_trajectory(&[], 8.0);
+        assert!(rate.is_none());
+        assert!(eta.is_none());
+        assert_eq!(traj, OomTrajectory::Safe);
+        assert!(pid.is_none());
+    }
+
+    #[test]
+    fn oom_trajectory_negative_rate_is_safe() {
+        // A shrinking session must not offset the OOM risk.
+        let agents = vec![make_agent(100, -200.0)];
+        let (rate, _, traj, _) = compute_oom_trajectory(&agents, 8.0);
+        assert!(rate.is_none());
+        assert_eq!(traj, OomTrajectory::Safe);
+    }
+
+    #[test]
+    fn oom_trajectory_building() {
+        // aggregate = 50 MB/hr × 3 peak = 150 MB/hr → 2.5 MB/min
+        // available = 16 GB = 16384 MB → 16384 / 2.5 = 6553 min > 120 → Safe
+        // So use smaller available to force Building (30-120 min range).
+        // aggregate = 100 MB/hr × 3 = 300 MB/hr → 5 MB/min
+        // available = 0.5 GB = 512 MB → 512 / 5 = 102 min → Building
+        let agents = vec![make_agent(200, 100.0)];
+        let (rate, eta, traj, worst) = compute_oom_trajectory(&agents, 0.5);
+        assert!(rate.is_some());
+        assert_eq!(traj, OomTrajectory::Building);
+        assert!(eta.is_some());
+        assert_eq!(worst, Some(200));
+    }
+
+    #[test]
+    fn oom_trajectory_soon() {
+        // aggregate = 200 MB/hr × 3 = 600 MB/hr → 10 MB/min
+        // available = 0.2 GB = 204.8 MB → 204.8 / 10 = 20 min → Soon
+        let agents = vec![make_agent(300, 200.0)];
+        let (_, eta, traj, _) = compute_oom_trajectory(&agents, 0.2);
+        assert_eq!(traj, OomTrajectory::Soon);
+        assert!(eta.map(|t| t <= 30).unwrap_or(false));
+    }
+
+    #[test]
+    fn oom_trajectory_imminent() {
+        // aggregate = 1000 MB/hr × 3 = 3000 MB/hr → 50 MB/min
+        // available = 0.4 GB = 409.6 MB → 409.6 / 50 = 8 min → Imminent
+        let agents = vec![
+            make_agent(400, 600.0),
+            make_agent(401, 400.0),
+        ];
+        let (rate, eta, traj, worst) = compute_oom_trajectory(&agents, 0.4);
+        assert_eq!(traj, OomTrajectory::Imminent);
+        assert!(rate.unwrap() > 900.0);
+        assert!(eta.map(|t| t <= 10).unwrap_or(false));
+        // PID 400 has the higher rate.
+        assert_eq!(worst, Some(400));
+    }
+
+    #[test]
+    fn oom_trajectory_worst_pid_is_largest_leaker() {
+        let agents = vec![
+            make_agent(10, 50.0),
+            make_agent(11, 300.0),
+            make_agent(12, 100.0),
+        ];
+        let (_, _, _, worst) = compute_oom_trajectory(&agents, 0.3);
+        assert_eq!(worst, Some(11));
+    }
+
+    // ── Tests: classify_disk_runaway_source ──────────────────────────────
+
+    #[test]
+    fn disk_runaway_tmp_task_output() {
+        // High fill rate + substantial tasks/ dir → TmpTaskOutput
+        let src = classify_disk_runaway_source(2.0, 0.1, 0.1, 0.39);
+        assert_eq!(src, DiskRunawaySource::TmpTaskOutput);
+    }
+
+    #[test]
+    fn disk_runaway_debug_log_loop() {
+        // debug/ dominates ~/.claude/ total at >40%, no extreme fill rate
+        let src = classify_disk_runaway_source(0.0, 5.0, 3.0, 0.001);
+        assert_eq!(src, DiskRunawaySource::DebugLogLoop);
+    }
+
+    #[test]
+    fn disk_runaway_session_files() {
+        // projects/ is large but debug/ share is low
+        let src = classify_disk_runaway_source(0.0, 0.3, 4.0, 0.001);
+        assert_eq!(src, DiskRunawaySource::SessionFiles);
+    }
+
+    #[test]
+    fn disk_runaway_unknown_when_all_small() {
+        let src = classify_disk_runaway_source(0.0, 0.05, 0.05, 0.001);
+        assert_eq!(src, DiskRunawaySource::Unknown);
+    }
+
+    #[test]
+    fn disk_runaway_tmp_wins_over_debug_when_fill_rate_high() {
+        // Even if debug/ share is >40%, the fill rate + tasks/ check fires first.
+        let src = classify_disk_runaway_source(1.0, 5.0, 3.0, 0.1);
+        assert_eq!(src, DiskRunawaySource::TmpTaskOutput);
     }
 }
