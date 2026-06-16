@@ -4,6 +4,7 @@ use crate::types::{
     HwSnapshot, ImpactLevel, OomTrajectory, ProcessBlame, ProcessGroup, ProcessInfo, RamPressure,
     SystemProfile, TrendDirection, Urgency, WorkloadAdvice, WorkloadAdviceRequest, WorkloadKind,
     WorkloadRecommendation, WorkloadRisk,
+    CLAUDE_COST_PER_1K_USD, RESTART_TIME_MIN, RESTART_TOKEN_OVERHEAD, TOKEN_BURN_RATE_PER_MIN,
 };
 
 // ── Headroom Computation ──────────────────────────────────────────────────────
@@ -357,6 +358,32 @@ pub fn advise_workload(
         _ => 0.84,
     };
 
+    // Economic risk: tokens + cost that would be wasted if the current trajectory
+    // leads to session crashes. Only meaningful when we're actually blocking something.
+    let active_sessions = blame.claude_agents.len() as u64;
+    let blocked = requested.saturating_sub(final_safe_parallelism.unwrap_or(requested)) as u64;
+    let (tokens_at_risk, cost_at_risk_usd, recovery_overhead_min) = {
+        let tok: u64 = match &oom_trajectory {
+            OomTrajectory::Imminent | OomTrajectory::Soon => {
+                let window = hw.oom_time_to_impact_min.unwrap_or(30);
+                active_sessions * window * TOKEN_BURN_RATE_PER_MIN
+                    + active_sessions * RESTART_TOKEN_OVERHEAD
+            }
+            OomTrajectory::Building if blocked > 0 => blocked * RESTART_TOKEN_OVERHEAD / 2,
+            _ if blocked > 0 && recommendation != WorkloadRecommendation::Proceed => {
+                blocked * RESTART_TOKEN_OVERHEAD / 4
+            }
+            _ => 0,
+        };
+        if tok > 0 {
+            let cost = tok as f64 * CLAUDE_COST_PER_1K_USD / 1000.0;
+            let recovery = active_sessions.max(blocked) * RESTART_TIME_MIN;
+            (Some(tok), Some(cost), Some(recovery))
+        } else {
+            (None, None, None)
+        }
+    };
+
     WorkloadAdvice {
         kind: req.kind.clone(),
         recommendation,
@@ -369,6 +396,9 @@ pub fn advise_workload(
         aggregate_agent_leak_rate_mb_per_hr: hw.aggregate_agent_leak_rate_mb_per_hr,
         time_to_oom_min: hw.oom_time_to_impact_min,
         oom_trajectory,
+        tokens_at_risk,
+        cost_at_risk_usd,
+        recovery_overhead_min,
     }
 }
 

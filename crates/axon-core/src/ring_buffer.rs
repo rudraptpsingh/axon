@@ -214,6 +214,18 @@ impl SnapshotRing {
                 .unwrap_or(0),
             agent_critical_ticks,
             crash_count: crash_count_total,
+            crash_rate_per_hour: {
+                let hours = entries.len() as f32 / 1800.0;
+                if hours > 0.01 { Some(crash_count_total as f32 / hours) } else { None }
+            },
+            time_in_critical_state_pct: if !entries.is_empty() {
+                Some(agent_critical_ticks as f32 / entries.len() as f32 * 100.0)
+            } else {
+                None
+            },
+            oom_warning_events: 0, // ring doesn't track alerts; caller fills from DB
+            estimated_tokens_saved: None,
+            estimated_cost_saved_usd: None,
         })
     }
 

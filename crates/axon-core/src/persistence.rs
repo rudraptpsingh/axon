@@ -373,6 +373,11 @@ pub fn query_session_health(db: &DbHandle, since: DateTime<Utc>) -> Result<Sessi
             peak_ai_agent_count: 0,
             agent_critical_ticks: 0,
             crash_count: 0,
+            crash_rate_per_hour: None,
+            time_in_critical_state_pct: None,
+            oom_warning_events: alert_count,
+            estimated_tokens_saved: None,
+            estimated_cost_saved_usd: None,
         });
     }
 
@@ -478,6 +483,22 @@ pub fn query_session_health(db: &DbHandle, since: DateTime<Utc>) -> Result<Sessi
         peak_ai_agent_count,
         agent_critical_ticks: 0,
         crash_count: 0,
+        crash_rate_per_hour: None,
+        time_in_critical_state_pct: None,
+        oom_warning_events: alert_count,
+        estimated_tokens_saved: if alert_count > 0 {
+            let prevented = alert_count as u64 * 65 / 100;
+            Some(prevented * crate::types::RESTART_TOKEN_OVERHEAD)
+        } else {
+            None
+        },
+        estimated_cost_saved_usd: if alert_count > 0 {
+            let prevented = alert_count as u64 * 65 / 100;
+            let tokens = prevented * crate::types::RESTART_TOKEN_OVERHEAD;
+            Some(tokens as f64 * crate::types::CLAUDE_COST_PER_1K_USD / 1000.0)
+        } else {
+            None
+        },
     })
 }
 

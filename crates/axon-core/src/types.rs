@@ -152,6 +152,16 @@ pub enum WorkloadRisk {
     Critical,
 }
 
+/// Average tokens consumed per minute per active Claude Code session.
+/// Assumes ~3 tool calls/min × ~150 tokens each (input + output combined).
+pub const TOKEN_BURN_RATE_PER_MIN: u64 = 500;
+/// Blended input+output cost per 1,000 tokens in USD (Claude Sonnet 4, June 2026).
+pub const CLAUDE_COST_PER_1K_USD: f64 = 0.009;
+/// In-flight context tokens lost per session crash (re-read overhead + work that must be re-done).
+pub const RESTART_TOKEN_OVERHEAD: u64 = 50_000;
+/// Engineering minutes to recover from one crashed agent session (context re-read + replan).
+pub const RESTART_TIME_MIN: u64 = 10;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkloadAdviceRequest {
     pub kind: WorkloadKind,
@@ -186,6 +196,16 @@ pub struct WorkloadAdvice {
     /// OOM trajectory classification. Safe = no action; Imminent = act now.
     #[serde(default)]
     pub oom_trajectory: OomTrajectory,
+    /// Tokens that would be wasted if the current trajectory leads to session crashes.
+    /// active_sessions × time_to_oom_min × 500 tok/min + restart overhead per session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tokens_at_risk: Option<u64>,
+    /// USD cost of tokens_at_risk at blended Claude Sonnet pricing ($9/M).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_at_risk_usd: Option<f64>,
+    /// Engineering minutes lost to session restart + context re-read if crashes occur.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery_overhead_min: Option<u64>,
 }
 
 // ── Agent Runtime Health ────────────────────────────────────────────────────
@@ -275,6 +295,16 @@ pub struct AgentRuntimeHealth {
     /// rss_growth_rate_mb_per_hr of the worst-leaking session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worst_leaking_rate_mb_per_hr: Option<f64>,
+    /// Probability (0–100%) that at least one active session crashes in the next hour
+    /// without intervention. Imminent→90, Soon→55, Building→15, Safe (with sessions)→3.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_failure_risk_pct: Option<f32>,
+    /// Tokens at risk across all active sessions at the current leak trajectory.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tokens_at_risk: Option<u64>,
+    /// USD cost of the tokens_at_risk estimate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_at_risk_usd: Option<f64>,
 }
 
 // ── Trend Direction ──────────────────────────────────────────────────────────
@@ -846,6 +876,22 @@ pub struct SessionHealth {
     /// Normal: 0. Non-zero means at least one session was killed (OOM, SIGKILL, segfault).
     #[serde(default)]
     pub crash_count: u32,
+    /// Crashes per hour in this window. 0.0 is healthy; >1.0/hr is systemic.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub crash_rate_per_hour: Option<f32>,
+    /// Percentage of 2-second ticks where at least one agent was in a critical state.
+    /// Proxy for "what fraction of your agent compute time is at risk."
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub time_in_critical_state_pct: Option<f32>,
+    /// Alert events in this window. Each represents a potential failure axon warned about.
+    #[serde(default)]
+    pub oom_warning_events: u32,
+    /// Estimated tokens saved: oom_warning_events × P(user acted = 0.65) × 50K tokens/crash.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimated_tokens_saved: Option<u64>,
+    /// USD value of estimated_tokens_saved at blended Claude Sonnet pricing ($9/M).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimated_cost_saved_usd: Option<f64>,
 }
 
 // ── GPU Types ─────────────────────────────────────────────────────────────────

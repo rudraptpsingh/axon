@@ -165,6 +165,32 @@ pub fn scan_agent_runtime_health(hw_state: Option<&HwSnapshot>) -> AgentRuntimeH
             (None, None, OomTrajectory::Safe, None, None)
         };
 
+    // Economic signals: failure probability and cost at risk from current OOM trajectory.
+    let session_failure_risk_pct: Option<f32> = match &oom_traj {
+        OomTrajectory::Imminent => Some(90.0),
+        OomTrajectory::Soon     => Some(55.0),
+        OomTrajectory::Building => Some(15.0),
+        OomTrajectory::Safe if process_count > 0 => Some(3.0),
+        _ => None,
+    };
+    let (ar_tokens_at_risk, ar_cost_at_risk_usd) = {
+        let sessions = process_count.max(1) as u64;
+        let tok: u64 = match &oom_traj {
+            OomTrajectory::Imminent | OomTrajectory::Soon => {
+                let window = time_to_oom.unwrap_or(30);
+                sessions * window * crate::types::TOKEN_BURN_RATE_PER_MIN
+                    + sessions * crate::types::RESTART_TOKEN_OVERHEAD
+            }
+            OomTrajectory::Building => sessions * crate::types::RESTART_TOKEN_OVERHEAD / 4,
+            _ => 0,
+        };
+        if tok > 0 {
+            (Some(tok), Some(tok as f64 * crate::types::CLAUDE_COST_PER_1K_USD / 1000.0))
+        } else {
+            (None, None)
+        }
+    };
+
     AgentRuntimeHealth {
         process_count,
         stale_process_count,
@@ -191,6 +217,9 @@ pub fn scan_agent_runtime_health(hw_state: Option<&HwSnapshot>) -> AgentRuntimeH
         oom_trajectory: oom_traj,
         worst_leaking_pid: worst_pid,
         worst_leaking_rate_mb_per_hr: worst_rate,
+        session_failure_risk_pct,
+        tokens_at_risk: ar_tokens_at_risk,
+        cost_at_risk_usd: ar_cost_at_risk_usd,
     }
 }
 

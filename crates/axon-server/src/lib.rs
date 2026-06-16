@@ -419,6 +419,16 @@ fn workload_advice_narrative(advice: &WorkloadAdvice) -> String {
         }
         OomTrajectory::Safe => {}
     }
+    // Economic risk — quantifies the stake so agents can make a cost-aware decision.
+    if let (Some(tok), Some(cost)) = (advice.tokens_at_risk, advice.cost_at_risk_usd) {
+        if tok > 0 {
+            let recovery = advice.recovery_overhead_min.unwrap_or(10);
+            parts.push(format!(
+                "{} tokens at risk (${:.2} at $9/M Claude) — {} min recovery overhead if sessions crash",
+                tok, cost, recovery
+            ));
+        }
+    }
     parts.join(". ") + "."
 }
 
@@ -512,6 +522,21 @@ fn agent_runtime_health_narrative(health: &AgentRuntimeHealth) -> String {
             }
         }
         OomTrajectory::Safe => {}
+    }
+    // Economic risk: failure probability and cost at stake.
+    if let Some(risk) = health.session_failure_risk_pct {
+        if risk >= 15.0 {
+            let cost_str = health.cost_at_risk_usd
+                .map(|c| format!(" — ${:.2} at risk", c))
+                .unwrap_or_default();
+            let tok_str = health.tokens_at_risk
+                .map(|t| format!(", {} tokens", t))
+                .unwrap_or_default();
+            parts.push(format!(
+                "{:.0}% session failure risk in next hour{}{}",
+                risk, cost_str, tok_str
+            ));
+        }
     }
     parts.join(". ") + "."
 }
@@ -1508,8 +1533,27 @@ fn session_health_narrative(health: &SessionHealth) -> String {
     if health.crash_count > 0 {
         parts.push(format!("{} agent crash(es) detected", health.crash_count));
     }
+    if let Some(rate) = health.crash_rate_per_hour {
+        if rate > 0.0 {
+            parts.push(format!("crash rate {:.1}/hr", rate));
+        }
+    }
+    if let Some(pct) = health.time_in_critical_state_pct {
+        if pct > 1.0 {
+            parts.push(format!("{:.1}% of ticks in critical agent state", pct));
+        }
+    }
     if let Some(t) = health.peak_temp_celsius {
         parts.push(format!("peak temp {:.0}C", t));
+    }
+    // Economic summary — only shown when there's something to report.
+    if let (Some(cost), Some(tokens)) = (health.estimated_cost_saved_usd, health.estimated_tokens_saved) {
+        if cost > 0.001 {
+            parts.push(format!(
+                "axon warnings on {} events — est. ${:.2} and {} tokens saved from averted crashes",
+                health.oom_warning_events, cost, tokens
+            ));
+        }
     }
 
     parts.join(". ") + "."
