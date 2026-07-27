@@ -10,6 +10,7 @@ pub mod impact;
 pub mod persistence;
 pub mod probe;
 pub mod ring_buffer;
+pub mod savings;
 pub mod temperature;
 pub mod thresholds;
 pub mod types;

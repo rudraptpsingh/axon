@@ -43,6 +43,32 @@ pub struct SessionHealthParams {
 }
 
 #[derive(Debug, ::serde::Deserialize, schemars::JsonSchema)]
+pub struct TokenSavingsParams {
+    #[schemars(
+        description = "Time window: last_24h, last_7d, last_30d, last_90d (default: last_7d). Buckets are daily for <=30d windows and weekly beyond."
+    )]
+    pub time_range: Option<String>,
+}
+
+#[derive(Debug, ::serde::Deserialize, schemars::JsonSchema)]
+pub struct RecordSavingsParams {
+    #[schemars(
+        description = "Savings category: deferred_heavy_task, prevented_oom_crash, context_reset, context_compaction, stopped_polling_loop, killed_runaway_process, thermal_defer, agent_cleanup, disk_cleanup."
+    )]
+    pub category: String,
+    #[schemars(
+        description = "What you observed and the action you took (e.g. 'RAM was critical so I deferred the cargo build until it recovered')."
+    )]
+    pub detail: String,
+    #[schemars(
+        description = "Optional measured tokens saved. Omit to use axon's conservative catalog estimate for the category."
+    )]
+    pub tokens_saved: Option<u64>,
+    #[schemars(description = "Optional session id to attribute this saving to.")]
+    pub session_id: Option<String>,
+}
+
+#[derive(Debug, ::serde::Deserialize, schemars::JsonSchema)]
 pub struct WorkloadAdviceParams {
     #[schemars(
         description = "Workload kind: general, build, test, browser_test, docker_build, code_analysis, data_processing, subagents, local_inference, gpu_compute. Default: general."
@@ -298,6 +324,62 @@ impl AxonServer {
         serde_json::to_string(&response)
             .unwrap_or_else(|e| format!("{{\"ok\":false,\"error\":\"{}\"}}", e))
     }
+
+    #[tool(
+        description = "Token & cost savings axon has produced. Returns total estimated tokens and dollars saved, a per-category breakdown, a daily/weekly rollup for trends, and the most recent referenced events (what axon caught, which signal/issue, and the action). Use to show the user their savings over a day/week/month. Accepts optional time_range (default: last_7d)."
+    )]
+    async fn token_savings(&self, params: Parameters<TokenSavingsParams>) -> String {
+        let range_str = params.0.time_range.as_deref().unwrap_or("last_7d");
+        let (range_secs, bucket_secs) = match parse_savings_range(range_str) {
+            Some(v) => v,
+            None => {
+                return format!(
+                    "{{\"ok\":false,\"error\":\"Invalid time_range '{}'. Use: last_24h, last_7d, last_30d, last_90d\"}}",
+                    range_str
+                );
+            }
+        };
+        match persistence::query_savings_report(&self.db, range_str, range_secs, bucket_secs, 25) {
+            Ok(report) => {
+                let narrative = savings_report_narrative(&report);
+                let response = McpResponse::success(report, narrative);
+                serde_json::to_string(&response)
+                    .unwrap_or_else(|e| format!("{{\"ok\":false,\"error\":\"{}\"}}", e))
+            }
+            Err(e) => format!("{{\"ok\":false,\"error\":\"{}\"}}", e),
+        }
+    }
+
+    #[tool(
+        description = "Record a confirmed token/cost saving after you acted on an axon recommendation (e.g. deferred a build, ran /clear or /compact, killed a runaway process). axon logs it to the savings ledger with a conservative token estimate (or your measured figure) so the user can see the cumulative benefit. Call this whenever an axon signal changed what you did."
+    )]
+    async fn record_savings(&self, params: Parameters<RecordSavingsParams>) -> String {
+        let category = match axon_core::savings::SavingsCategory::from_str(&params.0.category) {
+            Some(c) => c,
+            None => {
+                return format!(
+                    "{{\"ok\":false,\"error\":\"Unknown category '{}'. Use one of: deferred_heavy_task, prevented_oom_crash, context_reset, context_compaction, stopped_polling_loop, killed_runaway_process, thermal_defer, agent_cleanup, disk_cleanup\"}}",
+                    params.0.category
+                );
+            }
+        };
+        let ev = axon_core::savings::SavingsEvent::new(
+            category,
+            axon_core::savings::SavingsSource::AgentAction,
+            "agent_confirmed",
+            params.0.detail.clone(),
+            params.0.tokens_saved,
+        )
+        .with_session(params.0.session_id.clone());
+        persistence::insert_savings_event(&self.db, &ev);
+        let narrative = format!(
+            "Recorded: {} -- ~{} tokens (~${:.4}) saved [{}].",
+            ev.title, ev.tokens_saved, ev.usd_saved, ev.category
+        );
+        let response = McpResponse::success(ev, narrative);
+        serde_json::to_string(&response)
+            .unwrap_or_else(|e| format!("{{\"ok\":false,\"error\":\"{}\"}}", e))
+    }
 }
 
 #[tool_handler(router = self.tool_router)]
@@ -318,7 +400,11 @@ impl ServerHandler for AxonServer {
                    to check GPU utilization and VRAM pressure. Also check recovery_count for GPU driver crashes. \
                 8. Call workload_advice before starting builds, tests, Docker work, subagents, or GPU jobs \
                    when you need an explicit proceed/reduce/defer decision. \
-                9. Call agent_runtime_health when agent hosts or MCP tools may have accumulated across sessions.",
+                9. Call agent_runtime_health when agent hosts or MCP tools may have accumulated across sessions. \
+                10. Whenever an axon signal changes what you do (you defer a build, run /clear or /compact, \
+                   kill a runaway process), call record_savings so the prevented token spend is logged. \
+                11. Call token_savings to show the user how many tokens and dollars axon has saved them \
+                   over a day/week/month, with the referenced events behind each number.",
         )
     }
 }
@@ -351,6 +437,68 @@ pub fn workload_advice_narrative_pub(advice: &WorkloadAdvice) -> String {
 
 pub fn agent_runtime_health_narrative_pub(health: &AgentRuntimeHealth) -> String {
     agent_runtime_health_narrative(health)
+}
+
+pub fn savings_report_narrative_pub(report: &axon_core::savings::SavingsReport) -> String {
+    savings_report_narrative(report)
+}
+
+/// Parse a savings time range into (range_secs, bucket_secs). Buckets are daily for
+/// windows up to 30 days and weekly beyond, so trends stay readable.
+pub fn parse_savings_range(s: &str) -> Option<(i64, i64)> {
+    const DAY: i64 = 86_400;
+    match s {
+        "last_24h" | "today" | "daily" => Some((DAY, DAY)),
+        "last_7d" | "week" | "weekly" => Some((7 * DAY, DAY)),
+        "last_30d" | "month" | "monthly" => Some((30 * DAY, DAY)),
+        "last_90d" | "quarter" => Some((90 * DAY, 7 * DAY)),
+        _ => None,
+    }
+}
+
+fn savings_report_narrative(report: &axon_core::savings::SavingsReport) -> String {
+    if report.total_events == 0 {
+        return format!(
+            "No axon savings recorded yet for {}. As axon runs alongside your sessions and \
+             catches actionable conditions (memory pressure before an OOM, oversized sessions, \
+             polling loops), each prevention will appear here with an estimated token/cost saving.",
+            report.range_label
+        );
+    }
+    let mut parts = vec![format!(
+        "axon saved ~{} tokens (~${:.2}) across {} event(s) over {}",
+        fmt_tokens(report.total_tokens_saved),
+        report.total_usd_saved,
+        report.total_events,
+        report.range_label
+    )];
+    parts.push(format!(
+        "{} detected automatically, {} confirmed by an agent",
+        report.detected_events, report.confirmed_events
+    ));
+    if let Some(top) = report.by_category.first() {
+        parts.push(format!(
+            "top category: {} ({} event(s), ~{} tokens)",
+            top.category,
+            top.event_count,
+            fmt_tokens(top.tokens_saved)
+        ));
+    }
+    parts.push(format!(
+        "estimate uses ${:.2}/1M tokens; figures are conservative estimates, not measurements",
+        report.price_per_mtok_usd
+    ));
+    parts.join(". ") + "."
+}
+
+fn fmt_tokens(n: u64) -> String {
+    if n >= 1_000_000 {
+        format!("{:.1}M", n as f64 / 1_000_000.0)
+    } else if n >= 1_000 {
+        format!("{:.1}K", n as f64 / 1_000.0)
+    } else {
+        n.to_string()
+    }
 }
 
 fn parse_workload_kind(kind: &str) -> WorkloadKind {

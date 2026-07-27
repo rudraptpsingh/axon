@@ -49,6 +49,39 @@ struct ServeArgs {
     dashboard_port: u16,
 }
 
+#[derive(Args, Debug, Clone)]
+struct SavingsArgs {
+    #[command(subcommand)]
+    action: Option<SavingsAction>,
+    /// Time range: last_24h, last_7d, last_30d, last_90d
+    #[arg(long, default_value = "last_7d")]
+    range: String,
+    /// Emit the raw JSON report instead of the human summary
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Subcommand, Debug, Clone)]
+enum SavingsAction {
+    /// Record a confirmed saving after acting on an axon recommendation
+    Record {
+        /// Category: deferred_heavy_task | prevented_oom_crash | context_reset |
+        /// context_compaction | stopped_polling_loop | killed_runaway_process |
+        /// thermal_defer | agent_cleanup | disk_cleanup
+        #[arg(long)]
+        category: String,
+        /// What you observed and the action you took
+        #[arg(long)]
+        detail: String,
+        /// Measured tokens saved (omit to use axon's conservative estimate)
+        #[arg(long)]
+        tokens: Option<u64>,
+        /// Optional session id to attribute the saving to
+        #[arg(long)]
+        session: Option<String>,
+    },
+}
+
 #[derive(Subcommand)]
 enum Commands {
     /// Start the MCP stdio server (used in claude_desktop_config.json)
@@ -62,20 +95,23 @@ enum Commands {
 
     /// Call an MCP tool directly and print the JSON response (e.g. process_blame, hw_snapshot)
     Query {
-        /// Tool name: process_blame | hw_snapshot | workload_advice | agent_runtime_health | battery_status | system_profile | session_health | gpu_snapshot | hardware_trend
+        /// Tool name: process_blame | hw_snapshot | workload_advice | agent_runtime_health | battery_status | system_profile | session_health | gpu_snapshot | hardware_trend | token_savings
         #[arg(value_name = "TOOL")]
         tool: String,
     },
 
     /// Configure AI agents to use axon (all detected agents if no target given)
     Setup {
-        /// Target client: claude-desktop | claude-code | cursor | vscode (omit to configure all)
+        /// Target client: claude-desktop | claude-code | claude-code-skill | cursor | vscode (omit to configure all)
         #[arg(value_name = "TARGET")]
         target: Option<String>,
         /// Show which agents currently have axon configured
         #[arg(long)]
         list: bool,
     },
+
+    /// Show token & cost savings axon has produced (or record one with `savings record`)
+    Savings(SavingsArgs),
 
     /// Remove axon from AI agent configs and delete local data (reverse of setup)
     Uninstall {
@@ -114,6 +150,7 @@ async fn main() -> Result<()> {
             }
         }
         Some(Commands::Uninstall { target }) => run_uninstall(target.as_deref()),
+        Some(Commands::Savings(args)) => run_savings(args).await,
     }
 }
 
@@ -427,8 +464,21 @@ async fn run_query(tool: &str) -> Result<()> {
                 let response = axon_core::types::McpResponse::success(trend, narrative);
                 serde_json::to_string_pretty(&response)?
             }
+            "token_savings" => {
+                drop(guard); // release lock before DB query
+                let db_path = axon_core::persistence::default_db_path()?;
+                let db = axon_core::persistence::open(db_path)?;
+                let (range_secs, bucket_secs) = axon_server::parse_savings_range("last_7d")
+                    .expect("default range is valid");
+                let report = axon_core::persistence::query_savings_report(
+                    &db, "last_7d", range_secs, bucket_secs, 25,
+                )?;
+                let narrative = axon_server::savings_report_narrative_pub(&report);
+                let response = axon_core::types::McpResponse::success(report, narrative);
+                serde_json::to_string_pretty(&response)?
+            }
             other => anyhow::bail!(
-                "Unknown tool '{}'. Supported: process_blame, hw_snapshot, workload_advice, agent_runtime_health, battery_status, system_profile, session_health, gpu_snapshot, hardware_trend",
+                "Unknown tool '{}'. Supported: process_blame, hw_snapshot, workload_advice, agent_runtime_health, battery_status, system_profile, session_health, gpu_snapshot, hardware_trend, token_savings",
                 other
             ),
         }
@@ -438,14 +488,181 @@ async fn run_query(tool: &str) -> Result<()> {
     Ok(())
 }
 
+// ── Savings ──────────────────────────────────────────────────────────────────
+
+async fn run_savings(args: SavingsArgs) -> Result<()> {
+    match args.action {
+        Some(SavingsAction::Record {
+            category,
+            detail,
+            tokens,
+            session,
+        }) => run_savings_record(&category, &detail, tokens, session),
+        None => run_savings_report(&args.range, args.json),
+    }
+}
+
+fn run_savings_record(
+    category: &str,
+    detail: &str,
+    tokens: Option<u64>,
+    session: Option<String>,
+) -> Result<()> {
+    let cat = axon_core::savings::SavingsCategory::from_str(category).ok_or_else(|| {
+        anyhow::anyhow!(
+            "Unknown category '{}'. Use one of: deferred_heavy_task, prevented_oom_crash, \
+             context_reset, context_compaction, stopped_polling_loop, killed_runaway_process, \
+             thermal_defer, agent_cleanup, disk_cleanup",
+            category
+        )
+    })?;
+    let db_path = persistence::default_db_path()?;
+    let db = persistence::open(db_path)?;
+    let ev = axon_core::savings::SavingsEvent::new(
+        cat,
+        axon_core::savings::SavingsSource::AgentAction,
+        "cli",
+        detail.to_string(),
+        tokens,
+    )
+    .with_session(session);
+    persistence::insert_savings_event(&db, &ev);
+    println!(
+        "[ok] Recorded {} -- ~{} tokens (~${:.4}) saved.",
+        ev.category, ev.tokens_saved, ev.usd_saved
+    );
+    println!("     {}", ev.title);
+    Ok(())
+}
+
+fn run_savings_report(range: &str, json: bool) -> Result<()> {
+    let (range_secs, bucket_secs) = axon_server::parse_savings_range(range).ok_or_else(|| {
+        anyhow::anyhow!(
+            "Invalid range '{}'. Use: last_24h, last_7d, last_30d, last_90d",
+            range
+        )
+    })?;
+    let db_path = persistence::default_db_path()?;
+    let db = persistence::open(db_path)?;
+    let report = persistence::query_savings_report(&db, range, range_secs, bucket_secs, 15)?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+
+    print_savings_report(&report);
+    Ok(())
+}
+
+fn fmt_tokens_cli(n: u64) -> String {
+    if n >= 1_000_000 {
+        format!("{:.1}M", n as f64 / 1_000_000.0)
+    } else if n >= 1_000 {
+        format!("{:.1}K", n as f64 / 1_000.0)
+    } else {
+        n.to_string()
+    }
+}
+
+fn print_savings_report(report: &axon_core::savings::SavingsReport) {
+    println!();
+    println!("axon -- token & cost savings ({})", report.range_label);
+    println!("=======================================================");
+    if report.total_events == 0 {
+        println!();
+        println!("No savings recorded yet in this window.");
+        println!(
+            "axon logs a saving each time it catches an actionable condition (memory pressure"
+        );
+        println!(
+            "before an OOM, an oversized session, a polling loop) and each time an agent confirms"
+        );
+        println!(
+            "it acted on a recommendation. Run some sessions with axon attached and check back."
+        );
+        println!();
+        return;
+    }
+
+    println!();
+    println!(
+        "Total saved:   ~{} tokens   (~${:.2})   across {} event(s)",
+        fmt_tokens_cli(report.total_tokens_saved),
+        report.total_usd_saved,
+        report.total_events
+    );
+    println!(
+        "Attribution:   {} detected by axon, {} confirmed by an agent",
+        report.detected_events, report.confirmed_events
+    );
+    println!(
+        "Price basis:   ${:.2} / 1M tokens (conservative estimates, not measurements)",
+        report.price_per_mtok_usd
+    );
+
+    if !report.buckets.is_empty() {
+        println!();
+        println!("By period:");
+        for b in &report.buckets {
+            println!(
+                "  {:<16}  {:>3} event(s)   ~{:>7} tokens   ~${:.2}",
+                b.label,
+                b.event_count,
+                fmt_tokens_cli(b.tokens_saved),
+                b.usd_saved
+            );
+        }
+    }
+
+    if !report.by_category.is_empty() {
+        println!();
+        println!("By category:");
+        for c in &report.by_category {
+            println!(
+                "  {:<24}  {:>3}   ~{:>7} tokens   ~${:.2}",
+                c.category,
+                c.event_count,
+                fmt_tokens_cli(c.tokens_saved),
+                c.usd_saved
+            );
+        }
+    }
+
+    if !report.recent_events.is_empty() {
+        println!();
+        println!("Recent events:");
+        for e in &report.recent_events {
+            let issue = e
+                .issue_ref
+                .as_deref()
+                .map(|r| format!(" ({})", r))
+                .unwrap_or_default();
+            println!(
+                "  [{}] {}{}   ~{} tok  ~${:.4}  [{}]",
+                e.ts.format("%m-%d %H:%M"),
+                e.category,
+                issue,
+                fmt_tokens_cli(e.tokens_saved),
+                e.usd_saved,
+                e.source
+            );
+            println!("      {}", e.title);
+            println!("      signal: {} | action: {}", e.signal, e.action);
+        }
+    }
+    println!();
+}
+
 fn run_setup(target: Option<&str>) -> Result<()> {
     match target {
         Some("claude-desktop") => setup_claude_desktop(),
         Some("claude-code") | Some("claude-cli") => setup_claude_code(),
+        Some("claude-code-skill") | Some("skill") => setup_claude_code_skill(),
         Some("cursor") => setup_cursor(),
         Some("vscode") | Some("vs-code") => setup_vscode(),
         Some(other) => anyhow::bail!(
-            "Unknown target '{}'. Supported: claude-desktop, claude-code, cursor, vscode",
+            "Unknown target '{}'. Supported: claude-desktop, claude-code, claude-code-skill, cursor, vscode",
             other
         ),
         None => setup_all(),
@@ -683,6 +900,12 @@ fn setup_all() -> Result<()> {
         Err(e) => println!("[err] Claude Code: {}", e),
     }
 
+    // Claude Code skill — install the CLI-driven skill so axon works with no MCP config.
+    match setup_claude_code_skill() {
+        Ok(()) => configured += 1,
+        Err(e) => println!("[err] Claude Code skill: {}", e),
+    }
+
     if configured == 0 && skipped == 0 {
         println!(
             "[info] No supported agents detected (Claude Desktop, Cursor, VS Code, Claude Code)."
@@ -751,6 +974,123 @@ fn setup_claude_code() -> Result<()> {
         println!("[ok] Already configured at {}", path.display());
     }
     Ok(())
+}
+
+/// Install the axon skill for Claude Code: writes ~/.claude/skills/axon/SKILL.md.
+/// The skill drives axon entirely through the `axon` CLI, so no MCP configuration is
+/// required -- dropping the skill in is enough for Claude to start using axon and
+/// tracking the tokens it saves.
+fn setup_claude_code_skill() -> Result<()> {
+    let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Cannot find home directory"))?;
+    let skill_dir = home.join(".claude/skills/axon");
+    std::fs::create_dir_all(&skill_dir)?;
+    let skill_path = skill_dir.join("SKILL.md");
+    let bin = preferred_bin_path();
+    let content = axon_skill_md(&bin.to_string_lossy());
+    std::fs::write(&skill_path, content)?;
+    println!("[ok] Installed axon skill at {}", skill_path.display());
+    println!("     Binary: {}", bin.display());
+    println!("     The skill uses the axon CLI directly -- no MCP config needed.");
+    println!("     Restart Claude Code (or start a new session) to pick up the skill.");
+    Ok(())
+}
+
+/// The SKILL.md content, parameterised with the resolved axon binary path so the skill
+/// works even when `axon` is not on the agent's PATH.
+fn axon_skill_md(bin: &str) -> String {
+    format!(
+        r#"---
+name: axon
+description: >-
+  Local hardware and session intelligence for this machine. Use this skill during any
+  coding session to avoid wasting tokens on work that will fail or stall: before starting
+  heavy tasks (builds, tests, large edits, subagent fan-out), when the session feels slow
+  or laggy, when memory/CPU/thermal pressure is suspected, or when the user asks how much
+  axon has saved them. Runs fully on-device -- no data leaves the machine.
+---
+
+# axon -- hardware-aware, token-saving assistant
+
+axon is a zero-cloud tool that tells you what the local machine is doing right now and
+logs the tokens/cost it saves you. Drive it through the `axon` CLI:
+
+- Binary: `{bin}` (use this absolute path; `axon` may not be on your PATH)
+
+Every command prints JSON (for `query`) or a readable report (`savings`). All commands are
+read-only except `savings record`, which appends one row to a local ledger.
+
+## When to use axon
+
+1. **Before heavy work** (a build, test run, Docker build, large refactor, or spawning
+   subagents), check headroom:
+
+   ```
+   {bin} query hw_snapshot
+   {bin} query workload_advice
+   ```
+
+   Read the `headroom` field and the workload `recommendation`. If headroom is
+   `insufficient` or the recommendation is `defer`/`cooldown`/`reduce_parallelism`, tell
+   the user and hold off (or reduce parallelism) instead of launching work that will OOM,
+   thrash, or fail and have to be retried.
+
+2. **When the session is slow, laggy, or a build failed unexpectedly**, find the culprit:
+
+   ```
+   {bin} query process_blame
+   ```
+
+   Act on the narrative -- e.g. a `gc_pressure=critical` claude process means you should
+   suggest `/clear`; an oversized session file means suggest `/compact`; a runaway or
+   spin-looping process should be restarted.
+
+3. **When the user asks "how much have you saved me?"** (today / this week / this month),
+   show the savings report:
+
+   ```
+   {bin} savings --range last_24h    # today
+   {bin} savings --range last_7d     # this week
+   {bin} savings --range last_30d    # this month
+   ```
+
+   Summarise the total tokens and dollars, the trend by day, and a couple of the referenced
+   events so the number is backed by concrete moments.
+
+## Logging a saving (important)
+
+Whenever an axon signal actually changes what you do, record it so the user can see the
+cumulative benefit. Pick the closest category and describe what happened:
+
+```
+{bin} savings record --category deferred_heavy_task \
+    --detail "hw_snapshot showed headroom=insufficient (RAM 94%), so I deferred the cargo build until it recovered"
+```
+
+Categories:
+
+- `deferred_heavy_task`   -- you deferred/reduced a build/test/heavy task under pressure
+- `prevented_oom_crash`   -- you paused/freed memory before an OOM kill
+- `context_reset`         -- you ran `/clear` on a GC-thrashing session
+- `context_compaction`    -- you ran `/compact` on an oversized session
+- `stopped_polling_loop`  -- you stopped a process re-reading a large file
+- `killed_runaway_process`-- you restarted a runaway/spin-looping process
+- `thermal_defer`         -- you paused work while the CPU was throttled
+- `agent_cleanup`         -- you cleaned up stale/orphaned agent processes
+- `disk_cleanup`          -- you cleared runaway files before the disk filled
+
+axon fills in a conservative token estimate for the category automatically. Only pass
+`--tokens N` if you have a measured figure. Do not fabricate savings -- record one only
+when an axon signal genuinely changed your action.
+
+## Notes
+
+- axon also records preventions it detects on its own (memory/thermal/agent conditions),
+  so the ledger fills in even between your explicit `record` calls.
+- Everything is local. The database lives under the OS data dir (`hardware.db`); nothing is
+  ever sent off-device.
+"#,
+        bin = bin
+    )
 }
 
 fn claude_json_path() -> Option<std::path::PathBuf> {
@@ -1012,6 +1352,17 @@ fn uninstall_all() -> Result<()> {
     if uninstall_claude_code_inner() {
         println!("[ok] Removed axon from Claude Code.");
         removed += 1;
+    }
+
+    // Claude Code skill
+    let skill_dir = home.join(".claude/skills/axon");
+    if skill_dir.exists() {
+        if let Err(e) = std::fs::remove_dir_all(&skill_dir) {
+            println!("[err] Could not remove axon skill: {}", e);
+        } else {
+            println!("[ok] Removed axon skill from {}", skill_dir.display());
+            removed += 1;
+        }
     }
 
     if removed == 0 {

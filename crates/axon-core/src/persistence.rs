@@ -5,6 +5,10 @@ use anyhow::Result;
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection};
 
+use crate::savings::{
+    tokens_to_usd, SavingsCategory, SavingsCategoryTotal, SavingsEvent, SavingsReport,
+    SavingsRollupBucket, SavingsSource,
+};
 use crate::types::*;
 
 pub type DbHandle = Arc<Mutex<Connection>>;
@@ -67,7 +71,23 @@ fn init_schema(conn: &Connection) -> Result<()> {
         );
         CREATE INDEX IF NOT EXISTS idx_alerts_ts ON alerts(ts);
         CREATE INDEX IF NOT EXISTS idx_alerts_severity ON alerts(severity);
-        CREATE INDEX IF NOT EXISTS idx_alerts_type ON alerts(alert_type);",
+        CREATE INDEX IF NOT EXISTS idx_alerts_type ON alerts(alert_type);
+        CREATE TABLE IF NOT EXISTS savings_events (
+            id INTEGER PRIMARY KEY,
+            ts TEXT NOT NULL,
+            category TEXT NOT NULL,
+            source TEXT NOT NULL,
+            signal TEXT NOT NULL,
+            issue_ref TEXT,
+            title TEXT NOT NULL,
+            detail TEXT NOT NULL,
+            action TEXT NOT NULL,
+            tokens_saved INTEGER NOT NULL,
+            usd_saved REAL NOT NULL,
+            session_id TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_savings_ts ON savings_events(ts);
+        CREATE INDEX IF NOT EXISTS idx_savings_category ON savings_events(category);",
     )?;
     Ok(())
 }
@@ -119,6 +139,12 @@ fn prune_old_rows(conn: &Connection) -> Result<()> {
     let cutoff_str = cutoff.to_rfc3339();
     conn.execute("DELETE FROM snapshots WHERE ts < ?1", params![&cutoff_str])?;
     conn.execute("DELETE FROM alerts WHERE ts < ?1", params![&cutoff_str])?;
+    // Savings events are retained far longer so daily/weekly/monthly trends span a full year.
+    let savings_cutoff = (Utc::now() - chrono::Duration::days(400)).to_rfc3339();
+    let _ = conn.execute(
+        "DELETE FROM savings_events WHERE ts < ?1",
+        params![&savings_cutoff],
+    );
     Ok(())
 }
 
@@ -626,6 +652,223 @@ pub fn query_trend(db: &DbHandle, range_secs: i64, bucket_secs: i64) -> Result<T
     })
 }
 
+// ── Savings Ledger ───────────────────────────────────────────────────────────
+
+/// Persist a single savings event to the ledger.
+pub fn insert_savings_event(db: &DbHandle, ev: &SavingsEvent) {
+    let conn = match db.lock() {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!("db lock poisoned: {}", e);
+            return;
+        }
+    };
+    if let Err(e) = conn.execute(
+        "INSERT INTO savings_events
+           (ts, category, source, signal, issue_ref, title, detail, action, tokens_saved, usd_saved, session_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        params![
+            ev.ts.to_rfc3339(),
+            ev.category.as_str(),
+            ev.source.as_str(),
+            ev.signal,
+            ev.issue_ref,
+            ev.title,
+            ev.detail,
+            ev.action,
+            ev.tokens_saved as i64,
+            ev.usd_saved,
+            ev.session_id,
+        ],
+    ) {
+        tracing::warn!("failed to insert savings event: {}", e);
+    }
+}
+
+/// Count all savings events (for tests and diagnostics).
+pub fn count_savings_events(db: &DbHandle) -> Result<u64> {
+    let conn = db.lock().map_err(|e| anyhow::anyhow!("db lock: {}", e))?;
+    let n: u64 = conn.query_row("SELECT COUNT(*) FROM savings_events", [], |row| row.get(0))?;
+    Ok(n)
+}
+
+fn row_to_savings_event(row: &rusqlite::Row) -> rusqlite::Result<SavingsEvent> {
+    let ts_str: String = row.get(0)?;
+    let category_str: String = row.get(1)?;
+    let source_str: String = row.get(2)?;
+    let tokens: i64 = row.get(8)?;
+    let ts = DateTime::parse_from_rfc3339(&ts_str)
+        .map(|dt| dt.with_timezone(&Utc))
+        .unwrap_or_else(|_| Utc::now());
+    Ok(SavingsEvent {
+        ts,
+        category: SavingsCategory::from_str(&category_str)
+            .unwrap_or(SavingsCategory::DeferredHeavyTask),
+        source: SavingsSource::from_str(&source_str),
+        signal: row.get(3)?,
+        issue_ref: row.get(4)?,
+        title: row.get(5)?,
+        detail: row.get(6)?,
+        action: row.get(7)?,
+        tokens_saved: tokens.max(0) as u64,
+        usd_saved: row.get(9)?,
+        session_id: row.get(10)?,
+    })
+}
+
+/// The most recent `limit` savings events since `since`, newest first.
+pub fn query_savings_events(
+    db: &DbHandle,
+    since: DateTime<Utc>,
+    limit: u32,
+) -> Result<Vec<SavingsEvent>> {
+    let conn = db.lock().map_err(|e| anyhow::anyhow!("db lock: {}", e))?;
+    let mut stmt = conn.prepare(
+        "SELECT ts, category, source, signal, issue_ref, title, detail, action, tokens_saved, usd_saved, session_id
+         FROM savings_events WHERE ts >= ?1 ORDER BY ts DESC LIMIT ?2",
+    )?;
+    let events = stmt
+        .query_map(params![since.to_rfc3339(), limit], row_to_savings_event)?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(events)
+}
+
+/// Build a full savings report over `range_secs`, bucketed by `bucket_secs`
+/// (86400 = daily, 604800 = weekly, ~2592000 = monthly). Includes totals, a
+/// per-category breakdown, the time rollup, and the most recent `recent_limit` events.
+pub fn query_savings_report(
+    db: &DbHandle,
+    range_label: &str,
+    range_secs: i64,
+    bucket_secs: i64,
+    recent_limit: u32,
+) -> Result<SavingsReport> {
+    let since = Utc::now() - chrono::Duration::seconds(range_secs);
+    let price = crate::savings::price_per_mtok();
+
+    let (by_category, buckets, total_events, total_tokens, detected, confirmed) = {
+        let conn = db.lock().map_err(|e| anyhow::anyhow!("db lock: {}", e))?;
+        let since_str = since.to_rfc3339();
+
+        // Rows: (ts, category, source, tokens)
+        struct Row {
+            ts: DateTime<Utc>,
+            category: String,
+            source: String,
+            tokens: i64,
+        }
+        let mut stmt = conn.prepare(
+            "SELECT ts, category, source, tokens_saved FROM savings_events
+             WHERE ts >= ?1 ORDER BY ts ASC",
+        )?;
+        let rows: Vec<Row> = stmt
+            .query_map(params![since_str], |row| {
+                let ts_str: String = row.get(0)?;
+                let ts = DateTime::parse_from_rfc3339(&ts_str)
+                    .map(|dt| dt.with_timezone(&Utc))
+                    .unwrap_or_else(|_| Utc::now());
+                Ok(Row {
+                    ts,
+                    category: row.get(1)?,
+                    source: row.get(2)?,
+                    tokens: row.get(3)?,
+                })
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        // Per-category totals.
+        let mut cat_map: std::collections::HashMap<String, (u32, u64)> =
+            std::collections::HashMap::new();
+        // Time buckets aligned to the UTC epoch so day boundaries are stable.
+        let mut bucket_map: std::collections::BTreeMap<i64, (u32, u64)> =
+            std::collections::BTreeMap::new();
+        let mut total_events: u32 = 0;
+        let mut total_tokens: u64 = 0;
+        let mut detected: u32 = 0;
+        let mut confirmed: u32 = 0;
+
+        for r in &rows {
+            let tok = r.tokens.max(0) as u64;
+            total_events += 1;
+            total_tokens += tok;
+            if r.source == "agent_action" {
+                confirmed += 1;
+            } else {
+                detected += 1;
+            }
+            let entry = cat_map.entry(r.category.clone()).or_insert((0, 0));
+            entry.0 += 1;
+            entry.1 += tok;
+
+            let bucket_idx = r.ts.timestamp().div_euclid(bucket_secs);
+            let b = bucket_map.entry(bucket_idx).or_insert((0, 0));
+            b.0 += 1;
+            b.1 += tok;
+        }
+
+        let mut by_category: Vec<SavingsCategoryTotal> = cat_map
+            .into_iter()
+            .filter_map(|(k, (count, tokens))| {
+                SavingsCategory::from_str(&k).map(|category| SavingsCategoryTotal {
+                    category,
+                    event_count: count,
+                    tokens_saved: tokens,
+                    usd_saved: tokens_to_usd(tokens),
+                })
+            })
+            .collect();
+        by_category.sort_by(|a, b| b.tokens_saved.cmp(&a.tokens_saved));
+
+        let bucket_is_day = bucket_secs % 86400 == 0;
+        let buckets: Vec<SavingsRollupBucket> = bucket_map
+            .into_iter()
+            .map(|(idx, (count, tokens))| {
+                let start_ts = idx * bucket_secs;
+                let start = DateTime::from_timestamp(start_ts, 0).unwrap_or_else(Utc::now);
+                let label = if bucket_is_day {
+                    start.format("%Y-%m-%d").to_string()
+                } else {
+                    start.format("%Y-%m-%d %H:%M").to_string()
+                };
+                SavingsRollupBucket {
+                    bucket_start: start,
+                    label,
+                    event_count: count,
+                    tokens_saved: tokens,
+                    usd_saved: tokens_to_usd(tokens),
+                }
+            })
+            .collect();
+
+        (
+            by_category,
+            buckets,
+            total_events,
+            total_tokens,
+            detected,
+            confirmed,
+        )
+    };
+
+    let recent_events = query_savings_events(db, since, recent_limit)?;
+
+    Ok(SavingsReport {
+        range_label: range_label.to_string(),
+        since,
+        total_events,
+        total_tokens_saved: total_tokens,
+        total_usd_saved: tokens_to_usd(total_tokens),
+        detected_events: detected,
+        confirmed_events: confirmed,
+        price_per_mtok_usd: price,
+        by_category,
+        buckets,
+        recent_events,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -818,5 +1061,63 @@ mod tests {
         let path = default_db_path().unwrap();
         assert!(path.to_string_lossy().contains("axon"));
         assert!(path.to_string_lossy().ends_with("hardware.db"));
+    }
+
+    #[test]
+    fn test_savings_insert_count_and_report() {
+        use crate::savings::{SavingsCategory, SavingsEvent, SavingsSource};
+        std::env::set_var(crate::savings::TOKEN_PRICE_ENV, "3.0");
+        let db = test_db();
+        assert_eq!(count_savings_events(&db).unwrap(), 0);
+
+        // Two detected + one confirmed event.
+        insert_savings_event(
+            &db,
+            &SavingsEvent::new(
+                SavingsCategory::PreventedOomCrash,
+                SavingsSource::Detected,
+                "memory_pressure_critical",
+                "RAM 96%",
+                None,
+            ),
+        );
+        insert_savings_event(
+            &db,
+            &SavingsEvent::new(
+                SavingsCategory::ContextReset,
+                SavingsSource::Detected,
+                "gc_pressure_critical",
+                "2GB session",
+                None,
+            ),
+        );
+        insert_savings_event(
+            &db,
+            &SavingsEvent::new(
+                SavingsCategory::DeferredHeavyTask,
+                SavingsSource::AgentAction,
+                "cli",
+                "deferred cargo build",
+                Some(10_000),
+            ),
+        );
+
+        assert_eq!(count_savings_events(&db).unwrap(), 3);
+
+        let report = query_savings_report(&db, "last_7d", 7 * 86400, 86400, 10).unwrap();
+        assert_eq!(report.total_events, 3);
+        assert_eq!(report.detected_events, 2);
+        assert_eq!(report.confirmed_events, 1);
+        // 45000 + 30000 + 10000
+        assert_eq!(report.total_tokens_saved, 85_000);
+        assert!((report.total_usd_saved - 0.255).abs() < 1e-6);
+        assert!(!report.by_category.is_empty());
+        // Highest-token category (prevented_oom_crash, 45k) sorts first.
+        assert_eq!(
+            report.by_category[0].category,
+            SavingsCategory::PreventedOomCrash
+        );
+        assert_eq!(report.recent_events.len(), 3);
+        std::env::remove_var(crate::savings::TOKEN_PRICE_ENV);
     }
 }
