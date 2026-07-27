@@ -667,6 +667,11 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
     // Rate limiting: last tick each alert type fired
     let mut last_alert_tick: HashMap<AlertType, u32> = HashMap::new();
 
+    // Savings ledger: last tick each savings category was auto-recorded. A persistent
+    // condition is credited at most once per SAVINGS_DETECT_COOLDOWN_TICKS window so the
+    // ledger reflects distinct preventions, not per-tick spam.
+    let mut last_savings_tick: HashMap<crate::savings::SavingsCategory, u32> = HashMap::new();
+
     // Per-PID consecutive idle tick counter for non-orchestrator claude processes.
     // Only processes where is_orchestrator=false are tracked here.
     let mut agent_idle_ticks: HashMap<u32, u32> = HashMap::new();
@@ -2062,6 +2067,33 @@ pub async fn start_collector(state: SharedState, db: persistence::DbHandle, ring
         // task handles webhook dispatch and MCP logging notifications separately.
         for alert in &new_alerts {
             persistence::insert_alert(&db, alert);
+        }
+
+        // ── Record savings events ──────────────────────────────────────────
+        // Every actionable condition axon surfaces lets the agent avoid a concrete
+        // wasteful token spend. Alerts are already edge-triggered, so each maps to at
+        // most one ledger entry. Agent-blame signals fire every tick, so they are gated
+        // behind a per-category cooldown to credit distinct preventions only.
+        {
+            let mut savings_events: Vec<crate::savings::SavingsEvent> = Vec::new();
+            for alert in &new_alerts {
+                if let Some(ev) = crate::savings::from_alert(alert) {
+                    savings_events.push(ev);
+                }
+            }
+            for ev in crate::savings::from_blame(&blame) {
+                let last = last_savings_tick.get(&ev.category).copied().unwrap_or(0);
+                let due = last == 0
+                    || tick_count.saturating_sub(last)
+                        >= crate::savings::SAVINGS_DETECT_COOLDOWN_TICKS;
+                if due {
+                    last_savings_tick.insert(ev.category, tick_count);
+                    savings_events.push(ev);
+                }
+            }
+            for ev in &savings_events {
+                persistence::insert_savings_event(&db, ev);
+            }
         }
 
         // ── Write to shared state ──────────────────────────────────────────

@@ -136,6 +136,8 @@ human-readable `narrative`.
 | `gpu_snapshot` | GPU detection, utilization, VRAM state, and GPU-specific narrative. |
 | `workload_advice` | Run/degrade/defer policy and safe parallelism for local work. |
 | `agent_runtime_health` | Inventory of local agent processes, MCP servers, stale sessions, and duplicate tool groups. |
+| `token_savings` | Estimated tokens and dollars Axon has saved, with a daily/weekly rollup and the referenced events behind each number. |
+| `record_savings` | Log a confirmed saving after acting on an Axon recommendation (defer a build, `/clear`, `/compact`, kill a runaway). |
 
 Suggested agent policy:
 
@@ -156,8 +158,19 @@ axon serve --dashboard  # start local dashboard at http://127.0.0.1:7670
 axon diagnose           # collect a short sample and print the likely culprit
 axon status             # print current hardware snapshot as JSON
 axon query <tool>       # call an MCP tool directly
-axon setup <target>     # configure claude-desktop, claude-code, cursor, or vscode
+axon setup <target>     # configure claude-desktop, claude-code, claude-code-skill, cursor, or vscode
+axon savings            # show tokens & dollars Axon has saved (this week)
+axon savings --range last_30d          # monthly view
+axon savings record --category ... --detail "..."   # log a confirmed saving
 ```
+
+### Token & cost savings
+
+Axon logs a saving each time it catches an actionable condition (memory pressure before an
+OOM, an oversized session, a polling loop) or an agent confirms it acted on a
+recommendation, then rolls the ledger up by day/week/month. Install it as a zero-config
+Claude Code skill with `axon setup claude-code-skill`. See
+[docs/token-savings.md](docs/token-savings.md).
 
 ## Alerts
 
