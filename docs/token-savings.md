@@ -92,7 +92,21 @@ dollar figure scales with the model you actually run — the token figure is the
 
 ## Try it without a full build
 
-`scripts/simulate_token_savings.py` creates the exact `savings_events` table, seeds a
-realistic week of events using the same catalog, and prints the same report the CLI does —
-useful for a quick demo. Because the schema is identical, the compiled `axon savings` reads
-the same rows.
+Two scripts write to the **same** `savings_events` table the compiled `axon savings` reads,
+so you can see the pipeline end-to-end before building:
+
+- `scripts/simulate_token_savings.py` seeds a realistic week using the same catalog and
+  prints the same report — useful for a quick demo of the report format.
+- `scripts/axon_live_integration.py` is a **live integration harness**: it reads *this
+  machine's* real `/proc` state every 2s, applies axon's real thresholds
+  (`thresholds.rs`) and token catalog (`savings.rs`), and logs **real** detections — only
+  when a live measurement actually crosses a threshold. To guarantee there is something to
+  observe on an idle machine it induces three real, bounded, self-cleaning loads (a CPU
+  spin loop, a fast disk write, and a memory-growing process) and catches them the way the
+  collector would; a healthy `claude` process is correctly left alone. It is the closest
+  real stand-in for `axon serve`'s collector loop until the binary is built.
+
+  ```
+  python3 scripts/axon_live_integration.py --ticks 14
+  AXON_DATA_DIR=/tmp/axon-live axon savings --range last_24h   # once built: same rows
+  ```
